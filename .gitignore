@@ -1,0 +1,40 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock for libraries (keep for binaries)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files (contain secrets)
+.env
+.env.*
+*.env.local
+
+# Logs
+*.log
+*.pid
+
+# Test artifacts
+/coverage/
+/.coverage/
+
+# Documentation build
+/doc/
+/NEXUS_DOCS_no_tocar/
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
