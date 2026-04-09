@@ -1,14 +1,14 @@
 [package]
-name = "nexus-brain"
+name = "nexus-ai-gateway"
 version = "0.5.0"
 edition = "2021"
 authors = ["enerBydev <zakutnii.ivan@gmail.com>"]
 description = "High-performance Anthropic API proxy to OpenAI-compatible endpoints"
 license = "MIT"
-repository = "https://github.com/enerBydev/nexus-brain"
+repository = "https://github.com/enerBydev/nexus-ai-gateway"
 
 [[bin]]
-name = "nexus-brain"
+name = "nexus-ai-gateway"
 path = "src/main.rs"
 
 [dependencies]

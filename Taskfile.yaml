@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  BINARY_NAME: nexus-brain
+  BINARY_NAME: nexus-ai-gateway
   INSTALL_DIR: '{{.HOME}}/.cargo/bin'
   BUILD_DIR: target/release
 
@@ -178,7 +178,7 @@ tasks:
   help:
     desc: Show help information
     cmds:
-      - echo "nexus-brain-rs - Anthropic API to OpenAI proxy"
+      - echo "nexus-ai-gateway - Anthropic API to OpenAI proxy"
       - echo ""
       - echo "Common tasks:"
       - echo "  task build          - Build release binary"
@@ -196,3 +196,26 @@ tasks:
       - echo "  REASONING_MODEL              - Override model for thinking mode"
       - echo "  COMPLETION_MODEL             - Override model for standard mode"
       - echo "  DEBUG                        - Enable debug logging (1 or true)"
+
+  # VERSION MANAGEMENT
+  version:
+    desc: Show current version
+    cmds:
+      - echo "Cargo.toml: $(grep '^version' Cargo.toml)"
+      - '[ -f VERSION ] && echo "VERSION file: $(cat VERSION)" || echo "VERSION file: not found"'
+      - git describe --tags --always 2>/dev/null || echo "Git tag: none"
+
+  bump-patch:
+    desc: Bump PATCH version (0.5.0 → 0.5.1)
+    cmds:
+      - ./scripts/bump-version.sh $(./scripts/increment-version.sh patch)
+
+  bump-minor:
+    desc: Bump MINOR version (0.5.0 → 0.6.0)
+    cmds:
+      - ./scripts/bump-version.sh $(./scripts/increment-version.sh minor)
+
+  bump-major:
+    desc: Bump MAJOR version (0.5.0 → 1.0.0)
+    cmds:
+      - ./scripts/bump-version.sh $(./scripts/increment-version.sh major)
