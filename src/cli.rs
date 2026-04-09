@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "nexus-brain",
+    name = "nexus-ai-gateway",
     version,
     about = "Proxy Anthropic API requests to OpenAI-compatible endpoints",
     long_about = "A high-performance proxy that translates Anthropic Claude API requests \
@@ -35,7 +35,7 @@ pub struct Cli {
     pub daemon: bool,
 
     /// PID file path (used with daemon commands)
-    #[arg(long, value_name = "FILE", default_value = "/tmp/nexus-brain.pid")]
+    #[arg(long, value_name = "FILE", default_value = "/tmp/nexus-ai-gateway.pid")]
     pub pid_file: PathBuf,
 }
 
@@ -44,13 +44,13 @@ pub enum Command {
     /// Stop running daemon
     Stop {
         /// PID file path
-        #[arg(long, value_name = "FILE", default_value = "/tmp/nexus-brain.pid")]
+        #[arg(long, value_name = "FILE", default_value = "/tmp/nexus-ai-gateway.pid")]
         pid_file: PathBuf,
     },
     /// Check daemon status
     Status {
         /// PID file path
-        #[arg(long, value_name = "FILE", default_value = "/tmp/nexus-brain.pid")]
+        #[arg(long, value_name = "FILE", default_value = "/tmp/nexus-ai-gateway.pid")]
         pid_file: PathBuf,
     },
     /// Scan Claude Code binary for model IDs, tools, and capabilities

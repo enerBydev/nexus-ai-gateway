@@ -999,7 +999,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-brain"
+name = "nexus-ai-gateway"
 version = "0.5.0"
 dependencies = [
  "anyhow",

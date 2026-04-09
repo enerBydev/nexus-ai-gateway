@@ -5,9 +5,9 @@
 
 ---
 
-## What is nexus-brain?
+## What is nexus-ai-gateway?
 
-**nexus-brain** is an AI API gateway that enables Claude Code to work with
+**nexus-ai-gateway** is an AI API gateway that enables Claude Code to work with
 OpenAI-compatible providers like NVIDIA NIM. It automatically translates
 between Anthropic and OpenAI API formats, providing:
 
@@ -63,7 +63,7 @@ PERMIT_TIMEOUT_SECS = 180      // 3 minute timeout
 
 ```bash
 # Reload configuration without restart
-kill -SIGHUP $(cat /tmp/nexus-brain.pid)
+kill -SIGHUP $(cat /tmp/nexus-ai-gateway.pid)
 
 # Or automatically when .env changes
 # (file watcher active)
@@ -91,8 +91,8 @@ This ensures the port is unique and avoids conflicts with common development por
 
 ```bash
 # Clone
-git clone https://github.com/enerBydev/nexus-brain.git
-cd nexus-brain
+git clone https://github.com/enerBydev/nexus-ai-gateway.git
+cd nexus-ai-gateway
 
 # Build release
 cargo build --release
@@ -113,7 +113,7 @@ task install
 
 ### Environment Variables
 
-Create `~/.nexus-brain.env`:
+Create `~/.nexus-ai-gateway.env`:
 
 ```bash
 # Server Configuration
@@ -150,13 +150,13 @@ UPSTREAM_API_KEY=${NB_Key}
 
 ```bash
 # Foreground (debug)
-nexus-brain
+nexus-ai-gateway
 
 # Daemon mode
-nexus-brain --daemon
+nexus-ai-gateway --daemon
 
 # With custom config
-nexus-brain --config /path/to/.env
+nexus-ai-gateway --config /path/to/.env
 ```
 
 ### Endpoints
@@ -188,7 +188,7 @@ curl -X POST http://localhost:8315/v1/chat/completions \
 ## Architecture
 
 ```
-Claude Code          nexus-brain           NVIDIA NIM
+Claude Code          nexus-ai-gateway           NVIDIA NIM
      │                    │                     │
      │  Anthropic API     │                     │
      │ ──────────────────▶│                     │

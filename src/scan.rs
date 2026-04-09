@@ -484,7 +484,7 @@ pub fn generate_env_template(scan: &CCScanResult) -> String {
     let mut output = String::new();
 
     output.push_str("# ═══════════════════════════════════════════════════\n");
-    output.push_str("# nexus-brain-rs — Auto-generated Model Mapping\n");
+    output.push_str("# nexus-ai-gateway-rs — Auto-generated Model Mapping\n");
     output.push_str(&format!(
         "# Scanned: {} | Models: {}\n",
         scan.scan_timestamp.format("%Y-%m-%d"),
@@ -541,7 +541,7 @@ pub fn generate_launcher_script(scan: &CCScanResult) -> String {
 
     output.push_str("#!/bin/bash\n");
     output.push_str("# ═══════════════════════════════════════════════════\n");
-    output.push_str("# Claude Code Launcher — nexus-brain-rs Symbiont\n");
+    output.push_str("# Claude Code Launcher — nexus-ai-gateway-rs Symbiont\n");
     output.push_str(&format!(
         "# Auto-generated: {} | Models: {}\n",
         scan.scan_timestamp.format("%Y-%m-%d"),

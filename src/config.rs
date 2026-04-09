@@ -51,7 +51,7 @@ impl Config {
         }
 
         if let Some(home) = env::var("HOME").ok() {
-            let home_config = PathBuf::from(home).join(".nexus-brain.env");
+            let home_config = PathBuf::from(home).join(".nexus-ai-gateway.env");
             if home_config.exists() {
                 if let Ok(_) = dotenvy::from_path(&home_config) {
                     return Some(home_config);
@@ -59,7 +59,7 @@ impl Config {
             }
         }
 
-        let etc_config = PathBuf::from("/etc/nexus-brain/.env");
+        let etc_config = PathBuf::from("/etc/nexus-ai-gateway/.env");
         if etc_config.exists() {
             if let Ok(_) = dotenvy::from_path(&etc_config) {
                 return Some(etc_config);

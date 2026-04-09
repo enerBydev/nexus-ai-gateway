@@ -23,8 +23,8 @@ impl CCWatcher {
         initial_scan: Option<CCScanResult>,
     ) -> Self {
         let state_path = dirs_next_home()
-            .map(|h| h.join(".nexus-brain-scan.json"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/nexus-brain-scan.json"));
+            .map(|h| h.join(".nexus-ai-gateway-scan.json"))
+            .unwrap_or_else(|| PathBuf::from("/tmp/nexus-ai-gateway-scan.json"));
 
         CCWatcher {
             binary_path,

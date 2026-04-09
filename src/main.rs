@@ -52,12 +52,12 @@ fn main() -> anyhow::Result<()> {
         let stdout = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("/tmp/nexus-brain.log")?;
+            .open("/tmp/nexus-ai-gateway.log")?;
 
         let stderr = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("/tmp/nexus-brain.log")?;
+            .open("/tmp/nexus-ai-gateway.log")?;
 
         let daemonize = Daemonize::new()
             .pid_file(&cli.pid_file)
@@ -224,7 +224,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 
         let env_path = std::env::var("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".nexus-brain.env"))
+            .map(|h| std::path::PathBuf::from(h).join(".nexus-ai-gateway.env"))
             .unwrap_or_else(|_| std::path::PathBuf::from(".env"));
 
         if !env_path.exists() {
@@ -336,8 +336,8 @@ fn handle_scan(env: bool, launcher: bool, check: bool) -> anyhow::Result<()> {
     if check {
         // Just check for updates against saved state
         let state_path = std::env::var("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".nexus-brain-scan.json"))
-            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/nexus-brain-scan.json"));
+            .map(|h| std::path::PathBuf::from(h).join(".nexus-ai-gateway-scan.json"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/nexus-ai-gateway-scan.json"));
 
         if let Some(old_scan) = watcher::CCWatcher::load_state(&state_path) {
             if old_scan.binary_sha256 == scan_result.binary_sha256 {
