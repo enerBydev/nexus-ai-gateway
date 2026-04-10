@@ -19,6 +19,7 @@ use std::time::Duration;
 use tokio::sync::{RwLock as AsyncRwLock, Semaphore};
 
 const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplification (1.58x→~1.3x)
+#[allow(dead_code)]
 const RETRY_BASE_MS: u64 = 1500; // Kept for reference, overridden per error class
 const MIN_CLAMP_TOKENS: u32 = 4096;
 
@@ -29,10 +30,10 @@ const MIN_CLAMP_TOKENS: u32 = 4096;
 struct UpstreamError {
     status: u16,
     message: String,
-    error_type: Option<String>,  // NIM: "BadRequestError", etc.
-    param: Option<String>,       // NIM: "input_tokens", etc.
+    error_type: Option<String>, // NIM: "BadRequestError", etc.
+    param: Option<String>,      // NIM: "input_tokens", etc.
     #[allow(dead_code)]
-    code: Option<String>,        // NIM: "400", etc.
+    code: Option<String>, // NIM: "400", etc.
 }
 
 /// Parse NIM/OpenAI error response to extract structured error info.
@@ -46,22 +47,24 @@ fn parse_upstream_error(status: u16, body: &str) -> UpstreamError {
 
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(error_obj) = json.get("error") {
-            err.message = error_obj.get("message")
+            err.message = error_obj
+                .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or(body)
                 .to_string();
-            err.error_type = error_obj.get("type")
+            err.error_type = error_obj
+                .get("type")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            err.param = error_obj.get("param")
+            err.param = error_obj
+                .get("param")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            err.code = error_obj.get("code")
-                .and_then(|v| match v {
-                    serde_json::Value::String(s) => Some(s.clone()),
-                    serde_json::Value::Number(n) => Some(n.to_string()),
-                    _ => None,
-                });
+            err.code = error_obj.get("code").and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            });
 
             // NIM wraps errors: "Upstream returned 400 Bad Request: {...}"
             if let Some(inner) = extract_nested_error(&err.message) {
@@ -93,7 +96,8 @@ fn extract_nested_error(msg: &str) -> Option<UpstreamError> {
 
     Some(UpstreamError {
         status: json.get("status").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-        message: json.get("detail")
+        message: json
+            .get("detail")
             .or_else(|| json.get("message"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -114,13 +118,9 @@ enum ErrorClass {
         reason: &'static str,
     },
     /// Parameter error — auto-correct (reduce max_tokens) and retry
-    Fixable {
-        reason: &'static str,
-    },
+    Fixable { reason: &'static str },
     /// Fatal error — return immediately to CC with Anthropic-native error type
-    Fatal {
-        reason: &'static str,
-    },
+    Fatal { reason: &'static str },
 }
 
 /// Content patterns that indicate a fixable error (max_tokens/context overflow)
@@ -177,15 +177,11 @@ fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     // ║  LAYER 0: Structural — NIM typed error fields            ║
     // ╚══════════════════════════════════════════════════════════╝
     if let Some(ref etype) = upstream.error_type {
-        match etype.as_str() {
-            "BadRequestError" => {
-                if upstream.param.as_deref() == Some("input_tokens") {
-                    return ErrorClass::Fixable {
-                        reason: "NIM BadRequestError: input_tokens overflow (L0)",
-                    };
-                }
-            }
-            _ => {}
+        if etype.as_str() == "BadRequestError" && upstream.param.as_deref() == Some("input_tokens")
+        {
+            return ErrorClass::Fatal {
+                reason: "input_tokens overflow — context full, needs /compact (L0)",
+            };
         }
     }
 
@@ -253,17 +249,31 @@ fn classify_error(upstream: &UpstreamError) -> ErrorClass {
         400 => ErrorClass::Fatal {
             reason: "400 bad request — no fixable pattern (L2)",
         },
-        401 => ErrorClass::Fatal { reason: "401 unauthorized (L2)" },
-        402 => ErrorClass::Fatal { reason: "402 billing error (L2)" },
-        403 => ErrorClass::Fatal { reason: "403 forbidden (L2)" },
-        404 => ErrorClass::Fatal { reason: "404 not found (L2)" },
-        405 => ErrorClass::Fatal { reason: "405 method not allowed (L2)" },
-        413 => ErrorClass::Fixable { reason: "413 payload too large (L2)" },
-        422 => ErrorClass::Fatal { reason: "422 unprocessable entity (L2)" },
-        400..=499 => ErrorClass::Fatal {
+        401 => ErrorClass::Fatal {
+            reason: "401 unauthorized (L2)",
+        },
+        402 => ErrorClass::Fatal {
+            reason: "402 billing error (L2)",
+        },
+        403 => ErrorClass::Fatal {
+            reason: "403 forbidden (L2)",
+        },
+        404 => ErrorClass::Fatal {
+            reason: "404 not found (L2)",
+        },
+        405 => ErrorClass::Fatal {
+            reason: "405 method not allowed (L2)",
+        },
+        413 => ErrorClass::Fixable {
+            reason: "413 payload too large (L2)",
+        },
+        422 => ErrorClass::Fatal {
+            reason: "422 unprocessable entity (L2)",
+        },
+        406..=412 | 414..=421 | 423..=499 => ErrorClass::Fatal {
             reason: "unknown 4xx client error (L2)",
         },
-        500..=599 => ErrorClass::Retryable {
+        501 | 505..=528 | 530..=599 => ErrorClass::Retryable {
             base_delay_ms: 2000,
             max_retries: 2,
             reason: "unknown 5xx server error (L2)",
@@ -316,7 +326,8 @@ async fn probe_model_limit(
         "max_tokens": 999999
     });
 
-    let mut req_builder = client.post(&url)
+    let mut req_builder = client
+        .post(&url)
         .header("Content-Type", "application/json")
         .json(&probe_body)
         .timeout(Duration::from_secs(15));
@@ -356,7 +367,9 @@ async fn get_context_limit(
     }
 
     // 2. Get upstream base URL (without /v1/chat/completions)
-    let upstream = config.upstreams.get(upstream_name)
+    let upstream = config
+        .upstreams
+        .get(upstream_name)
         .or_else(|| config.upstreams.get("default"));
 
     let (base_url, api_key) = match upstream {
@@ -367,14 +380,21 @@ async fn get_context_limit(
     // 3. Probe NIM
     if let Some(limit) = probe_model_limit(client, &base_url, api_key, model).await {
         let mut cache_write = cache.write().await;
-        cache_write.insert(model.to_string(), ModelCapabilities {
-            max_total_tokens: limit,
-            probed_at: std::time::Instant::now(),
-        });
+        cache_write.insert(
+            model.to_string(),
+            ModelCapabilities {
+                max_total_tokens: limit,
+                probed_at: std::time::Instant::now(),
+            },
+        );
         return limit;
     }
 
-    tracing::warn!("⚠️ Could not probe model '{}', using default {}", model, DEFAULT_CONTEXT_LIMIT);
+    tracing::warn!(
+        "⚠️ Could not probe model '{}', using default {}",
+        model,
+        DEFAULT_CONTEXT_LIMIT
+    );
     DEFAULT_CONTEXT_LIMIT
 }
 
@@ -408,7 +428,8 @@ async fn acquire_model_permit(
                 .or_insert_with(|| {
                     tracing::info!(
                         "🛡️ Created concurrency semaphore for '{}' ({} permits)",
-                        model, MAX_CONCURRENT_PER_MODEL,
+                        model,
+                        MAX_CONCURRENT_PER_MODEL,
                     );
                     Arc::new(Semaphore::new(MAX_CONCURRENT_PER_MODEL))
                 })
@@ -420,34 +441,47 @@ async fn acquire_model_permit(
     if available == 0 {
         tracing::warn!(
             "⏳ Model '{}' at capacity (0/{} permits) — waiting up to {}s",
-            model, MAX_CONCURRENT_PER_MODEL, PERMIT_TIMEOUT_SECS,
+            model,
+            MAX_CONCURRENT_PER_MODEL,
+            PERMIT_TIMEOUT_SECS,
         );
     } else {
         tracing::debug!(
             "🎫 Acquiring permit for '{}' ({}/{} available)",
-            model, available, MAX_CONCURRENT_PER_MODEL,
+            model,
+            available,
+            MAX_CONCURRENT_PER_MODEL,
         );
     }
 
     match tokio::time::timeout(
         Duration::from_secs(PERMIT_TIMEOUT_SECS),
         sem.clone().acquire_owned(),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(permit)) => {
             tracing::debug!(
                 "🎫 Permit acquired for '{}' ({}/{} remaining)",
-                model, sem.available_permits(), MAX_CONCURRENT_PER_MODEL,
+                model,
+                sem.available_permits(),
+                MAX_CONCURRENT_PER_MODEL,
             );
             Ok(permit)
         }
         Ok(Err(_)) => {
             tracing::error!("🛡️ Semaphore CLOSED for '{}' — this is a bug", model);
-            Err(ProxyError::Internal(format!("Semaphore closed for '{}'", model)))
+            Err(ProxyError::Internal(format!(
+                "Semaphore closed for '{}'",
+                model
+            )))
         }
         Err(_) => {
             tracing::error!(
                 "⏰ Permit TIMEOUT for '{}' (waited {}s, 0/{} available)",
-                model, PERMIT_TIMEOUT_SECS, MAX_CONCURRENT_PER_MODEL,
+                model,
+                PERMIT_TIMEOUT_SECS,
+                MAX_CONCURRENT_PER_MODEL,
             );
             Err(ProxyError::Overloaded(format!(
                 "Model '{}' concurrency limit reached ({} slots busy for {}s)",
@@ -473,7 +507,7 @@ async fn resilient_send(
     loop {
         attempt += 1;
         let mut req_builder = client
-            .post(&config.get_upstream_url(upstream_name))
+            .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
             .timeout(Duration::from_secs(900));
 
@@ -501,7 +535,9 @@ async fn resilient_send(
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
         tracing::debug!(
             "🔍 Parsed error: status={}, type={:?}, param={:?}, msg={}",
-            upstream_err.status, upstream_err.error_type, upstream_err.param,
+            upstream_err.status,
+            upstream_err.error_type,
+            upstream_err.param,
             &upstream_err.message[..upstream_err.message.len().min(100)]
         );
 
@@ -509,22 +545,34 @@ async fn resilient_send(
         tracing::debug!("🧠 Classified: {:?} (status={})", class, status.as_u16());
 
         match class {
-            ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
+            ErrorClass::Retryable {
+                base_delay_ms,
+                max_retries,
+                reason,
+            } => {
                 if attempt >= max_retries {
                     tracing::error!(
                         "⛔ {} [{}]: exhausted {} retries — giving up",
-                        status.as_u16(), reason, max_retries
+                        status.as_u16(),
+                        reason,
+                        max_retries
                     );
                     return Err(ProxyError::Upstream(format!(
                         "{} after {} retries ({}): {}",
-                        status, max_retries, reason,
+                        status,
+                        max_retries,
+                        reason,
                         &upstream_err.message[..upstream_err.message.len().min(300)]
                     )));
                 }
                 let delay = delay_with_jitter(base_delay_ms, attempt);
                 tracing::warn!(
                     "🔄 {} [{}] (attempt {}/{}) — retrying in {}ms",
-                    status.as_u16(), reason, attempt, max_retries, delay
+                    status.as_u16(),
+                    reason,
+                    attempt,
+                    max_retries,
+                    delay
                 );
                 tokio::time::sleep(Duration::from_millis(delay)).await;
                 continue;
@@ -533,11 +581,13 @@ async fn resilient_send(
                 if attempt >= MAX_RETRIES {
                     tracing::error!(
                         "⛔ Fixable [{}]: exhausted {} retries — giving up",
-                        reason, MAX_RETRIES
+                        reason,
+                        MAX_RETRIES
                     );
                     return Err(ProxyError::Upstream(format!(
                         "Fixable error after {} retries ({}): {}",
-                        MAX_RETRIES, reason,
+                        MAX_RETRIES,
+                        reason,
                         &upstream_err.message[..upstream_err.message.len().min(300)]
                     )));
                 }
@@ -545,7 +595,12 @@ async fn resilient_send(
                 let new_max = (current / 2).max(MIN_CLAMP_TOKENS);
                 tracing::warn!(
                     "🔧 {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
-                    status.as_u16(), reason, attempt, MAX_RETRIES, current, new_max
+                    status.as_u16(),
+                    reason,
+                    attempt,
+                    MAX_RETRIES,
+                    current,
+                    new_max
                 );
                 openai_req.max_tokens = Some(new_max);
                 continue;
@@ -553,12 +608,15 @@ async fn resilient_send(
             ErrorClass::Fatal { reason } => {
                 tracing::error!(
                     "💀 {} [{}]: {}",
-                    status.as_u16(), reason,
+                    status.as_u16(),
+                    reason,
                     &upstream_err.message[..upstream_err.message.len().min(500)]
                 );
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
-                    status, reason, &upstream_err.message[..upstream_err.message.len().min(300)]
+                    status,
+                    reason,
+                    &upstream_err.message[..upstream_err.message.len().min(300)]
                 )));
             }
         }
@@ -578,7 +636,7 @@ async fn resilient_send_raw(
     loop {
         attempt += 1;
         let mut req_builder = client
-            .post(&config.get_upstream_url(upstream_name))
+            .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
             .timeout(Duration::from_secs(900));
 
@@ -605,30 +663,48 @@ async fn resilient_send_raw(
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
         tracing::debug!(
             "🔍 [stream] Parsed error: status={}, type={:?}, param={:?}, msg={}",
-            upstream_err.status, upstream_err.error_type, upstream_err.param,
+            upstream_err.status,
+            upstream_err.error_type,
+            upstream_err.param,
             &upstream_err.message[..upstream_err.message.len().min(100)]
         );
 
         let class = classify_error(&upstream_err);
-        tracing::debug!("🧠 [stream] Classified: {:?} (status={})", class, status.as_u16());
+        tracing::debug!(
+            "🧠 [stream] Classified: {:?} (status={})",
+            class,
+            status.as_u16()
+        );
 
         match class {
-            ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
+            ErrorClass::Retryable {
+                base_delay_ms,
+                max_retries,
+                reason,
+            } => {
                 if attempt >= max_retries {
                     tracing::error!(
                         "⛔ [stream] {} [{}]: exhausted {} retries — giving up",
-                        status.as_u16(), reason, max_retries
+                        status.as_u16(),
+                        reason,
+                        max_retries
                     );
                     return Err(ProxyError::Upstream(format!(
                         "{} after {} retries ({}): {}",
-                        status, max_retries, reason,
+                        status,
+                        max_retries,
+                        reason,
                         &upstream_err.message[..upstream_err.message.len().min(300)]
                     )));
                 }
                 let delay = delay_with_jitter(base_delay_ms, attempt);
                 tracing::warn!(
                     "🔄 [stream] {} [{}] (attempt {}/{}) — retrying in {}ms",
-                    status.as_u16(), reason, attempt, max_retries, delay
+                    status.as_u16(),
+                    reason,
+                    attempt,
+                    max_retries,
+                    delay
                 );
                 tokio::time::sleep(Duration::from_millis(delay)).await;
                 continue;
@@ -637,11 +713,13 @@ async fn resilient_send_raw(
                 if attempt >= MAX_RETRIES {
                     tracing::error!(
                         "⛔ [stream] Fixable [{}]: exhausted {} retries — giving up",
-                        reason, MAX_RETRIES
+                        reason,
+                        MAX_RETRIES
                     );
                     return Err(ProxyError::Upstream(format!(
                         "Fixable error after {} retries ({}): {}",
-                        MAX_RETRIES, reason,
+                        MAX_RETRIES,
+                        reason,
                         &upstream_err.message[..upstream_err.message.len().min(300)]
                     )));
                 }
@@ -649,7 +727,12 @@ async fn resilient_send_raw(
                 let new_max = (current / 2).max(MIN_CLAMP_TOKENS);
                 tracing::warn!(
                     "🔧 [stream] {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
-                    status.as_u16(), reason, attempt, MAX_RETRIES, current, new_max
+                    status.as_u16(),
+                    reason,
+                    attempt,
+                    MAX_RETRIES,
+                    current,
+                    new_max
                 );
                 openai_req.max_tokens = Some(new_max);
                 continue;
@@ -657,12 +740,15 @@ async fn resilient_send_raw(
             ErrorClass::Fatal { reason } => {
                 tracing::error!(
                     "💀 [stream] {} [{}]: {}",
-                    status.as_u16(), reason,
+                    status.as_u16(),
+                    reason,
                     &upstream_err.message[..upstream_err.message.len().min(500)]
                 );
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
-                    status, reason, &upstream_err.message[..upstream_err.message.len().min(300)]
+                    status,
+                    reason,
+                    &upstream_err.message[..upstream_err.message.len().min(300)]
                 )));
             }
         }
@@ -698,8 +784,13 @@ pub async fn proxy_handler(
 
     // === Pre-check: Dynamic context limit clamping (Doc1) ===
     let context_limit = get_context_limit(
-        &model_cache, &client, &config, &openai_req.model, &upstream_name,
-    ).await;
+        &model_cache,
+        &client,
+        &config,
+        &openai_req.model,
+        &upstream_name,
+    )
+    .await;
 
     let estimated_input = serde_json::to_string(&openai_req.messages)
         .map(|s| s.len() / 4)
@@ -709,12 +800,14 @@ pub async fn proxy_handler(
     if estimated_input + requested_output > context_limit {
         let safe_output = context_limit
             .saturating_sub(estimated_input)
-            .min(64000)
-            .max(1024);
+            .clamp(1024, 64000);
         tracing::warn!(
             "⚠️ Pre-check: ~{}tok + {}tok > {}tok (model={}, probed). Clamping → {}",
-            estimated_input, requested_output, context_limit,
-            openai_req.model, safe_output
+            estimated_input,
+            requested_output,
+            context_limit,
+            openai_req.model,
+            safe_output
         );
         openai_req.max_tokens = Some(safe_output);
     }
@@ -728,9 +821,25 @@ pub async fn proxy_handler(
 
     if is_streaming {
         let original_model = req.model.clone();
-        handle_streaming(config, client, openai_req, &upstream_name, &original_model, model_semaphores).await
+        handle_streaming(
+            config,
+            client,
+            openai_req,
+            &upstream_name,
+            &original_model,
+            model_semaphores,
+        )
+        .await
     } else {
-        handle_non_streaming(config, client, openai_req, req, &upstream_name, model_semaphores).await
+        handle_non_streaming(
+            config,
+            client,
+            openai_req,
+            req,
+            &upstream_name,
+            model_semaphores,
+        )
+        .await
     }
 }
 

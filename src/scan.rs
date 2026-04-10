@@ -524,7 +524,7 @@ pub fn generate_env_template(scan: &CCScanResult) -> String {
                 let env_key = m.id.replace('-', "_");
                 output.push_str(&format!("# MODEL_MAP_{}=default:<UNASSIGNED>\n", env_key));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
     }
 

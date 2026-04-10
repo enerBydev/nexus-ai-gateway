@@ -155,14 +155,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .build()?;
 
     // v5.0: Auto-discovery model capabilities cache
-    let model_cache: proxy::ModelCache = Arc::new(
-        tokio::sync::RwLock::new(std::collections::HashMap::new())
-    );
+    let model_cache: proxy::ModelCache =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
     // v5.0: Per-model concurrency semaphores (Doc1b)
-    let model_semaphores: proxy::ModelSemaphores = Arc::new(
-        tokio::sync::RwLock::new(std::collections::HashMap::new())
-    );
+    let model_semaphores: proxy::ModelSemaphores =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
     // Save CLI flags for hot-reload
     let cli_debug = config.debug;
@@ -242,7 +240,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     for evt in evts {
                         if evt.kind == DebouncedEventKind::Any {
                             let tx = tx.clone();
-                            rt.spawn(async move { let _ = tx.send(()).await; });
+                            rt.spawn(async move {
+                                let _ = tx.send(()).await;
+                            });
                         }
                     }
                 }
@@ -255,15 +255,22 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
         };
 
-        if let Err(e) = debouncer.watcher().watch(
-            &env_path,
-            notify::RecursiveMode::NonRecursive,
-        ) {
-            tracing::warn!("👁 Cannot watch {}: {} (SIGHUP still works)", env_path.display(), e);
+        if let Err(e) = debouncer
+            .watcher()
+            .watch(&env_path, notify::RecursiveMode::NonRecursive)
+        {
+            tracing::warn!(
+                "👁 Cannot watch {}: {} (SIGHUP still works)",
+                env_path.display(),
+                e
+            );
             return;
         }
 
-        tracing::info!("👁 Watching {} for changes (auto-reload enabled)", env_path.display());
+        tracing::info!(
+            "👁 Watching {} for changes (auto-reload enabled)",
+            env_path.display()
+        );
 
         while rx.recv().await.is_some() {
             tracing::info!("🔄 .env changed — auto-reloading config...");

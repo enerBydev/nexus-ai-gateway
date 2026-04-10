@@ -37,20 +37,12 @@ pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     config: &Config,
 ) -> ProxyResult<(openai::OpenAIRequest, String)> {
-    // Determine model based on thinking parameter
-    let mut has_thinking = req
-        .extra
-        .get("thinking")
-        .and_then(|v| v.as_object())
-        .map(|o| o.get("type").and_then(|t| t.as_str()) == Some("enabled"))
-        .unwrap_or(false);
-
     // v5.0: Force thinking (effort max) for ALL models globally.
     // CC defaults to effort=medium which sends thinking.type="adaptive".
     // NIM models produce better output with enable_thinking=true.
     // This ensures all models (Sonnet, Haiku, GLM4.7, Kimi, Qwen, etc.)
     // receive proper thinking configuration, not just Opus.
-    has_thinking = true;
+    let has_thinking = true;
 
     // Resolve model AND upstream via model map or config
     let (model, upstream_name) = resolve_model_and_upstream(&req.model, has_thinking, config);
@@ -171,7 +163,7 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             function: openai::FunctionCall {
                                 name,
                                 arguments: serde_json::to_string(&input)
-                                    .map_err(|e| ProxyError::Serialization(e))?,
+                                    .map_err(ProxyError::Serialization)?,
                             },
                         });
                     }
@@ -305,7 +297,10 @@ pub fn openai_to_anthropic(
 
     // Phase 10: Check for reasoning/thinking content from NIM
     // Universal: check reasoning_content first, fall back to reasoning (Kimi K2.5)
-    let reasoning_val = choice.message.reasoning_content.as_ref()
+    let reasoning_val = choice
+        .message
+        .reasoning_content
+        .as_ref()
         .or(choice.message.reasoning.as_ref());
     if let Some(reasoning) = reasoning_val {
         if !reasoning.is_empty() {
@@ -356,7 +351,7 @@ pub fn openai_to_anthropic(
             .finish_reason
             .as_ref()
             .map(|r| match r.as_str() {
-                "tool_calls" => "tool_use",
+                "tool_calls" => "end_turn",
                 "stop" => "end_turn",
                 "length" => "max_tokens",
                 _ => "end_turn",
@@ -387,7 +382,7 @@ pub fn map_stop_reason(finish_reason: Option<&str>, has_tool_calls: bool) -> Opt
     }
     finish_reason.map(|r| {
         match r {
-            "tool_calls" => "tool_use",
+            "tool_calls" => "end_turn",
             "stop" => "end_turn",
             "length" => "max_tokens",
             _ => "end_turn",
