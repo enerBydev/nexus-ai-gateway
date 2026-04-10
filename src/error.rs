@@ -34,6 +34,10 @@ pub enum ProxyError {
 
     #[error("WebFetch error: {0}")]
     WebFetch(String),
+
+    /// v6.1: Context overflow — returns 400 so CC does NOT retry
+    #[error("Context overflow: {0}")]
+    ContextOverflow(String),
 }
 
 /// Map HTTP status to Anthropic-native error type.
@@ -70,6 +74,8 @@ impl IntoResponse for ProxyError {
             ProxyError::Http(err) => (StatusCode::BAD_GATEWAY, format!("HTTP error: {}", err)),
             ProxyError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             ProxyError::WebFetch(msg) => (StatusCode::BAD_GATEWAY, msg),
+            // v6.1: 400 so CC treats it as non-retriable → immediate /compact feedback
+            ProxyError::ContextOverflow(msg) => (StatusCode::BAD_REQUEST, msg),
         };
 
         // Anthropic-native response format — CC recognizes these error types

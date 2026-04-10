@@ -612,6 +612,13 @@ async fn resilient_send(
                     reason,
                     &upstream_err.message[..upstream_err.message.len().min(500)]
                 );
+                // v6.1: input_tokens overflow → 400 (CC won't retry)
+                if reason.contains("input_tokens overflow") {
+                    return Err(ProxyError::ContextOverflow(format!(
+                        "Context window full: {}. Use /compact to reduce context.",
+                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                    )));
+                }
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
                     status,
@@ -744,6 +751,13 @@ async fn resilient_send_raw(
                     reason,
                     &upstream_err.message[..upstream_err.message.len().min(500)]
                 );
+                // v6.1: input_tokens overflow → 400 (CC won't retry)
+                if reason.contains("input_tokens overflow") {
+                    return Err(ProxyError::ContextOverflow(format!(
+                        "Context window full: {}. Use /compact to reduce context.",
+                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                    )));
+                }
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
                     status,

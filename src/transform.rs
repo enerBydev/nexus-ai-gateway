@@ -112,6 +112,12 @@ pub fn anthropic_to_openai(
             top_p: req.top_p,
             stop: req.stop_sequences,
             stream: req.stream,
+            // v6.1: Request token usage in streaming — NIM sends real counts in final chunk
+            stream_options: if req.stream == Some(true) {
+                Some(json!({"include_usage": true}))
+            } else {
+                None
+            },
             tools,
             tool_choice: None,
             chat_template_kwargs: if has_thinking {

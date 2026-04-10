@@ -66,6 +66,7 @@ notify-debouncer-mini = "0.5"
 # Scanner module
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
+tiktoken-rs = "0.11.0"
 
 [profile.release]
 opt-level = "z"        # Optimize for size
