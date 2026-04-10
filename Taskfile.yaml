@@ -147,7 +147,7 @@ tasks:
     cmds:
       - cargo outdated
 
-  release:
+  prepare-release:
     desc: Prepare for release (check, build, test)
     cmds:
       - task: clean
@@ -219,3 +219,25 @@ tasks:
     desc: Bump MAJOR version (0.5.0 → 1.0.0)
     cmds:
       - ./scripts/bump-version.sh $(./scripts/increment-version.sh major)
+
+  release:
+    desc: Create and push a release tag
+    cmds:
+      - |
+        VERSION=$(cat VERSION 2>/dev/null || grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        TAG="v$VERSION"
+        echo "Creating release for version $VERSION"
+        echo "Tag: $TAG"
+        if git rev-parse "$TAG" >/dev/null 2>&1; then
+          echo "Tag $TAG already exists"
+          echo "To create a new release, bump the version first:"
+          echo "  task bump-patch  # or bump-minor, bump-major"
+          exit 1
+        fi
+        git tag -a "$TAG" -m "Release $VERSION"
+        git push origin "$TAG"
+        echo "✅ Release tag $TAG created and pushed"
+        echo "GitHub Actions will now build and create the release"
+    sources:
+      - VERSION
+      - Cargo.toml
