@@ -1050,6 +1050,8 @@ fn create_sse_stream(
         // v5.0: Fix 0-tokens — accumulate usage from NIM streaming chunks
         let mut accumulated_input_tokens: u32 = 0;
         let mut accumulated_output_tokens: u32 = 0;
+        // v6.1: Buffer stop_reason so message_delta is emitted at [DONE] with real token counts
+        let mut saved_stop_reason: Option<String> = None;
 
         tokio::pin!(stream);
 
@@ -1070,6 +1072,24 @@ fn create_sse_stream(
                         for l in line.lines() {
                             if let Some(data) = l.strip_prefix("data: ") {
                                 if data.trim() == "[DONE]" {
+                                    // v6.1: Emit deferred message_delta with real token counts
+                                    if let Some(ref stop) = saved_stop_reason {
+                                        let delta_event = json!({
+                                            "type": "message_delta",
+                                            "delta": {
+                                                "stop_reason": stop,
+                                                "stop_sequence": serde_json::Value::Null
+                                            },
+                                            "usage": {
+                                                "input_tokens": accumulated_input_tokens,
+                                                "output_tokens": accumulated_output_tokens
+                                            }
+                                        });
+                                        let sse_data = format!("event: message_delta\ndata: {}\n\n",
+                                            serde_json::to_string(&delta_event).unwrap_or_default());
+                                        yield Ok(Bytes::from(sse_data));
+                                        tracing::info!("📊 Token usage: input={}, output={}", accumulated_input_tokens, accumulated_output_tokens);
+                                    }
                                     let event = json!({"type": "message_stop"});
                                     let sse_data = format!("event: message_stop\ndata: {}\n\n",
                                         serde_json::to_string(&event).unwrap_or_default());
@@ -1358,22 +1378,10 @@ fn create_sse_stream(
                                                 yield Ok(Bytes::from(sse_data));
                                             }
 
-                                            // Send message_delta with stop_reason
-                                            let stop_reason = transform::map_stop_reason(Some(finish_reason), tool_calls_emitted); // Phase 5: tool detection
-                                            let event = json!({
-                                                "type": "message_delta",
-                                                "delta": {
-                                                    "stop_reason": stop_reason,
-                                                    "stop_sequence": serde_json::Value::Null
-                                                },
-                                                "usage": {
-                                                    "input_tokens": accumulated_input_tokens,
-                                                    "output_tokens": accumulated_output_tokens
-                                                }
-                                            });
-                                            let sse_data = format!("event: message_delta\ndata: {}\n\n",
-                                                serde_json::to_string(&event).unwrap_or_default());
-                                            yield Ok(Bytes::from(sse_data));
+                                            // v6.1: Save stop_reason — message_delta deferred to [DONE]
+                                            // so it includes real token counts from NIM's usage chunk
+                                            let stop_reason = transform::map_stop_reason(Some(finish_reason), tool_calls_emitted);
+                                            saved_stop_reason = stop_reason;
                                         }
                                     }
                                 }
