@@ -5,4 +5,4 @@
 
 /// Current version of the crate
 /// This should be kept in sync with Cargo.toml and VERSION file
-pub const VERSION: &str = "0.5.0";
+pub const VERSION: &str = "0.6.0";
