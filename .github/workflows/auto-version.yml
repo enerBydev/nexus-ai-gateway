@@ -1,0 +1,178 @@
+name: Auto Version & Release
+# This workflow auto-bumps version based on conventional commits
+# and creates a GitHub release when pushed to main.
+#
+# Trigger: Runs after CI/CD Pipeline passes on main
+# Logic: Analyzes commits since last tag → determines bump → creates release
+
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  auto-version:
+    runs-on: ubuntu-latest
+    # Only run if CI passed and it was a push (not PR)
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for tag analysis
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Analyze commits for version bump
+        id: analyze
+        run: |
+          # Get current version
+          CURRENT_VERSION=$(cat VERSION)
+          CURRENT_TAG="v${CURRENT_VERSION}"
+          
+          # Check for commits since last tag
+          if git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
+            COMMITS=$(git log "${CURRENT_TAG}..HEAD" --oneline)
+          else
+            echo "no_tag=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          TOTAL=$(echo "$COMMITS" | grep -c '.' || echo 0)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "bump=none" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Count commit types
+          FEAT=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ feat' || echo 0)
+          FIX=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ fix' || echo 0)
+          REFACTOR=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ refactor' || echo 0)
+          PERF=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ perf' || echo 0)
+          BREAKING=$(echo "$COMMITS" | grep -cE '!:' || echo 0)
+          
+          # Determine bump type
+          if [ "$BREAKING" -gt 0 ] || [ "$FEAT" -gt 0 ]; then
+            BUMP="minor"
+          elif [ "$FIX" -gt 0 ] || [ "$REFACTOR" -gt 0 ] || [ "$PERF" -gt 0 ]; then
+            BUMP="patch"
+          else
+            BUMP="none"
+          fi
+          
+          echo "bump=$BUMP" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "total_commits=$TOTAL" >> $GITHUB_OUTPUT
+          echo "feat=$FEAT" >> $GITHUB_OUTPUT
+          echo "fix=$FIX" >> $GITHUB_OUTPUT
+          
+          echo "📊 Analysis: $TOTAL commits, bump=$BUMP (feat=$FEAT, fix=$FIX, refactor=$REFACTOR, perf=$PERF, breaking=$BREAKING)"
+
+      - name: Calculate new version
+        id: version
+        if: steps.analyze.outputs.bump != 'none' && steps.analyze.outputs.bump != ''
+        run: |
+          BUMP=${{ steps.analyze.outputs.bump }}
+          CURRENT=${{ steps.analyze.outputs.current }}
+          
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          
+          case $BUMP in
+            minor) NEW="$MAJOR.$((MINOR + 1)).0" ;;
+            patch) NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+          esac
+          
+          echo "new=$NEW" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW" >> $GITHUB_OUTPUT
+          echo "🎯 Version bump: $CURRENT → $NEW ($BUMP)"
+
+      - name: Install Rust
+        if: steps.version.outputs.new != ''
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply version bump
+        if: steps.version.outputs.new != ''
+        run: |
+          NEW=${{ steps.version.outputs.new }}
+          
+          # Update VERSION file
+          echo "$NEW" > VERSION
+          
+          # Update Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
+          
+          # Update src/lib.rs
+          if [ -f src/lib.rs ]; then
+            sed -i "s/pub const VERSION: \&str = \".*\";/pub const VERSION: \&str = \"$NEW\";/" src/lib.rs
+          fi
+          
+          # Update CHANGELOG.md
+          if [ -f CHANGELOG.md ]; then
+            TODAY=$(date +%Y-%m-%d)
+            sed -i "s/## \[Unreleased\]/## [Unreleased]\n\n### Added\n\n### Changed\n\n### Fixed\n\n---\n\n## [$NEW] - $TODAY/" CHANGELOG.md
+          fi
+          
+          # Commit version bump
+          git add VERSION Cargo.toml src/lib.rs CHANGELOG.md
+          git commit -m "chore: bump version to $NEW [skip ci]"
+          
+          # Create and push tag
+          git tag -a "v$NEW" -m "Release v$NEW"
+          git push origin main --tags
+
+      - name: Build release binary
+        if: steps.version.outputs.new != ''
+        run: cargo build --release
+
+      - name: Generate release notes
+        id: notes
+        if: steps.version.outputs.new != ''
+        run: |
+          NEW=${{ steps.version.outputs.new }}
+          CURRENT=${{ steps.analyze.outputs.current }}
+          
+          NOTES="## What's Changed in v${NEW}\n\n"
+          
+          # Auto-generate from commits
+          FEATS=$(git log "v${CURRENT}..v${NEW}" --oneline --grep="^feat" 2>/dev/null)
+          FIXES=$(git log "v${CURRENT}..v${NEW}" --oneline --grep="^fix" 2>/dev/null)
+          OTHERS=$(git log "v${CURRENT}..v${NEW}" --oneline --grep="^refactor\|^perf\|^chore\|^ci" 2>/dev/null)
+          
+          if [ -n "$FEATS" ]; then
+            NOTES="${NOTES}### ✨ Features\n"
+            echo "$FEATS" | while read line; do NOTES="${NOTES}- ${line}\n"; done
+            NOTES="${NOTES}\n"
+          fi
+          
+          if [ -n "$FIXES" ]; then
+            NOTES="${NOTES}### 🐛 Bug Fixes\n"
+            echo "$FIXES" | while read line; do NOTES="${NOTES}- ${line}\n"; done
+            NOTES="${NOTES}\n"
+          fi
+          
+          NOTES="${NOTES}**Full Changelog**: https://github.com/${{ github.repository }}/compare/v${CURRENT}...v${NEW}"
+          
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.new != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          body: ${{ steps.notes.outputs.body }}
+          files: target/release/nexus-ai-gateway
+          draft: false
+          prerelease: false

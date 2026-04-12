@@ -1,0 +1,35 @@
+[Unit]
+Description=NEXUS-AI-Gateway — Anthropic-to-NIM Proxy
+Documentation=https://github.com/enerBydev/nexus-ai-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/nexus-ai-gateway
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+# Prevent restart loops: 5 failures in 60s = stop trying
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Environment: load from .env file
+EnvironmentFile=-%h/.nexus-ai-gateway.env
+
+# Logging — dual: journald (rotated) + file (truncated on restart)
+SyslogIdentifier=nexus-ai-gateway
+StandardOutput=append:/tmp/nexus-ai-gateway.log
+StandardError=append:/tmp/nexus-ai-gateway.log
+
+# Truncate log file on restart to prevent unbounded growth
+ExecStartPre=/usr/bin/truncate -s 0 /tmp/nexus-ai-gateway.log
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=default.target

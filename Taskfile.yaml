@@ -197,6 +197,48 @@ tasks:
       - echo "  COMPLETION_MODEL             - Override model for standard mode"
       - echo "  DEBUG                        - Enable debug logging (1 or true)"
 
+  # SETUP (first-time after clone)
+  setup:
+    desc: Full project setup (build, install, hooks, service)
+    cmds:
+      - task: install
+      - task: setup-hooks
+      - echo "✅ Project ready! Run 'task service-install' to enable auto-start"
+
+  setup-hooks:
+    desc: Configure git to use portable hooks from scripts/hooks/
+    cmds:
+      - bash scripts/setup-hooks.sh
+
+  # SERVICE MANAGEMENT (systemd user service)
+  service-install:
+    desc: Install systemd user service (auto-start, auto-restart)
+    deps: [install]
+    cmds:
+      - bash scripts/install-service.sh
+
+  service-uninstall:
+    desc: Remove systemd user service
+    cmds:
+      - bash scripts/install-service.sh --uninstall
+
+  service-status:
+    desc: Check proxy service status
+    cmds:
+      - systemctl --user status nexus-ai-gateway --no-pager -l
+
+  service-restart:
+    desc: Restart proxy service
+    cmds:
+      - systemctl --user restart nexus-ai-gateway
+      - sleep 1
+      - systemctl --user status nexus-ai-gateway --no-pager -l | head -10
+
+  service-logs:
+    desc: Follow proxy service logs
+    cmds:
+      - tail -f /tmp/nexus-ai-gateway.log
+
   # VERSION MANAGEMENT
   version:
     desc: Show current version
@@ -241,3 +283,40 @@ tasks:
     sources:
       - VERSION
       - Cargo.toml
+
+  auto-version:
+    desc: Auto-detect version bump from commits and apply (feat→minor, fix→patch)
+    cmds:
+      - bash scripts/auto-version.sh --apply
+
+  auto-version-dry:
+    desc: Preview auto-version bump without applying
+    cmds:
+      - bash scripts/auto-version.sh --dry-run
+
+  version-check:
+    desc: Validate version sync across VERSION, Cargo.toml, lib.rs
+    cmds:
+      - |
+        V1=$(cat VERSION)
+        V2=$(grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        V3=$(grep 'pub const VERSION' src/lib.rs | sed 's/.*"\(.*\)".*/\1/')
+        TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+        echo "VERSION file:  $V1"
+        echo "Cargo.toml:    $V2"
+        echo "src/lib.rs:    $V3"
+        echo "Git tag:       $TAG"
+        if [ "$V1" = "$V2" ] && [ "$V1" = "$V3" ]; then
+          echo "✅ All 3 sources in sync"
+        else
+          echo "❌ VERSION MISMATCH"
+          exit 1
+        fi
+
+  full-release:
+    desc: One-command release (auto-bump + commit + tag + push + CI → GitHub Release)
+    cmds:
+      - task: auto-version
+      - git push origin main --tags
+      - echo "✅ Release pushed. GitHub Actions will build and publish."
+

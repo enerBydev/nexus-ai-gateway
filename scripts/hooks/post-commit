@@ -1,0 +1,16 @@
+#!/bin/sh
+# post-commit hook — Analyze commit and suggest version bump if needed
+# This runs AFTER every successful commit to show developers what bump is pending
+
+# Skip if this is a version bump commit itself (avoid recursion)
+COMMIT_MSG=$(git log -1 --format=%s)
+if echo "$COMMIT_MSG" | grep -qE "^chore: bump version to"; then
+    exit 0
+fi
+
+# Only analyze if auto-version.sh exists
+if [ -x scripts/auto-version.sh ]; then
+    scripts/auto-version.sh --dry-run 2>/dev/null
+fi
+
+exit 0

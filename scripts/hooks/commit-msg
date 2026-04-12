@@ -1,0 +1,50 @@
+#!/bin/sh
+# Commit-msg hook for conventional commits validation
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(head -n 1 "$COMMIT_MSG_FILE")
+
+# Skip empty commits
+if [ -z "$COMMIT_MSG" ]; then
+    exit 0
+fi
+
+# Skip merge commits
+if echo "$COMMIT_MSG" | grep -qE "^Merge (branch|tag) "; then
+    exit 0
+fi
+
+echo "🔍 Validating commit message format..."
+
+# Check if it matches conventional commit format
+if ! echo "$COMMIT_MSG" | grep -qE "^(feat|fix|chore|docs|refactor|test|ci|perf|style|build|revert)(\(.+\))?!?: .+"; then
+    echo ""
+    echo "❌ Commit message does not follow conventional commit format!"
+    echo ""
+    echo "Required format: <type>(<scope>): <description>"
+    echo ""
+    echo "Types: feat, fix, chore, docs, refactor, test, ci, perf, style, build, revert"
+    echo ""
+    echo "Examples:"
+    echo "  feat: add new authentication feature"
+    echo "  fix(proxy): handle timeout edge case"
+    echo "  chore: update dependencies"
+    echo ""
+    echo "Your message: $COMMIT_MSG"
+    echo ""
+    exit 1
+fi
+
+echo "✅ Valid conventional commit format"
+
+# Reminder for version bump
+if echo "$COMMIT_MSG" | grep -qE "^(feat|fix|refactor|perf)(\(.+\))?!?: "; then
+    echo ""
+    echo "💡 Reminder: This commit type may require a version bump"
+    echo "   feat:  → task bump-minor"
+    echo "   fix:   → task bump-patch"
+    echo "   refactor/perf: → task bump-patch"
+    echo ""
+fi
+
+exit 0

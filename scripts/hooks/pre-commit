@@ -1,0 +1,53 @@
+#!/bin/sh
+# Pre-commit hook for code quality checks
+# NOTE: Message validation is in commit-msg hook
+
+echo "🔍 Running pre-commit checks..."
+
+# Check for secrets (basic check)
+if git diff --cached --name-only | xargs grep -l "API_KEY\\|SECRET\\|PASSWORD\\|PRIVATE_KEY" 2>/dev/null; then
+    echo ""
+    echo "⚠️ Warning: Potential secrets detected in staged files"
+    echo "   Please review before committing"
+    echo ""
+fi
+
+# Check for large files (>1MB)
+LARGE_FILES=$(git diff --cached --name-only | xargs -I {} sh -c 'if [ -f "{}" ]; then stat -c%s "{}" 2>/dev/null; fi' | awk '$1 > 1048576 {print}')
+if [ -n "$LARGE_FILES" ]; then
+    echo ""
+    echo "⚠️ Warning: Large files detected (>1MB)"
+    echo "   Consider using Git LFS for large binaries"
+    echo ""
+fi
+
+# Check if there are Rust files staged
+RUST_FILES=$(git diff --cached --name-only -- '*.rs')
+if [ -n "$RUST_FILES" ]; then
+    echo ""
+    echo "🔧 Checking Rust code quality..."
+
+    # Check formatting
+    echo "   Running cargo fmt --check..."
+    if ! cargo fmt --check 2>/dev/null; then
+        echo ""
+        echo "❌ Code formatting issues detected!"
+        echo "   Run: cargo fmt"
+        exit 1
+    fi
+    echo "   ✅ Format check passed"
+
+    # Check clippy (only warnings as errors for serious issues)
+    echo "   Running cargo clippy..."
+    if ! cargo clippy -- -D warnings 2>/dev/null; then
+        echo ""
+        echo "❌ Clippy lint errors detected!"
+        echo "   Run: cargo clippy --fix"
+        exit 1
+    fi
+    echo "   ✅ Clippy check passed"
+fi
+
+echo ""
+echo "✅ Pre-commit checks passed"
+exit 0

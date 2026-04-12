@@ -1,0 +1,79 @@
+#!/bin/sh
+# Pre-push hook for validation before pushing to remote
+# Only runs full validation for main branch pushes
+#
+# Checks:
+# 1. Version sync across VERSION, Cargo.toml, src/lib.rs
+# 2. Tag exists for current version (reminder)
+# 3. cargo test
+# 4. cargo clippy
+# 5. cargo audit (if installed)
+
+remote="$1"
+url="$2"
+
+# Read the ref being pushed
+while read local_ref local_sha remote_ref remote_sha; do
+    # Only validate pushes to main
+    if [ "$remote_ref" = "refs/heads/main" ]; then
+        echo "🔍 Validating before push to main..."
+        echo ""
+
+        # 1. Version sync check (M1)
+        V_FILE=$(cat VERSION 2>/dev/null)
+        V_CARGO=$(grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        V_LIB=$(grep 'pub const VERSION' src/lib.rs 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+
+        if [ "$V_FILE" != "$V_CARGO" ] || [ "$V_FILE" != "$V_LIB" ]; then
+            echo "❌ Version mismatch detected!"
+            echo "   VERSION file: $V_FILE"
+            echo "   Cargo.toml:   $V_CARGO"
+            echo "   src/lib.rs:   $V_LIB"
+            echo ""
+            echo "   Run: task bump-patch (or bump-minor/bump-major)"
+            exit 1
+        fi
+        echo "   ✅ Version sync: $V_FILE"
+
+        # 2. Tag validation (M1)
+        TAG="v$V_FILE"
+        if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "   ⚠️  No git tag for $TAG — consider running: task release"
+        else
+            echo "   ✅ Tag $TAG exists"
+        fi
+
+        # 3. Run tests
+        echo ""
+        echo "   Running cargo test..."
+        if ! cargo test --quiet 2>/dev/null; then
+            echo "❌ Tests failed! Push blocked."
+            exit 1
+        fi
+        echo "   ✅ Tests passed"
+
+        # 4. Run clippy
+        echo "   Running cargo clippy..."
+        if ! cargo clippy -- -D warnings 2>/dev/null; then
+            echo "❌ Clippy errors found! Push blocked."
+            exit 1
+        fi
+        echo "   ✅ Clippy passed"
+
+        # 5. Security audit (M3) — non-blocking if cargo-audit not installed
+        if command -v cargo-audit >/dev/null 2>&1; then
+            echo "   Running cargo audit..."
+            if ! cargo audit --quiet 2>/dev/null; then
+                echo "⚠️  Security vulnerabilities found! Review with: cargo audit"
+                echo "   (Not blocking push — fix when possible)"
+            else
+                echo "   ✅ Security audit passed"
+            fi
+        fi
+
+        echo ""
+        echo "✅ Pre-push validation passed"
+    fi
+done
+
+exit 0
