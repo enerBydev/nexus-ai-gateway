@@ -79,17 +79,15 @@ impl Config {
             .and_then(|p| p.parse().ok())
             .unwrap_or(3000);
 
-        let base_url = env::var("UPSTREAM_BASE_URL")
-            .or_else(|_| env::var("NEXUS_BRAIN_BASE_URL"))
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "UPSTREAM_BASE_URL is required. Set it to your OpenAI-compatible endpoint.\n\
+        let base_url = env::var("UPSTREAM_BASE_URL").map_err(|_| {
+            anyhow::anyhow!(
+                "UPSTREAM_BASE_URL is required. Set it to your OpenAI-compatible endpoint.\n\
                 Examples:\n\
                   - OpenRouter: https://openrouter.ai/api\n\
                   - OpenAI: https://api.openai.com\n\
                   - Local: http://localhost:11434"
-                )
-            })?;
+            )
+        })?;
 
         let api_key = env::var("UPSTREAM_API_KEY")
             .or_else(|_| env::var("OPENROUTER_API_KEY"))

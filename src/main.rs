@@ -105,12 +105,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| format!("nexus_brain={}", log_level).into()),
+                .unwrap_or_else(|_| format!("nexus_ai_gateway={}", log_level).into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tracing::info!("Starting Anthropic Proxy v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Starting NEXUS-AI-Gateway v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Port: {}", config.port);
     tracing::info!("Upstream URL: {}", config.base_url);
 
