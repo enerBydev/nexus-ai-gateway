@@ -4,6 +4,7 @@ name: Auto Version & Release
 #
 # Trigger: Runs after CI/CD Pipeline passes on main
 # Logic: Analyzes commits since last tag → determines bump → creates release
+# Author: Commits as repo owner (enerBydev), not github-actions bot
 
 on:
   workflow_run:
@@ -17,49 +18,47 @@ permissions:
 jobs:
   auto-version:
     runs-on: ubuntu-latest
-    # Only run if CI passed and it was a push (not PR)
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
-    
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history needed for tag analysis
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure git
+      - name: Configure git as repo owner
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "enerBydev"
+          git config user.email "rjmemdoza.s@gmail.com"
 
       - name: Analyze commits for version bump
         id: analyze
         run: |
-          # Get current version
           CURRENT_VERSION=$(cat VERSION)
           CURRENT_TAG="v${CURRENT_VERSION}"
-          
-          # Check for commits since last tag
-          if git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
-            COMMITS=$(git log "${CURRENT_TAG}..HEAD" --oneline)
-          else
-            echo "no_tag=true" >> $GITHUB_OUTPUT
+
+          if ! git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
+            echo "bump=none" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
-          TOTAL=$(echo "$COMMITS" | grep -c '.' || echo 0)
+
+          COMMITS=$(git log "${CURRENT_TAG}..HEAD" --oneline 2>/dev/null)
+          TOTAL=$(echo "$COMMITS" | grep -c '.' || true)
+
           if [ "$TOTAL" -eq 0 ]; then
             echo "bump=none" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
-          # Count commit types
-          FEAT=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ feat' || echo 0)
-          FIX=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ fix' || echo 0)
-          REFACTOR=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ refactor' || echo 0)
-          PERF=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ perf' || echo 0)
-          BREAKING=$(echo "$COMMITS" | grep -cE '!:' || echo 0)
-          
-          # Determine bump type
+
+          FEAT=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ feat' || true)
+          FIX=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ fix' || true)
+          REFACTOR=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ refactor' || true)
+          PERF=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ perf' || true)
+          BREAKING=$(echo "$COMMITS" | grep -cE '!:' || true)
+          CHORE=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ chore' || true)
+          DOCS=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ docs' || true)
+          CI=$(echo "$COMMITS" | grep -cE '^[a-f0-9]+ ci' || true)
+
           if [ "$BREAKING" -gt 0 ] || [ "$FEAT" -gt 0 ]; then
             BUMP="minor"
           elif [ "$FIX" -gt 0 ] || [ "$REFACTOR" -gt 0 ] || [ "$PERF" -gt 0 ]; then
@@ -67,14 +66,20 @@ jobs:
           else
             BUMP="none"
           fi
-          
+
           echo "bump=$BUMP" >> $GITHUB_OUTPUT
           echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "total_commits=$TOTAL" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
           echo "feat=$FEAT" >> $GITHUB_OUTPUT
           echo "fix=$FIX" >> $GITHUB_OUTPUT
-          
-          echo "📊 Analysis: $TOTAL commits, bump=$BUMP (feat=$FEAT, fix=$FIX, refactor=$REFACTOR, perf=$PERF, breaking=$BREAKING)"
+          echo "refactor=$REFACTOR" >> $GITHUB_OUTPUT
+          echo "perf=$PERF" >> $GITHUB_OUTPUT
+          echo "breaking=$BREAKING" >> $GITHUB_OUTPUT
+          echo "chore=$CHORE" >> $GITHUB_OUTPUT
+          echo "docs=$DOCS" >> $GITHUB_OUTPUT
+          echo "ci=$CI" >> $GITHUB_OUTPUT
+
+          echo "📊 Analysis: $TOTAL commits | bump=$BUMP"
 
       - name: Calculate new version
         id: version
@@ -82,16 +87,13 @@ jobs:
         run: |
           BUMP=${{ steps.analyze.outputs.bump }}
           CURRENT=${{ steps.analyze.outputs.current }}
-          
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
           MINOR=$(echo "$CURRENT" | cut -d. -f2)
           PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          
           case $BUMP in
             minor) NEW="$MAJOR.$((MINOR + 1)).0" ;;
             patch) NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
           esac
-          
           echo "new=$NEW" >> $GITHUB_OUTPUT
           echo "tag=v$NEW" >> $GITHUB_OUTPUT
           echo "🎯 Version bump: $CURRENT → $NEW ($BUMP)"
@@ -100,33 +102,29 @@ jobs:
         if: steps.version.outputs.new != ''
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        if: steps.version.outputs.new != ''
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Apply version bump
         if: steps.version.outputs.new != ''
         run: |
           NEW=${{ steps.version.outputs.new }}
-          
-          # Update VERSION file
           echo "$NEW" > VERSION
-          
-          # Update Cargo.toml
           sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
-          
-          # Update src/lib.rs
-          if [ -f src/lib.rs ]; then
-            sed -i "s/pub const VERSION: \&str = \".*\";/pub const VERSION: \&str = \"$NEW\";/" src/lib.rs
-          fi
-          
-          # Update CHANGELOG.md
+          [ -f src/lib.rs ] && sed -i "s/pub const VERSION: \&str = \".*\";/pub const VERSION: \&str = \"$NEW\";/" src/lib.rs
           if [ -f CHANGELOG.md ]; then
             TODAY=$(date +%Y-%m-%d)
             sed -i "s/## \[Unreleased\]/## [Unreleased]\n\n### Added\n\n### Changed\n\n### Fixed\n\n---\n\n## [$NEW] - $TODAY/" CHANGELOG.md
           fi
-          
-          # Commit version bump
           git add VERSION Cargo.toml src/lib.rs CHANGELOG.md
           git commit -m "chore: bump version to $NEW [skip ci]"
-          
-          # Create and push tag
           git tag -a "v$NEW" -m "Release v$NEW"
           git push origin main --tags
 
@@ -134,45 +132,93 @@ jobs:
         if: steps.version.outputs.new != ''
         run: cargo build --release
 
-      - name: Generate release notes
+      - name: Generate professional release notes
         id: notes
         if: steps.version.outputs.new != ''
         run: |
           NEW=${{ steps.version.outputs.new }}
           CURRENT=${{ steps.analyze.outputs.current }}
-          
-          NOTES="## What's Changed in v${NEW}\n\n"
-          
-          # Auto-generate from commits
-          FEATS=$(git log "v${CURRENT}..v${NEW}" --oneline --grep="^feat" 2>/dev/null)
-          FIXES=$(git log "v${CURRENT}..v${NEW}" --oneline --grep="^fix" 2>/dev/null)
-          OTHERS=$(git log "v${CURRENT}..v${NEW}" --oneline --grep="^refactor\|^perf\|^chore\|^ci" 2>/dev/null)
-          
-          if [ -n "$FEATS" ]; then
-            NOTES="${NOTES}### ✨ Features\n"
-            echo "$FEATS" | while read line; do NOTES="${NOTES}- ${line}\n"; done
-            NOTES="${NOTES}\n"
-          fi
-          
-          if [ -n "$FIXES" ]; then
-            NOTES="${NOTES}### 🐛 Bug Fixes\n"
-            echo "$FIXES" | while read line; do NOTES="${NOTES}- ${line}\n"; done
-            NOTES="${NOTES}\n"
-          fi
-          
-          NOTES="${NOTES}**Full Changelog**: https://github.com/${{ github.repository }}/compare/v${CURRENT}...v${NEW}"
-          
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$NOTES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          TOTAL=${{ steps.analyze.outputs.total }}
+          FEAT=${{ steps.analyze.outputs.feat }}
+          FIX=${{ steps.analyze.outputs.fix }}
+          REFACTOR=${{ steps.analyze.outputs.refactor }}
+          PERF=${{ steps.analyze.outputs.perf }}
+          BREAKING=${{ steps.analyze.outputs.breaking }}
+          CHORE=${{ steps.analyze.outputs.chore }}
+          DOCS=${{ steps.analyze.outputs.docs }}
+          CI=${{ steps.analyze.outputs.ci }}
+
+          {
+            echo "# NEXUS-AI-Gateway v${NEW}"
+            echo ""
+            echo "> **Version**: ${NEW} | **Previous**: ${CURRENT} | **Commits**: ${TOTAL} | **Date**: $(date +%Y-%m-%d)"
+            echo ""
+            echo "---"
+            echo ""
+
+            FEAT_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- feat" || true)
+            if [ -n "$FEAT_LIST" ]; then
+              echo "## ✨ New Features"
+              echo ""
+              echo "$FEAT_LIST"
+              echo ""
+            fi
+
+            FIX_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- fix" || true)
+            if [ -n "$FIX_LIST" ]; then
+              echo "## 🐛 Bug Fixes"
+              echo ""
+              echo "$FIX_LIST"
+              echo ""
+            fi
+
+            REFACTOR_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- (refactor|perf)" || true)
+            if [ -n "$REFACTOR_LIST" ]; then
+              echo "## ♻️ Refactoring & Performance"
+              echo ""
+              echo "$REFACTOR_LIST"
+              echo ""
+            fi
+
+            OTHER_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- (chore|ci|docs|build|style|test)" || true)
+            if [ -n "$OTHER_LIST" ]; then
+              echo "## 🔧 Maintenance"
+              echo ""
+              echo "$OTHER_LIST"
+              echo ""
+            fi
+
+            echo "---"
+            echo ""
+            echo "### 📊 Release Statistics"
+            echo ""
+            echo "| Type | Count |"
+            echo "|:-----|------:|"
+            [ "$FEAT" -gt 0 ] && echo "| ✨ Features | $FEAT |"
+            [ "$FIX" -gt 0 ] && echo "| 🐛 Bug Fixes | $FIX |"
+            [ "$REFACTOR" -gt 0 ] && echo "| ♻️ Refactoring | $REFACTOR |"
+            [ "$PERF" -gt 0 ] && echo "| ⚡ Performance | $PERF |"
+            [ "$CHORE" -gt 0 ] && echo "| 🔧 Chores | $CHORE |"
+            [ "$DOCS" -gt 0 ] && echo "| 📝 Documentation | $DOCS |"
+            [ "$CI" -gt 0 ] && echo "| 🔄 CI/CD | $CI |"
+            echo "| **Total** | **$TOTAL** |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/v${CURRENT}...v${NEW}"
+            echo ""
+            echo "*Released by [Auto Version & Release](https://github.com/${{ github.repository }}/actions/workflows/auto-version.yml) · Authored by @enerBydev*"
+          } > /tmp/release_notes.md
+
+          echo "body_path=/tmp/release_notes.md" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: steps.version.outputs.new != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Release ${{ steps.version.outputs.tag }}
-          body: ${{ steps.notes.outputs.body }}
+          name: "NEXUS-AI-Gateway ${{ steps.version.outputs.tag }}"
+          body_path: ${{ steps.notes.outputs.body_path }}
           files: target/release/nexus-ai-gateway
           draft: false
           prerelease: false
