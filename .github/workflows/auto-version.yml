@@ -132,82 +132,62 @@ jobs:
         if: steps.version.outputs.new != ''
         run: cargo build --release
 
-      - name: Generate professional release notes
+      - name: Generate release notes
         id: notes
         if: steps.version.outputs.new != ''
         run: |
           NEW=${{ steps.version.outputs.new }}
           CURRENT=${{ steps.analyze.outputs.current }}
-          TOTAL=${{ steps.analyze.outputs.total }}
-          FEAT=${{ steps.analyze.outputs.feat }}
-          FIX=${{ steps.analyze.outputs.fix }}
-          REFACTOR=${{ steps.analyze.outputs.refactor }}
-          PERF=${{ steps.analyze.outputs.perf }}
-          BREAKING=${{ steps.analyze.outputs.breaking }}
-          CHORE=${{ steps.analyze.outputs.chore }}
-          DOCS=${{ steps.analyze.outputs.docs }}
-          CI=${{ steps.analyze.outputs.ci }}
+
+          # Extract commit subjects, strip conventional commit prefix for clean descriptions
+          FEAT_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^feat" || true)
+          FIX_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^fix" || true)
+          REFACTOR_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^(refactor|perf)" || true)
+          SECURITY_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -iE "security|audit|vulnerabilit" || true)
+          OTHER_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^(chore|ci|docs|build|style|test)" || true)
 
           {
-            echo "# NEXUS-AI-Gateway v${NEW}"
-            echo ""
-            echo "> **Version**: ${NEW} | **Previous**: ${CURRENT} | **Commits**: ${TOTAL} | **Date**: $(date +%Y-%m-%d)"
-            echo ""
-            echo "---"
-            echo ""
-
-            FEAT_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- feat" || true)
-            if [ -n "$FEAT_LIST" ]; then
-              echo "## ✨ New Features"
-              echo ""
-              echo "$FEAT_LIST"
+            # === Added section (from feat commits) ===
+            if [ -n "$FEAT_RAW" ]; then
+              echo "### Added"
+              echo "$FEAT_RAW" | while IFS= read -r line; do
+                # Strip prefix: "feat(scope): msg" → "msg" or "feat: msg" → "msg"
+                CLEAN=$(echo "$line" | sed 's/^feat\([^)]*\)\?: //')
+                echo "- ${CLEAN^}"
+              done
               echo ""
             fi
 
-            FIX_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- fix" || true)
-            if [ -n "$FIX_LIST" ]; then
-              echo "## 🐛 Bug Fixes"
-              echo ""
-              echo "$FIX_LIST"
-              echo ""
-            fi
-
-            REFACTOR_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- (refactor|perf)" || true)
-            if [ -n "$REFACTOR_LIST" ]; then
-              echo "## ♻️ Refactoring & Performance"
-              echo ""
-              echo "$REFACTOR_LIST"
+            # === Changed section (from refactor/perf/chore commits) ===
+            CHANGED_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^(refactor|perf|chore|ci|docs)" || true)
+            if [ -n "$CHANGED_RAW" ]; then
+              echo "### Changed"
+              echo "$CHANGED_RAW" | while IFS= read -r line; do
+                CLEAN=$(echo "$line" | sed 's/^[a-z]*\([^)]*\)\?: //')
+                echo "- ${CLEAN^}"
+              done
               echo ""
             fi
 
-            OTHER_LIST=$(git log "v${CURRENT}..HEAD~1" --format="- %s (\`%h\`)" | grep -E "^- (chore|ci|docs|build|style|test)" || true)
-            if [ -n "$OTHER_LIST" ]; then
-              echo "## 🔧 Maintenance"
-              echo ""
-              echo "$OTHER_LIST"
+            # === Fixed section (from fix commits) ===
+            if [ -n "$FIX_RAW" ]; then
+              echo "### Fixed"
+              echo "$FIX_RAW" | while IFS= read -r line; do
+                CLEAN=$(echo "$line" | sed 's/^fix\([^)]*\)\?: //')
+                echo "- ${CLEAN^}"
+              done
               echo ""
             fi
 
-            echo "---"
-            echo ""
-            echo "### 📊 Release Statistics"
-            echo ""
-            echo "| Type | Count |"
-            echo "|:-----|------:|"
-            [ "$FEAT" -gt 0 ] && echo "| ✨ Features | $FEAT |"
-            [ "$FIX" -gt 0 ] && echo "| 🐛 Bug Fixes | $FIX |"
-            [ "$REFACTOR" -gt 0 ] && echo "| ♻️ Refactoring | $REFACTOR |"
-            [ "$PERF" -gt 0 ] && echo "| ⚡ Performance | $PERF |"
-            [ "$CHORE" -gt 0 ] && echo "| 🔧 Chores | $CHORE |"
-            [ "$DOCS" -gt 0 ] && echo "| 📝 Documentation | $DOCS |"
-            [ "$CI" -gt 0 ] && echo "| 🔄 CI/CD | $CI |"
-            echo "| **Total** | **$TOTAL** |"
-            echo ""
-            echo "---"
-            echo ""
-            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/v${CURRENT}...v${NEW}"
-            echo ""
-            echo "*Released by [Auto Version & Release](https://github.com/${{ github.repository }}/actions/workflows/auto-version.yml) · Authored by @enerBydev*"
+            # === Security section ===
+            if [ -n "$SECURITY_RAW" ]; then
+              echo "### Security"
+              echo "$SECURITY_RAW" | while IFS= read -r line; do
+                CLEAN=$(echo "$line" | sed 's/^[a-z]*\([^)]*\)\?: //')
+                echo "- ${CLEAN^}"
+              done
+              echo ""
+            fi
           } > /tmp/release_notes.md
 
           echo "body_path=/tmp/release_notes.md" >> $GITHUB_OUTPUT
@@ -217,7 +197,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "NEXUS-AI-Gateway ${{ steps.version.outputs.tag }}"
+          name: "${{ steps.version.outputs.tag }}"
           body_path: ${{ steps.notes.outputs.body_path }}
           files: target/release/nexus-ai-gateway
           draft: false
