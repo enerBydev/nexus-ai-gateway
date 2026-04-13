@@ -1052,6 +1052,8 @@ fn create_sse_stream(
         let mut accumulated_output_tokens: u32 = 0;
         // v6.1: Buffer stop_reason so message_delta is emitted at [DONE] with real token counts
         let mut saved_stop_reason: Option<String> = None;
+        // v6.2: Track if reasoning stream was poisoned by </previous_reasoning> XML
+        let mut reasoning_poisoned = false;
 
         tokio::pin!(stream);
 
@@ -1135,32 +1137,56 @@ fn create_sse_stream(
                                         let reasoning_val = choice.delta.reasoning_content.as_ref()
                                             .or(choice.delta.reasoning.as_ref());
                                         if let Some(reasoning) = reasoning_val {
-                                            if current_block_type.is_none() {
-                                                let event = json!({
-                                                    "type": "content_block_start",
-                                                    "index": content_index,
-                                                    "content_block": {
-                                                        "type": "thinking",
-                                                        "thinking": ""
-                                                    }
-                                                });
-                                                let sse_data = format!("event: content_block_start\ndata: {}\n\n",
-                                                    serde_json::to_string(&event).unwrap_or_default());
-                                                yield Ok(Bytes::from(sse_data));
-                                                current_block_type = Some("thinking".to_string());
-                                            }
+                                            // v6.2: Skip if reasoning was already poisoned
+                                            if reasoning_poisoned {
+                                                // Discard — model is emitting tool call XML inside reasoning
+                                                tracing::debug!("🧹 Discarding poisoned reasoning chunk");
+                                            } else {
+                                                // Check if this chunk contains the poison delimiter
+                                                let emit_text = if let Some(pos) = reasoning.find("</previous_reasoning>") {
+                                                    reasoning_poisoned = true;
+                                                    let clean = &reasoning[..pos];
+                                                    tracing::info!("🧹 Reasoning sanitized: cut at </previous_reasoning> ({} chars discarded)",
+                                                        reasoning.len() - pos);
+                                                    if clean.trim().is_empty() { None } else { Some(clean.to_string()) }
+                                                } else if reasoning.contains("<tool_call>") {
+                                                    reasoning_poisoned = true;
+                                                    let clean = reasoning.split("<tool_call>").next().unwrap_or("");
+                                                    tracing::info!("🧹 Reasoning sanitized: cut at <tool_call>");
+                                                    if clean.trim().is_empty() { None } else { Some(clean.to_string()) }
+                                                } else {
+                                                    Some(reasoning.to_string())
+                                                };
 
-                                            let event = json!({
-                                                "type": "content_block_delta",
-                                                "index": content_index,
-                                                "delta": {
-                                                    "type": "thinking_delta",
-                                                    "thinking": reasoning
+                                                if let Some(text_to_emit) = emit_text {
+                                                    if current_block_type.is_none() {
+                                                        let event = json!({
+                                                            "type": "content_block_start",
+                                                            "index": content_index,
+                                                            "content_block": {
+                                                                "type": "thinking",
+                                                                "thinking": ""
+                                                            }
+                                                        });
+                                                        let sse_data = format!("event: content_block_start\ndata: {}\n\n",
+                                                            serde_json::to_string(&event).unwrap_or_default());
+                                                        yield Ok(Bytes::from(sse_data));
+                                                        current_block_type = Some("thinking".to_string());
+                                                    }
+
+                                                    let event = json!({
+                                                        "type": "content_block_delta",
+                                                        "index": content_index,
+                                                        "delta": {
+                                                            "type": "thinking_delta",
+                                                            "thinking": text_to_emit
+                                                        }
+                                                    });
+                                                    let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
+                                                        serde_json::to_string(&event).unwrap_or_default());
+                                                    yield Ok(Bytes::from(sse_data));
                                                 }
-                                            });
-                                            let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
-                                                serde_json::to_string(&event).unwrap_or_default());
-                                            yield Ok(Bytes::from(sse_data));
+                                            }
                                         }
 
                                         if let Some(content) = &choice.delta.content {
