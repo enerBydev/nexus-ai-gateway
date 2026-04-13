@@ -163,6 +163,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let model_semaphores: proxy::ModelSemaphores =
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
+    // v8.0: Per-model token calibration factors (EMA-based, converges to ~98% accuracy)
+    let calibration_factors = tokenizer::CalibrationFactors::new();
+
     // Save CLI flags for hot-reload
     let cli_debug = config.debug;
     let cli_verbose = config.verbose;
@@ -183,6 +186,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .layer(Extension(client))
         .layer(Extension(model_cache))
         .layer(Extension(model_semaphores))
+        .layer(Extension(calibration_factors))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 

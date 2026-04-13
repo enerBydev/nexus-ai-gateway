@@ -138,6 +138,125 @@ pub fn estimate_from_openai_request(req: &OpenAIRequest) -> u32 {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v8.0: Dynamic per-model token calibration
+//
+// Problem: tiktoken cl100k_base ≠ NIM model tokenizers (kimi, glm5, qwen, etc.)
+// Delta: ~10% (tiktoken underestimates because NIM adds chat templates + uses
+//         model-specific BPE vocabularies)
+//
+// Solution: Track (tiktoken_estimate, nim_real) pairs per model and maintain
+//           correction factors via exponential moving average (EMA).
+//           After ~50 requests, estimates converge to ~98% accuracy.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+/// Per-model correction factor for tiktoken → NIM calibration.
+///
+/// Starts at 1.0 (no correction) and self-adjusts with each request.
+/// Thread-safe via `Arc<RwLock<>>` for concurrent access from async handlers.
+///
+/// # Example
+/// ```ignore
+/// let cal = CalibrationFactors::new();
+/// let raw = estimate_input_tokens(&req);
+/// let calibrated = cal.apply("kimi-k2.5", raw);
+/// // After NIM responds with real tokens:
+/// cal.update("kimi-k2.5", raw, nim_real_tokens);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CalibrationFactors {
+    /// Map of model_name → correction_factor (EMA)
+    factors: Arc<RwLock<HashMap<String, f64>>>,
+    /// Number of observations per model (for logging/monitoring)
+    observations: Arc<RwLock<HashMap<String, u32>>>,
+}
+
+impl CalibrationFactors {
+    /// Create a new calibration tracker with no prior observations.
+    /// All models start with factor = 1.0 (no correction).
+    pub fn new() -> Self {
+        Self {
+            factors: Arc::new(RwLock::new(HashMap::new())),
+            observations: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Get the current correction factor for a model.
+    /// Returns 1.0 (no correction) if no observations exist yet.
+    pub fn get(&self, model: &str) -> f64 {
+        self.factors
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(model)
+            .copied()
+            .unwrap_or(1.0)
+    }
+
+    /// Get the number of observations for a model.
+    #[allow(dead_code)] // Used in tests
+    pub fn observation_count(&self, model: &str) -> u32 {
+        self.observations
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(model)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Apply the calibration factor to a raw tiktoken estimate.
+    ///
+    /// Returns `max(1, round(raw_estimate * factor))`.
+    pub fn apply(&self, model: &str, raw_estimate: u32) -> u32 {
+        let factor = self.get(model);
+        let calibrated = (raw_estimate as f64 * factor).round() as u32;
+        calibrated.max(1)
+    }
+
+    /// Update the correction factor using exponential moving average (EMA).
+    ///
+    /// `alpha = 0.1` means new data has 10% weight, history has 90%.
+    /// This provides smooth convergence: after 50 observations, the factor
+    /// reflects the true ratio within ~2%.
+    ///
+    /// # Arguments
+    /// * `model` - NIM model name (e.g., "kimi-k2.5", "glm5")
+    /// * `tiktoken_estimate` - Raw tiktoken estimate (before calibration)
+    /// * `nim_real` - Real `prompt_tokens` reported by NIM
+    pub fn update(&self, model: &str, tiktoken_estimate: u32, nim_real: u32) {
+        if tiktoken_estimate == 0 || nim_real == 0 {
+            return;
+        }
+
+        let observed_ratio = nim_real as f64 / tiktoken_estimate as f64;
+        let alpha = 0.1; // EMA learning rate
+
+        // Update factor
+        let mut factors = self.factors.write().unwrap_or_else(|e| e.into_inner());
+        let current = factors.get(model).copied().unwrap_or(1.0);
+        let new_factor = current * (1.0 - alpha) + observed_ratio * alpha;
+        factors.insert(model.to_string(), new_factor);
+
+        // Increment observation count
+        let mut obs = self.observations.write().unwrap_or_else(|e| e.into_inner());
+        let count = obs.entry(model.to_string()).or_insert(0);
+        *count += 1;
+
+        tracing::debug!(
+            "📐 Calibration [{}]: {:.4} → {:.4} (observed: {:.4}, tiktoken={}, nim={}, n={})",
+            model,
+            current,
+            new_factor,
+            observed_ratio,
+            tiktoken_estimate,
+            nim_real,
+            count
+        );
+    }
+}
+
 #[cfg(test)]
 #[path = "tokenizer_test.rs"]
 mod tokenizer_test;

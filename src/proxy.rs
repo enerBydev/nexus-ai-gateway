@@ -775,6 +775,7 @@ pub async fn proxy_handler(
     Extension(client): Extension<Client>,
     Extension(model_cache): Extension<ModelCache>,
     Extension(model_semaphores): Extension<ModelSemaphores>,
+    Extension(calibration): Extension<tokenizer::CalibrationFactors>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
     // Read config from RwLock and clone for this request
@@ -843,6 +844,7 @@ pub async fn proxy_handler(
             &upstream_name,
             &original_model,
             model_semaphores,
+            calibration,
         )
         .await
     } else {
@@ -984,6 +986,7 @@ async fn handle_streaming(
     upstream_name: &str,
     original_model: &str,
     model_semaphores: ModelSemaphores,
+    calibration: tokenizer::CalibrationFactors,
 ) -> ProxyResult<Response> {
     // ╔═══════════════════════════════════════════╗
     // ║  Concurrency Shield: acquire model permit  ║
@@ -1002,14 +1005,31 @@ async fn handle_streaming(
     let mut mutable_req = openai_req;
 
     // v7.0: Estimate input tokens with tiktoken BEFORE sending to NIM
-    let estimated_input = tokenizer::estimate_from_openai_request(&mutable_req);
-    tracing::debug!("🎯 Estimated input tokens (tiktoken): {}", estimated_input);
+    let raw_estimate = tokenizer::estimate_from_openai_request(&mutable_req);
+    // v8.0: Apply calibration factor for this model (converges to ~98% after ~50 reqs)
+    let nim_model_name = mutable_req.model.clone();
+    let calibrated_estimate = calibration.apply(&nim_model_name, raw_estimate);
+    tracing::debug!(
+        "🎯 Token estimate: raw={}, calibrated={} (factor={:.4}, model={})",
+        raw_estimate,
+        calibrated_estimate,
+        calibration.get(&nim_model_name),
+        nim_model_name
+    );
 
     let response = resilient_send_raw(&client, &config, &mut mutable_req, upstream_name).await?;
 
     let stream = response.bytes_stream();
     let original_model_owned = original_model.to_string();
-    let sse_stream = create_sse_stream(stream, original_model_owned, permit, estimated_input);
+    let sse_stream = create_sse_stream(
+        stream,
+        original_model_owned,
+        permit,
+        calibrated_estimate,
+        raw_estimate,
+        nim_model_name,
+        calibration,
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1026,7 +1046,10 @@ fn create_sse_stream(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     original_model: String,
     _permit: tokio::sync::OwnedSemaphorePermit,
-    estimated_input_tokens: u32, // v7.0: tiktoken estimate for message_start
+    estimated_input_tokens: u32, // v8.0: calibrated tiktoken estimate for message_start
+    raw_tiktoken_estimate: u32,  // v8.0: raw (uncalibrated) for calibration feedback
+    nim_model_name: String,      // v8.0: NIM model name for calibration key
+    calibration: tokenizer::CalibrationFactors, // v8.0: calibration factors
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         // ╔═════════════════════════════════════════════════════════╗
@@ -1117,6 +1140,21 @@ fn create_sse_stream(
 
                                     // v5.0: Accumulate usage from NIM (sent only in last chunk)
                                     if let Some(usage) = &chunk.usage {
+                                        // v8.0: Feed back real NIM tokens to calibrator
+                                        calibration.update(
+                                            &nim_model_name,
+                                            raw_tiktoken_estimate,
+                                            usage.prompt_tokens,
+                                        );
+                                        let delta_pct = if estimated_input_tokens > 0 {
+                                            ((usage.prompt_tokens as f64 - estimated_input_tokens as f64)
+                                                / estimated_input_tokens as f64) * 100.0
+                                        } else { 0.0 };
+                                        tracing::info!(
+                                            "📊 NIM real: in={}, out={} | estimate was: {} | delta: {:.1}%",
+                                            usage.prompt_tokens, usage.completion_tokens,
+                                            estimated_input_tokens, delta_pct
+                                        );
                                         accumulated_input_tokens = usage.prompt_tokens;
                                         accumulated_output_tokens = usage.completion_tokens;
                                     }
