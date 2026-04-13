@@ -213,3 +213,133 @@ fn estimate_system_prompt_array() {
         tokens
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v8.0: CalibrationFactors tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn calibration_starts_at_1() {
+    let cal = CalibrationFactors::new();
+    assert!(
+        (cal.get("unknown-model") - 1.0).abs() < f64::EPSILON,
+        "New model should start with factor 1.0"
+    );
+    assert_eq!(
+        cal.observation_count("unknown-model"),
+        0,
+        "New model should have 0 observations"
+    );
+}
+
+#[test]
+fn calibration_adjusts_with_feedback() {
+    let cal = CalibrationFactors::new();
+    // tiktoken says 1000, NIM says 1100 → observed ratio = 1.1
+    cal.update("test-model", 1000, 1100);
+
+    let factor = cal.get("test-model");
+    // With alpha=0.1: 1.0 * 0.9 + 1.1 * 0.1 = 1.01
+    assert!(
+        (factor - 1.01).abs() < 0.001,
+        "After 1 update with ratio 1.1, factor should be ~1.01, got {}",
+        factor
+    );
+    assert_eq!(cal.observation_count("test-model"), 1);
+
+    // Apply should use the updated factor
+    let calibrated = cal.apply("test-model", 1000);
+    assert_eq!(
+        calibrated, 1010,
+        "apply(1000) with factor 1.01 should = 1010"
+    );
+}
+
+#[test]
+fn calibration_converges() {
+    let cal = CalibrationFactors::new();
+    // Simulate 50 requests where NIM always reports 10% more than tiktoken
+    for _ in 0..50 {
+        cal.update("kimi-k2.5", 1000, 1100);
+    }
+    let factor = cal.get("kimi-k2.5");
+    // After 50 EMA updates with constant ratio 1.1, factor converges to ~1.1
+    assert!(
+        (factor - 1.1).abs() < 0.01,
+        "After 50 updates with constant ratio 1.1, factor should converge to ~1.1, got {:.4}",
+        factor
+    );
+    assert_eq!(cal.observation_count("kimi-k2.5"), 50);
+
+    // Calibrated estimate should now be very close to NIM real
+    let calibrated = cal.apply("kimi-k2.5", 1000);
+    assert!(
+        (calibrated as i64 - 1100).abs() < 15,
+        "Calibrated should be ~1100, got {}",
+        calibrated
+    );
+}
+
+#[test]
+fn calibration_thread_safe() {
+    use std::thread;
+    let cal = CalibrationFactors::new();
+
+    // Spawn 10 threads each doing 100 updates
+    let mut handles = vec![];
+    for i in 0..10 {
+        let cal_clone = cal.clone();
+        let model = format!("model-{}", i);
+        handles.push(thread::spawn(move || {
+            for _ in 0..100 {
+                cal_clone.update(&model, 1000, 1100 + i * 10);
+            }
+            cal_clone.get(&model)
+        }));
+    }
+
+    for (i, handle) in handles.into_iter().enumerate() {
+        let factor = handle.join().unwrap();
+        let expected_ratio = (1100 + i as u32 * 10) as f64 / 1000.0;
+        assert!(
+            (factor - expected_ratio).abs() < 0.02,
+            "Thread {} factor should converge to {:.2}, got {:.4}",
+            i,
+            expected_ratio,
+            factor
+        );
+    }
+}
+
+#[test]
+fn calibration_ignores_zero_values() {
+    let cal = CalibrationFactors::new();
+    cal.update("test", 0, 1000);
+    assert!(
+        (cal.get("test") - 1.0).abs() < f64::EPSILON,
+        "Zero tiktoken should not update factor"
+    );
+    cal.update("test", 1000, 0);
+    assert!(
+        (cal.get("test") - 1.0).abs() < f64::EPSILON,
+        "Zero NIM should not update factor"
+    );
+    assert_eq!(cal.observation_count("test"), 0, "No valid observations");
+}
+
+#[test]
+fn calibration_multi_model_independent() {
+    let cal = CalibrationFactors::new();
+    // Model A: ratio 1.1
+    for _ in 0..20 {
+        cal.update("model-a", 1000, 1100);
+    }
+    // Model B: ratio 0.95
+    for _ in 0..20 {
+        cal.update("model-b", 1000, 950);
+    }
+    let a = cal.get("model-a");
+    let b = cal.get("model-b");
+    assert!(a > 1.05, "Model A should have factor > 1.05, got {:.4}", a);
+    assert!(b < 0.98, "Model B should have factor < 0.98, got {:.4}", b);
+}
