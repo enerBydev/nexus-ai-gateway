@@ -288,6 +288,47 @@ fn ensure_valid_schema(mut schema: Value) -> Value {
     schema
 }
 
+/// Sanitize reasoning_content from NIM models that embed tool calls
+/// inside the reasoning block.
+///
+/// GLM5 uses: "actual reasoning</previous_reasoning><tool_call>XML</tool_call>"
+/// Kimi K2.5 uses: clean format (no sanitization needed)
+///
+/// This function:
+/// 1. Cuts everything after </previous_reasoning> (if present)
+/// 2. Removes any <tool_call>...</tool_call> blocks
+/// 3. Cleans stray XML tags from NIM
+pub fn sanitize_reasoning(raw: &str) -> String {
+    let mut clean = raw.to_string();
+
+    // 1. Cut at </previous_reasoning> delimiter
+    if let Some(pos) = clean.find("</previous_reasoning>") {
+        clean = clean[..pos].to_string();
+    }
+
+    // 2. Remove <tool_call>...</tool_call> blocks
+    while let Some(start) = clean.find("<tool_call>") {
+        if let Some(end) = clean.find("</tool_call>") {
+            let end_pos = end + "</tool_call>".len();
+            clean = format!("{}{}", &clean[..start], &clean[end_pos..]);
+        } else {
+            // Opening tag without close — truncate from there
+            clean = clean[..start].to_string();
+            break;
+        }
+    }
+
+    // 3. Clean stray XML tags common in NIM reasoning output
+    clean = clean
+        .replace("<previous_reasoning>", "")
+        .replace("<arg_key>", "")
+        .replace("</arg_key>", "")
+        .replace("<arg_value>", "")
+        .replace("</arg_value>", "");
+
+    clean.trim().to_string()
+}
+
 /// Transform OpenAI response to Anthropic format
 /// Phase 6: Now receives original_model to preserve ClaudeModelID in response
 pub fn openai_to_anthropic(
@@ -309,10 +350,11 @@ pub fn openai_to_anthropic(
         .as_ref()
         .or(choice.message.reasoning.as_ref());
     if let Some(reasoning) = reasoning_val {
-        if !reasoning.is_empty() {
+        let clean = sanitize_reasoning(reasoning);
+        if !clean.is_empty() {
             content.push(anthropic::ResponseContent::Thinking {
                 content_type: "thinking".to_string(),
-                thinking: reasoning.clone(),
+                thinking: clean,
             });
         }
     }
@@ -396,3 +438,7 @@ pub fn map_stop_reason(finish_reason: Option<&str>, has_tool_calls: bool) -> Opt
         .to_string()
     })
 }
+
+#[cfg(test)]
+#[path = "transform_test.rs"]
+mod transform_test;

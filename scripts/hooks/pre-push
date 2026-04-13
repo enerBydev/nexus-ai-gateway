@@ -73,6 +73,37 @@ while read local_ref local_sha remote_ref remote_sha; do
 
         echo ""
         echo "✅ Pre-push validation passed"
+
+        # ═══════════════════════════════════════════
+        # Auto-deploy: rebuild + restart after push
+        # Runs in background so git push completes first
+        # ═══════════════════════════════════════════
+        (
+            # Wait for push to complete
+            sleep 3
+
+            echo ""
+            echo "🔄 Auto-deploy: building release binary..."
+            if cargo install --path . --force 2>&1 | tail -3; then
+                INSTALLED_VERSION=$(nexus-ai-gateway --version 2>/dev/null | awk '{print $2}')
+                echo "✅ Binary updated to v${INSTALLED_VERSION}"
+
+                # Restart systemd service if active
+                if systemctl --user is-active nexus-ai-gateway >/dev/null 2>&1; then
+                    systemctl --user restart nexus-ai-gateway
+                    sleep 1
+                    if systemctl --user is-active nexus-ai-gateway >/dev/null 2>&1; then
+                        echo "✅ Service restarted successfully"
+                    else
+                        echo "❌ Service failed to start — check: journalctl --user -u nexus-ai-gateway"
+                    fi
+                else
+                    echo "ℹ️  Service not running — binary updated but not started"
+                fi
+            else
+                echo "❌ Build failed — service NOT updated (previous binary still running)"
+            fi
+        ) &
     fi
 done
 
