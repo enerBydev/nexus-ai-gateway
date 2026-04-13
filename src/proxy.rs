@@ -1,6 +1,7 @@
 use crate::config::{Config, SharedConfig};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
+use crate::tokenizer;
 use crate::transform;
 use crate::web_fetch;
 use axum::{
@@ -999,11 +1000,16 @@ async fn handle_streaming(
 
     // === Resilient send with auto-retry on 429/400 ===
     let mut mutable_req = openai_req;
+
+    // v7.0: Estimate input tokens with tiktoken BEFORE sending to NIM
+    let estimated_input = tokenizer::estimate_from_openai_request(&mutable_req);
+    tracing::debug!("🎯 Estimated input tokens (tiktoken): {}", estimated_input);
+
     let response = resilient_send_raw(&client, &config, &mut mutable_req, upstream_name).await?;
 
     let stream = response.bytes_stream();
     let original_model_owned = original_model.to_string();
-    let sse_stream = create_sse_stream(stream, original_model_owned, permit);
+    let sse_stream = create_sse_stream(stream, original_model_owned, permit, estimated_input);
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1020,6 +1026,7 @@ fn create_sse_stream(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     original_model: String,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    estimated_input_tokens: u32, // v7.0: tiktoken estimate for message_start
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         // ╔═════════════════════════════════════════════════════════╗
@@ -1047,8 +1054,8 @@ fn create_sse_stream(
         let mut _fetch_tool_id_buf: Option<String> = None;
         let mut fetch_args_buffer = String::new();
         let mut suppressed_block_start = false;
-        // v5.0: Fix 0-tokens — accumulate usage from NIM streaming chunks
-        let mut accumulated_input_tokens: u32 = 0;
+        // v7.0: Initialize with tiktoken estimate — NIM real tokens override at [DONE]
+        let mut accumulated_input_tokens: u32 = estimated_input_tokens;
         let mut accumulated_output_tokens: u32 = 0;
         // v6.1: Buffer stop_reason so message_delta is emitted at [DONE] with real token counts
         let mut saved_stop_reason: Option<String> = None;
@@ -1123,8 +1130,12 @@ fn create_sse_stream(
                                                     role: "assistant".to_string(),
                                                     model: original_model_owned.clone(),  // Phase 7: use original ClaudeModelID
                                                     usage: anthropic::Usage {
-                                                        input_tokens: chunk.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
-                                                        output_tokens: chunk.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+                                                        // v7.0: Use tiktoken estimate (>0) instead of always-zero
+                                                        input_tokens: chunk.usage.as_ref()
+                                                            .map(|u| u.prompt_tokens)
+                                                            .filter(|&t| t > 0)
+                                                            .unwrap_or(estimated_input_tokens),
+                                                        output_tokens: 0,  // Per Anthropic spec: always 0 at start
                                                     },
                                                 },
                                             };
@@ -1132,6 +1143,7 @@ fn create_sse_stream(
                                                 serde_json::to_string(&event).unwrap_or_default());
                                             yield Ok(Bytes::from(sse_data));
                                             has_sent_message_start = true;
+                                            tracing::info!("📊 message_start: estimated_input={}", estimated_input_tokens);
                                         }
 
                                         let reasoning_val = choice.delta.reasoning_content.as_ref()
