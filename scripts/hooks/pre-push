@@ -92,6 +92,18 @@ while read local_ref local_sha remote_ref remote_sha; do
             else
                 echo "❌ Build failed — service NOT updated (previous binary still running)"
             fi
+
+            # Auto-sync: wait for GitHub Actions auto-version commit, then pull
+            # This prevents local vs remote version desync (e.g., local 0.7.0 vs remote 0.8.0)
+            echo ""
+            echo "⏳ Waiting for GitHub Actions auto-version (90s)..."
+            sleep 90
+            if git pull --ff-only origin main 2>&1 | tail -3; then
+                NEW_VER=$(cat VERSION 2>/dev/null)
+                echo "✅ Local synced to v${NEW_VER}"
+            else
+                echo "ℹ️  Auto-pull skipped (run: git pull origin main)"
+            fi
         ) &
     fi
 done
