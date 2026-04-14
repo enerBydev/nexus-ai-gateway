@@ -31,6 +31,12 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     systemctl --user disable "${SERVICE_NAME}" 2>/dev/null && ok "Disabled" || true
     rm -f "${INSTALLED_SERVICE}" && ok "Removed service file"
     systemctl --user daemon-reload
+    # Remove claude --effort max wrapper from .bashrc
+    BASHRC="${HOME}/.bashrc"
+    if grep -q "NEXUS-AI-Gateway: Force effort max" "${BASHRC}" 2>/dev/null; then
+        sed -i '/# === NEXUS-AI-Gateway: Force effort max/,/^}/d' "${BASHRC}"
+        ok "Removed claude --effort max wrapper from ${BASHRC}"
+    fi
     ok "Service uninstalled"
     exit 0
 fi
