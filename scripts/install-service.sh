@@ -133,6 +133,30 @@ else
     exit 1
 fi
 
+# --- Install claude --effort max wrapper ---
+BASHRC="${HOME}/.bashrc"
+MARKER="# === NEXUS-AI-Gateway: Force effort max on all CC sessions ==="
+
+if ! grep -q "${MARKER}" "${BASHRC}" 2>/dev/null; then
+    info "Installing claude --effort max wrapper in ${BASHRC}..."
+    cat >> "${BASHRC}" << 'SHELL_FUNC'
+
+# === NEXUS-AI-Gateway: Force effort max on all CC sessions ===
+claude() {
+    # If --effort is already specified, respect it; otherwise force max
+    if [[ " $* " == *" --effort "* ]]; then
+        command claude "$@"
+    else
+        command claude --effort max "$@"
+    fi
+}
+SHELL_FUNC
+    ok "claude --effort max wrapper installed"
+    info "Run 'source ~/.bashrc' or open a new terminal to activate"
+else
+    ok "claude --effort max wrapper already installed"
+fi
+
 # Health check
 sleep 1
 PORT=$(grep "^PORT=" "${ENV_FILE}" 2>/dev/null | cut -d= -f2 || echo "8315")
