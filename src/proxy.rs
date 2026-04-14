@@ -789,6 +789,19 @@ pub async fn proxy_handler(
         is_streaming
     );
 
+    // v8.0: Log CC thinking/effort params for forensic investigation
+    if let Some(thinking) = req.extra.get("thinking") {
+        tracing::info!(
+            "🧠 CC thinking config: {}",
+            serde_json::to_string(thinking).unwrap_or_default()
+        );
+    }
+    // Also log if budget_tokens is present anywhere in extra
+    tracing::debug!(
+        "📦 CC extra fields: {}",
+        serde_json::to_string(&req.extra).unwrap_or_default()
+    );
+
     if config.verbose {
         tracing::trace!(
             "Incoming Anthropic request: {}",
