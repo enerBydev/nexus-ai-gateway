@@ -80,7 +80,7 @@ impl Config {
         let port = env::var("PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(3000);
+            .unwrap_or(8315);
 
         let base_url = env::var("UPSTREAM_BASE_URL").map_err(|_| {
             anyhow::anyhow!(

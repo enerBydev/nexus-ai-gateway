@@ -192,7 +192,7 @@ tasks:
       - echo "Environment variables:"
       - echo "  UPSTREAM_BASE_URL            - Upstream endpoint URL (required)"
       - echo "  UPSTREAM_API_KEY             - API key for upstream service"
-      - echo "  PORT                         - Server port (default 3000)"
+      - echo "  PORT                         - Server port (default 8315)"
       - echo "  REASONING_MODEL              - Override model for thinking mode"
       - echo "  COMPLETION_MODEL             - Override model for standard mode"
       - echo "  DEBUG                        - Enable debug logging (1 or true)"
