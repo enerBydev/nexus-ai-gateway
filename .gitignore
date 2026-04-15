@@ -41,3 +41,6 @@ Thumbs.db
 /tmp/
 *.tmp
 *.temp
+
+# Claude Code auto-generated (do not track)
+CLAUDE.md
