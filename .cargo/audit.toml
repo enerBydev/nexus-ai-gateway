@@ -1,0 +1,8 @@
+# Cargo audit configuration
+# https://github.com/rustsec/rustsec/tree/main/cargo-audit
+
+[advisories]
+# RUSTSEC-2026-0097: rand unsoundness with custom logger using rand::rng()
+# Not applicable: we don't use custom loggers with rand::rng()
+# Affects: rand 0.8.5 (direct) and rand 0.9.2 (via reqwest→quinn)
+ignore = ["RUSTSEC-2026-0097"]
