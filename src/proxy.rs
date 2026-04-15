@@ -166,6 +166,33 @@ const FATAL_PATTERNS: &[&str] = &[
     "quota exceeded",
 ];
 
+/// v10.2: Extract safe max_tokens from NIM input_tokens overflow error.
+///
+/// NIM error format: "You passed {input} input tokens and requested {output} output tokens.
+///                    However, the model's context length is only {limit} tokens"
+/// Returns: context_limit - real_input - safety_margin (256 tokens)
+fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
+    let re_input = regex::Regex::new(r"passed\s+(\d+)\s+input\s+tokens").ok()?;
+    let re_limit = regex::Regex::new(r"context\s+length\s+is\s+only\s+(\d+)").ok()?;
+
+    let real_input: u32 = re_input.captures(message)?.get(1)?.as_str().parse().ok()?;
+    let context_limit: u32 = re_limit.captures(message)?.get(1)?.as_str().parse().ok()?;
+
+    // Safety margin: 256 tokens to guarantee fit across tokenizer differences
+    let safe_max = context_limit
+        .saturating_sub(real_input)
+        .saturating_sub(256)
+        .max(MIN_CLAMP_TOKENS);
+
+    tracing::info!(
+        "📐 Extracted from NIM error: input={}, limit={}, safe_max={}",
+        real_input,
+        context_limit,
+        safe_max
+    );
+    Some(safe_max)
+}
+
 /// 3-layer error classification.
 ///
 /// Layer 0: Structural — uses NIM's typed error fields (error.type, error.param)
@@ -180,6 +207,13 @@ fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     if let Some(ref etype) = upstream.error_type {
         if etype.as_str() == "BadRequestError" && upstream.param.as_deref() == Some("input_tokens")
         {
+            // v10.2: Try to auto-fix by reducing max_tokens to fit real input
+            // Only fatal if we can't extract the real counts from the error
+            if let Some(_safe_max) = extract_safe_max_tokens_from_error(&upstream.message) {
+                return ErrorClass::Fixable {
+                    reason: "input_tokens overflow — auto-clamping max_tokens to fit (L0)",
+                };
+            }
             return ErrorClass::Fatal {
                 reason: "input_tokens overflow — context full, needs /compact (L0)",
             };
@@ -610,7 +644,7 @@ async fn resilient_send(
                     reason,
                     &upstream_err.message[..upstream_err.message.len().min(500)]
                 );
-                // v6.1: input_tokens overflow → 400 (CC won't retry)
+                // v6.1/v10.2: input_tokens overflow → try to extract safe max_tokens
                 if reason.contains("input_tokens overflow") {
                     return Err(ProxyError::ContextOverflow(format!(
                         "Context window full: {}. Use /compact to reduce context.",
@@ -716,6 +750,13 @@ async fn resilient_send_raw(
             }
             ErrorClass::Fixable { reason } => {
                 if attempt >= MAX_RETRIES {
+                    // v10.2: If we exhausted retries on input_tokens overflow, it's truly full
+                    if reason.contains("input_tokens overflow") {
+                        return Err(ProxyError::ContextOverflow(format!(
+                            "Context window full: {}. Use /compact to reduce context.",
+                            &upstream_err.message[..upstream_err.message.len().min(300)]
+                        )));
+                    }
                     tracing::error!(
                         "⛔ [stream] Fixable [{}]: exhausted {} retries — giving up",
                         reason,
@@ -728,17 +769,32 @@ async fn resilient_send_raw(
                         &upstream_err.message[..upstream_err.message.len().min(300)]
                     )));
                 }
-                let current = openai_req.max_tokens.unwrap_or(64000);
-                let new_max = (current / 2).max(MIN_CLAMP_TOKENS);
-                tracing::warn!(
-                    "🔧 [stream] {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
-                    status.as_u16(),
-                    reason,
-                    attempt,
-                    MAX_RETRIES,
-                    current,
-                    new_max
-                );
+                // v10.2: For input_tokens overflow, calculate exact safe max_tokens
+                let new_max = if reason.contains("input_tokens overflow") {
+                    if let Some(safe) = extract_safe_max_tokens_from_error(&upstream_err.message) {
+                        tracing::warn!(
+                            "🔧 [stream] input_tokens overflow (attempt {}/{}): exact clamp max_tokens → {}",
+                            attempt, MAX_RETRIES, safe
+                        );
+                        safe
+                    } else {
+                        let current = openai_req.max_tokens.unwrap_or(64000);
+                        (current / 2).max(MIN_CLAMP_TOKENS)
+                    }
+                } else {
+                    let current = openai_req.max_tokens.unwrap_or(64000);
+                    let halved = (current / 2).max(MIN_CLAMP_TOKENS);
+                    tracing::warn!(
+                        "🔧 [stream] {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
+                        status.as_u16(),
+                        reason,
+                        attempt,
+                        MAX_RETRIES,
+                        current,
+                        halved
+                    );
+                    halved
+                };
                 openai_req.max_tokens = Some(new_max);
                 continue;
             }
@@ -749,7 +805,7 @@ async fn resilient_send_raw(
                     reason,
                     &upstream_err.message[..upstream_err.message.len().min(500)]
                 );
-                // v6.1: input_tokens overflow → 400 (CC won't retry)
+                // v6.1/v10.2: input_tokens overflow → 400 (CC won't retry)
                 if reason.contains("input_tokens overflow") {
                     return Err(ProxyError::ContextOverflow(format!(
                         "Context window full: {}. Use /compact to reduce context.",
@@ -818,17 +874,18 @@ pub async fn proxy_handler(
     )
     .await;
 
-    let estimated_input = serde_json::to_string(&openai_req.messages)
-        .map(|s| s.len() / 4)
-        .unwrap_or(0) as u32;
+    // v10.2: Use tiktoken (cl100k_base) for accurate pre-check instead of crude JSON.len()/4
+    let estimated_input = tokenizer::estimate_from_openai_request(&openai_req);
     let requested_output = openai_req.max_tokens.unwrap_or(64000);
 
     if estimated_input + requested_output > context_limit {
+        // Use 256-token safety margin to account for tiktoken vs NIM tokenizer differences
         let safe_output = context_limit
             .saturating_sub(estimated_input)
+            .saturating_sub(256)
             .clamp(1024, 64000);
         tracing::warn!(
-            "⚠️ Pre-check: ~{}tok + {}tok > {}tok (model={}, probed). Clamping → {}",
+            "⚠️ Pre-check: ~{}tok + {}tok > {}tok (model={}, tiktoken). Clamping → {}",
             estimated_input,
             requested_output,
             context_limit,
