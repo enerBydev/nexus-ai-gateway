@@ -1,9 +1,11 @@
 mod cli;
 mod config;
+mod config_cmd;
 mod error;
 mod models;
 mod proxy;
 mod scan;
+mod setup;
 mod tokenizer;
 mod transform;
 mod watcher;
@@ -42,6 +44,14 @@ fn main() -> anyhow::Result<()> {
                 check,
             } => {
                 handle_scan(env, launcher, check)?;
+                return Ok(());
+            }
+            Command::Setup { quick } => {
+                setup::run_setup(quick)?;
+                return Ok(());
+            }
+            Command::Config { action } => {
+                config_cmd::handle_config(action)?;
                 return Ok(());
             }
         }
