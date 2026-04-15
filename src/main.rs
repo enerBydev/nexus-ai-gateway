@@ -195,6 +195,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Proxy ready to accept requests");
+    {
+        let cfg = config.read().unwrap();
+        tracing::info!(
+            "Concurrency: {} per model, {}s permit timeout",
+            cfg.max_concurrent_per_model,
+            cfg.permit_timeout_secs
+        );
+    }
 
     // Hot-reload config on SIGHUP
     let reload_config = config.clone();
