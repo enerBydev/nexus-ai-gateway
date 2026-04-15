@@ -35,7 +35,7 @@ struct ServerConfig {
 // ─── Main Entry ───────────────────────────────────────────────────────
 
 /// Run the interactive setup wizard
-pub fn run_setup(quick: bool) -> Result<()> {
+pub fn run_setup(quick: bool, config_path: Option<PathBuf>) -> Result<()> {
     print_banner();
 
     // Phase 1: Upstream connection
@@ -51,7 +51,7 @@ pub fn run_setup(quick: bool) -> Result<()> {
     phase4_cc_integration(server.port)?;
 
     // Phase 5: Generate .env
-    let env_path = phase5_generate_env(&upstream, &mappings, &server)?;
+    let env_path = phase5_generate_env(&upstream, &mappings, &server, config_path)?;
 
     // Phase 6: Install & verify
     phase6_install_verify(server.port, &env_path)?;
@@ -530,6 +530,7 @@ fn phase5_generate_env(
     upstream: &UpstreamSetup,
     mappings: &[ModelMapping],
     server: &ServerConfig,
+    config_path: Option<PathBuf>,
 ) -> Result<PathBuf> {
     eprintln!(
         "\n{}",
@@ -538,8 +539,13 @@ fn phase5_generate_env(
             .bold()
     );
 
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let env_path = PathBuf::from(&home).join(".nexus-ai-gateway.env");
+    let env_path = match config_path {
+        Some(p) => p,
+        None => {
+            let home = std::env::var("HOME").context("HOME not set")?;
+            PathBuf::from(&home).join(".nexus-ai-gateway.env")
+        }
+    };
 
     // Backup if exists
     if env_path.exists() {

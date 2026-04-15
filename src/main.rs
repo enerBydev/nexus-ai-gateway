@@ -47,11 +47,11 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Command::Setup { quick } => {
-                setup::run_setup(quick)?;
+                setup::run_setup(quick, cli.config)?;
                 return Ok(());
             }
             Command::Config { action } => {
-                config_cmd::handle_config(action)?;
+                config_cmd::handle_config(action, cli.config)?;
                 return Ok(());
             }
         }

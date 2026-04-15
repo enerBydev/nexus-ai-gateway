@@ -56,13 +56,13 @@ pub enum Command {
     /// Scan Claude Code binary for model IDs, tools, and capabilities
     Scan {
         /// Generate .env template with model mapping entries
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["launcher", "check"])]
         env: bool,
         /// Generate launcher script with symbiont env vars
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["env", "check"])]
         launcher: bool,
         /// Only check if CC binary was updated since last scan
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["env", "launcher"])]
         check: bool,
     },
     /// Interactive setup wizard for initial configuration

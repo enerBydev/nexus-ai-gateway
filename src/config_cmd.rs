@@ -7,18 +7,18 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Handle `nexus-ai-gateway config <action>` subcommands
-pub fn handle_config(action: ConfigAction) -> Result<()> {
+pub fn handle_config(action: ConfigAction, config_path: Option<PathBuf>) -> Result<()> {
     match action {
-        ConfigAction::Show => config_show(),
-        ConfigAction::Set { key, value } => config_set(&key, &value),
-        ConfigAction::Test => config_test(),
+        ConfigAction::Show => config_show(config_path),
+        ConfigAction::Set { key, value } => config_set(&key, &value, config_path.as_deref()),
+        ConfigAction::Test => config_test(config_path),
     }
 }
 
 // ─── config show ──────────────────────────────────────────────────────
 
-fn config_show() -> Result<()> {
-    let config = Config::from_env().context("Failed to load config")?;
+fn config_show(config_path: Option<PathBuf>) -> Result<()> {
+    let config = Config::from_env_with_path(config_path).context("Failed to load config")?;
 
     eprintln!();
     eprintln!(
@@ -148,8 +148,11 @@ fn mask_key(key: &Option<String>) -> console::StyledObject<String> {
 
 // ─── config set ───────────────────────────────────────────────────────
 
-fn config_set(key: &str, value: &str) -> Result<()> {
-    let env_path = find_env_path()?;
+fn config_set(key: &str, value: &str, config_path: Option<&std::path::Path>) -> Result<()> {
+    let env_path = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => find_env_path()?,
+    };
 
     let content = if env_path.exists() {
         fs::read_to_string(&env_path)?
@@ -204,11 +207,11 @@ fn config_set(key: &str, value: &str) -> Result<()> {
 
 // ─── config test ──────────────────────────────────────────────────────
 
-fn config_test() -> Result<()> {
+fn config_test(config_path: Option<PathBuf>) -> Result<()> {
     eprintln!();
     eprintln!("{}", style("━━━ Configuration Test ━━━").yellow().bold());
 
-    let config = Config::from_env();
+    let config = Config::from_env_with_path(config_path);
 
     // Test 1: Config loads
     let config = match config {
