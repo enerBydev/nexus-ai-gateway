@@ -1263,45 +1263,67 @@ fn create_sse_stream(
 
                                         if let Some(content) = &choice.delta.content {
                                             if !content.is_empty() {
-                                                if current_block_type.as_deref() != Some("text") {
-                                                    if current_block_type.is_some() {
+                                                // v10.1: Sanitize content blocks too — GLM5 sometimes
+                                                // emits reasoning via content instead of reasoning_content
+                                                let sanitized_content = if reasoning_poisoned {
+                                                    // Everything after poison → discard content too
+                                                    tracing::debug!("🧹 Discarding poisoned content chunk ({} chars)", content.len());
+                                                    None
+                                                } else if let Some(pos) = content.find("</previous_reasoning>") {
+                                                    reasoning_poisoned = true;
+                                                    let clean = &content[..pos];
+                                                    tracing::info!("🧹 Content sanitized: cut at </previous_reasoning> ({} chars discarded)",
+                                                        content.len() - pos);
+                                                    if clean.trim().is_empty() { None } else { Some(clean.to_string()) }
+                                                } else if content.contains("<previous_reasoning>") {
+                                                    // Strip opening tag but keep reasoning text
+                                                    let cleaned = content.replace("<previous_reasoning>", "");
+                                                    if cleaned.trim().is_empty() { None } else { Some(cleaned) }
+                                                } else {
+                                                    Some(content.to_string())
+                                                };
+
+                                                if let Some(clean_content) = sanitized_content {
+                                                    if current_block_type.as_deref() != Some("text") {
+                                                        if current_block_type.is_some() {
+                                                            let event = json!({
+                                                                "type": "content_block_stop",
+                                                                "index": content_index
+                                                            });
+                                                            let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
+                                                                serde_json::to_string(&event).unwrap_or_default());
+                                                            yield Ok(Bytes::from(sse_data));
+                                                            content_index += 1;
+                                                        }
+
+                                                        // Start text block
                                                         let event = json!({
-                                                            "type": "content_block_stop",
-                                                            "index": content_index
+                                                            "type": "content_block_start",
+                                                            "index": content_index,
+                                                            "content_block": {
+                                                                "type": "text",
+                                                                "text": ""
+                                                            }
                                                         });
-                                                        let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
+                                                        let sse_data = format!("event: content_block_start\ndata: {}\n\n",
                                                             serde_json::to_string(&event).unwrap_or_default());
                                                         yield Ok(Bytes::from(sse_data));
-                                                        content_index += 1;
+                                                        current_block_type = Some("text".to_string());
                                                     }
 
-                                                    // Start text block
+                                                    // Send text delta
                                                     let event = json!({
-                                                        "type": "content_block_start",
+                                                        "type": "content_block_delta",
                                                         "index": content_index,
-                                                        "content_block": {
-                                                            "type": "text",
-                                                            "text": ""
+                                                        "delta": {
+                                                            "type": "text_delta",
+                                                            "text": clean_content
                                                         }
                                                     });
-                                                    let sse_data = format!("event: content_block_start\ndata: {}\n\n",
+                                                    let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
                                                         serde_json::to_string(&event).unwrap_or_default());
                                                     yield Ok(Bytes::from(sse_data));
-                                                    current_block_type = Some("text".to_string());
                                                 }
-
-                                                // Send text delta
-                                                let event = json!({
-                                                    "type": "content_block_delta",
-                                                    "index": content_index,
-                                                    "delta": {
-                                                        "type": "text_delta",
-                                                        "text": content
-                                                    }
-                                                });
-                                                let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
-                                                    serde_json::to_string(&event).unwrap_or_default());
-                                                yield Ok(Bytes::from(sse_data));
                                             }
                                         }
 
