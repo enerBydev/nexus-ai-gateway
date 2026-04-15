@@ -400,14 +400,9 @@ async fn get_context_limit(
 }
 
 // ─── Concurrency Shield: Per-Model Semaphore (Doc1b) ───────────────
-
-/// Maximum concurrent requests to ANY SINGLE NIM model.
-/// Empirically verified: NIM has ~4-5 concurrent limit per model.
-/// We use 5 to match NIM's capacity with 6 agents.
-const MAX_CONCURRENT_PER_MODEL: usize = 5;
-
-/// How long to wait for a semaphore permit before returning an error.
-const PERMIT_TIMEOUT_SECS: u64 = 180;
+// Opción B: MAX_CONCURRENT_PER_MODEL and PERMIT_TIMEOUT_SECS are now
+// read from Config (via .env) instead of hardcoded constants.
+// Defaults: 5 concurrent, 180s timeout.
 
 /// Shared collection of per-model semaphores.
 pub type ModelSemaphores = Arc<AsyncRwLock<HashMap<String, Arc<Semaphore>>>>;
@@ -416,6 +411,8 @@ pub type ModelSemaphores = Arc<AsyncRwLock<HashMap<String, Arc<Semaphore>>>>;
 async fn acquire_model_permit(
     semaphores: &ModelSemaphores,
     model: &str,
+    max_concurrent: usize,
+    permit_timeout: u64,
 ) -> ProxyResult<tokio::sync::OwnedSemaphorePermit> {
     let sem = {
         let read = semaphores.read().await;
@@ -430,9 +427,9 @@ async fn acquire_model_permit(
                     tracing::info!(
                         "🛡️ Created concurrency semaphore for '{}' ({} permits)",
                         model,
-                        MAX_CONCURRENT_PER_MODEL,
+                        max_concurrent,
                     );
-                    Arc::new(Semaphore::new(MAX_CONCURRENT_PER_MODEL))
+                    Arc::new(Semaphore::new(max_concurrent))
                 })
                 .clone()
         }
@@ -443,20 +440,20 @@ async fn acquire_model_permit(
         tracing::warn!(
             "⏳ Model '{}' at capacity (0/{} permits) — waiting up to {}s",
             model,
-            MAX_CONCURRENT_PER_MODEL,
-            PERMIT_TIMEOUT_SECS,
+            max_concurrent,
+            permit_timeout,
         );
     } else {
         tracing::debug!(
             "🎫 Acquiring permit for '{}' ({}/{} available)",
             model,
             available,
-            MAX_CONCURRENT_PER_MODEL,
+            max_concurrent,
         );
     }
 
     match tokio::time::timeout(
-        Duration::from_secs(PERMIT_TIMEOUT_SECS),
+        Duration::from_secs(permit_timeout),
         sem.clone().acquire_owned(),
     )
     .await
@@ -466,7 +463,7 @@ async fn acquire_model_permit(
                 "🎫 Permit acquired for '{}' ({}/{} remaining)",
                 model,
                 sem.available_permits(),
-                MAX_CONCURRENT_PER_MODEL,
+                max_concurrent,
             );
             Ok(permit)
         }
@@ -481,12 +478,12 @@ async fn acquire_model_permit(
             tracing::error!(
                 "⏰ Permit TIMEOUT for '{}' (waited {}s, 0/{} available)",
                 model,
-                PERMIT_TIMEOUT_SECS,
-                MAX_CONCURRENT_PER_MODEL,
+                permit_timeout,
+                max_concurrent,
             );
             Err(ProxyError::Overloaded(format!(
                 "Model '{}' concurrency limit reached ({} slots busy for {}s)",
-                model, PERMIT_TIMEOUT_SECS, MAX_CONCURRENT_PER_MODEL,
+                model, max_concurrent, permit_timeout,
             )))
         }
     }
@@ -884,7 +881,13 @@ async fn handle_non_streaming(
     // ╔═══════════════════════════════════════════╗
     // ║  Concurrency Shield: acquire model permit  ║
     // ╚═══════════════════════════════════════════╝
-    let _permit = acquire_model_permit(&model_semaphores, &openai_req.model).await?;
+    let _permit = acquire_model_permit(
+        &model_semaphores,
+        &openai_req.model,
+        config.max_concurrent_per_model,
+        config.permit_timeout_secs,
+    )
+    .await?;
 
     let url = config.get_upstream_url(upstream_name);
     tracing::debug!(
@@ -1004,7 +1007,13 @@ async fn handle_streaming(
     // ╔═══════════════════════════════════════════╗
     // ║  Concurrency Shield: acquire model permit  ║
     // ╚═══════════════════════════════════════════╝
-    let permit = acquire_model_permit(&model_semaphores, &openai_req.model).await?;
+    let permit = acquire_model_permit(
+        &model_semaphores,
+        &openai_req.model,
+        config.max_concurrent_per_model,
+        config.permit_timeout_secs,
+    )
+    .await?;
 
     let url = config.get_upstream_url(upstream_name);
     tracing::debug!(

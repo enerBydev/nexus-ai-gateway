@@ -30,6 +30,9 @@ pub struct Config {
     // Multi-upstream support
     pub upstreams: HashMap<String, UpstreamConfig>,
     pub model_map: HashMap<String, ModelRoute>,
+    // Concurrency tuning (Opción B: read from .env)
+    pub max_concurrent_per_model: usize,
+    pub permit_timeout_secs: u64,
 }
 
 impl Config {
@@ -77,7 +80,7 @@ impl Config {
         let port = env::var("PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(3000);
+            .unwrap_or(8315);
 
         let base_url = env::var("UPSTREAM_BASE_URL").map_err(|_| {
             anyhow::anyhow!(
@@ -187,6 +190,17 @@ impl Config {
             model_map.len()
         );
 
+        // Concurrency tuning (Opción B)
+        let max_concurrent_per_model = env::var("MAX_CONCURRENT_PER_MODEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+
+        let permit_timeout_secs = env::var("PERMIT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(180);
+
         Ok(Config {
             port,
             base_url,
@@ -200,6 +214,8 @@ impl Config {
             web_fetch_timeout_secs,
             upstreams,
             model_map,
+            max_concurrent_per_model,
+            permit_timeout_secs,
         })
     }
 

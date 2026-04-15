@@ -65,4 +65,30 @@ pub enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Interactive setup wizard for initial configuration
+    Setup {
+        /// Quick mode: only API key + intelligent defaults (skip interactive prompts)
+        #[arg(long)]
+        quick: bool,
+    },
+    /// View or modify configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Show current configuration (formatted, with masked secrets)
+    Show,
+    /// Set a configuration value in .env file
+    Set {
+        /// Configuration key (e.g. PORT, UPSTREAM_API_KEY, MODEL_MAP_claude_opus_4_6)
+        key: String,
+        /// New value
+        value: String,
+    },
+    /// Test configuration (validate connectivity + model availability)
+    Test,
 }
