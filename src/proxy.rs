@@ -912,6 +912,7 @@ pub async fn proxy_handler(
             &original_model,
             model_semaphores,
             calibration,
+            estimated_input, // v10.3: pass pre-computed estimate to avoid double tiktoken
         )
         .await
     } else {
@@ -1052,6 +1053,7 @@ async fn handle_non_streaming(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_streaming(
     config: Arc<Config>,
     client: Client,
@@ -1060,6 +1062,7 @@ async fn handle_streaming(
     original_model: &str,
     model_semaphores: ModelSemaphores,
     calibration: tokenizer::CalibrationFactors,
+    precomputed_estimate: u32, // v10.3: reuse pre-check estimate, avoid double tiktoken
 ) -> ProxyResult<Response> {
     // ╔═══════════════════════════════════════════╗
     // ║  Concurrency Shield: acquire model permit  ║
@@ -1083,8 +1086,9 @@ async fn handle_streaming(
     // === Resilient send with auto-retry on 429/400 ===
     let mut mutable_req = openai_req;
 
-    // v7.0: Estimate input tokens with tiktoken BEFORE sending to NIM
-    let raw_estimate = tokenizer::estimate_from_openai_request(&mutable_req);
+    // v10.3: Reuse pre-computed tiktoken estimate from proxy_handler pre-check
+    // (eliminates redundant ~50-300ms tiktoken call per request)
+    let raw_estimate = precomputed_estimate;
     // v8.0: Apply calibration factor for this model (converges to ~98% after ~50 reqs)
     let nim_model_name = mutable_req.model.clone();
     let calibrated_estimate = calibration.apply(&nim_model_name, raw_estimate);

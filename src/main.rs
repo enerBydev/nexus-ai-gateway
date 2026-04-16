@@ -257,7 +257,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
         let rt = tokio::runtime::Handle::current();
         let mut debouncer = match new_debouncer(
-            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(5), // v10.3: was 1s — caused reload storm + write lock contention
             move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, _>| {
                 if let Ok(evts) = events {
                     for evt in evts {
@@ -291,11 +291,18 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         tracing::info!(
-            "👁 Watching {} for changes (auto-reload enabled)",
+            "👁 Watching {} for changes (auto-reload enabled, 5s debounce)",
             env_path.display()
         );
 
+        // v10.3: Add cooldown to prevent rapid-fire reloads from write lock contention
+        let mut last_reload = std::time::Instant::now();
         while rx.recv().await.is_some() {
+            if last_reload.elapsed().as_secs() < 3 {
+                tracing::debug!("🔄 .env change debounced (cooldown)");
+                continue;
+            }
+            last_reload = std::time::Instant::now();
             tracing::info!("🔄 .env changed — auto-reloading config...");
             match Config::reload(cli_debug, cli_verbose, cli_port) {
                 Ok(new_config) => {

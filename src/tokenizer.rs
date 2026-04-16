@@ -103,19 +103,13 @@ pub fn estimate_input_tokens(request_body: &serde_json::Value) -> u32 {
         .map(|a| a.len())
         .unwrap_or(0);
 
-    // Tokenize using tiktoken cl100k_base (GPT-4 tokenizer — closest universal approximation)
-    match tiktoken_rs::cl100k_base() {
-        Ok(bpe) => {
-            let tokens = bpe.encode_with_special_tokens(&all_text);
-            // Add ~4 tokens per message for role/formatting overhead (OpenAI convention)
-            (tokens.len() + message_count * 4).max(1) as u32
-        }
-        Err(_) => {
-            // Fallback to chars/4 if tokenizer fails to initialize
-            tracing::warn!("⚠️ tiktoken init failed, falling back to chars/4 heuristic");
-            (all_text.len() / 4).max(1) as u32
-        }
-    }
+    // Tokenize using tiktoken cl100k_base singleton (cached — ~0ms after first call)
+    // PERF FIX: cl100k_base() creates a NEW BPE instance each call (~100-300ms),
+    //           cl100k_base_singleton() returns a static &CoreBPE (~0ms).
+    let bpe = tiktoken_rs::cl100k_base_singleton();
+    let tokens = bpe.encode_with_special_tokens(&all_text);
+    // Add ~4 tokens per message for role/formatting overhead (OpenAI convention)
+    (tokens.len() + message_count * 4).max(1) as u32
 }
 
 /// Estimate input tokens from a typed `OpenAIRequest` struct.
