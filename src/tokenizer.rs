@@ -151,21 +151,16 @@ use std::sync::{Arc, RwLock};
 ///
 /// Starts at 1.0 (no correction) and self-adjusts with each request.
 /// Thread-safe via `Arc<RwLock<>>` for concurrent access from async handlers.
-///
-/// # Example
-/// ```ignore
-/// let cal = CalibrationFactors::new();
-/// let raw = estimate_input_tokens(&req);
-/// let calibrated = cal.apply("kimi-k2.5", raw);
-/// // After NIM responds with real tokens:
-/// cal.update("kimi-k2.5", raw, nim_real_tokens);
-/// ```
 #[derive(Debug, Clone)]
 pub struct CalibrationFactors {
-    /// Map of model_name → correction_factor (EMA)
-    factors: Arc<RwLock<HashMap<String, f64>>>,
-    /// Number of observations per model (for logging/monitoring)
-    observations: Arc<RwLock<HashMap<String, u32>>>,
+    /// v0.11.0 (MD-01): Single lock for both factor + observation count
+    data: Arc<RwLock<HashMap<String, CalibrationEntry>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CalibrationEntry {
+    factor: f64,
+    observations: u32,
 }
 
 impl CalibrationFactors {
@@ -173,30 +168,29 @@ impl CalibrationFactors {
     /// All models start with factor = 1.0 (no correction).
     pub fn new() -> Self {
         Self {
-            factors: Arc::new(RwLock::new(HashMap::new())),
-            observations: Arc::new(RwLock::new(HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Get the current correction factor for a model.
     /// Returns 1.0 (no correction) if no observations exist yet.
     pub fn get(&self, model: &str) -> f64 {
-        self.factors
+        self.data
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(model)
-            .copied()
+            .map(|e| e.factor)
             .unwrap_or(1.0)
     }
 
     /// Get the number of observations for a model.
     #[allow(dead_code)] // Used in tests
     pub fn observation_count(&self, model: &str) -> u32 {
-        self.observations
+        self.data
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(model)
-            .copied()
+            .map(|e| e.observations)
             .unwrap_or(0)
     }
 
@@ -214,11 +208,6 @@ impl CalibrationFactors {
     /// `alpha = 0.1` means new data has 10% weight, history has 90%.
     /// This provides smooth convergence: after 50 observations, the factor
     /// reflects the true ratio within ~2%.
-    ///
-    /// # Arguments
-    /// * `model` - NIM model name (e.g., "kimi-k2.5", "glm5")
-    /// * `tiktoken_estimate` - Raw tiktoken estimate (before calibration)
-    /// * `nim_real` - Real `prompt_tokens` reported by NIM
     pub fn update(&self, model: &str, tiktoken_estimate: u32, nim_real: u32) {
         if tiktoken_estimate == 0 || nim_real == 0 {
             return;
@@ -227,26 +216,25 @@ impl CalibrationFactors {
         let observed_ratio = nim_real as f64 / tiktoken_estimate as f64;
         let alpha = 0.1; // EMA learning rate
 
-        // Update factor
-        let mut factors = self.factors.write().unwrap_or_else(|e| e.into_inner());
-        let current = factors.get(model).copied().unwrap_or(1.0);
-        let new_factor = current * (1.0 - alpha) + observed_ratio * alpha;
-        factors.insert(model.to_string(), new_factor);
-
-        // Increment observation count
-        let mut obs = self.observations.write().unwrap_or_else(|e| e.into_inner());
-        let count = obs.entry(model.to_string()).or_insert(0);
-        *count += 1;
+        // v0.11.0 (MD-01): Single write lock for both factor + observation
+        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
+        let entry = data.entry(model.to_string()).or_insert(CalibrationEntry {
+            factor: 1.0,
+            observations: 0,
+        });
+        let old_factor = entry.factor;
+        entry.factor = old_factor * (1.0 - alpha) + observed_ratio * alpha;
+        entry.observations += 1;
 
         tracing::debug!(
             "📐 Calibration [{}]: {:.4} → {:.4} (observed: {:.4}, tiktoken={}, nim={}, n={})",
             model,
-            current,
-            new_factor,
+            old_factor,
+            entry.factor,
             observed_ratio,
             tiktoken_estimate,
             nim_real,
-            count
+            entry.observations
         );
     }
 }

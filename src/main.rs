@@ -17,6 +17,7 @@ use cli::{Cli, Command};
 use config::{Config, SharedConfig};
 use daemonize::Daemonize;
 use reqwest::Client;
+use std::sync::atomic::{AtomicBool, Ordering}; // v0.11.0 (HI-06): config reload mutex
 use std::sync::{Arc, RwLock};
 use tokio::signal::unix::{signal, SignalKind};
 use tower_http::{
@@ -200,13 +201,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
-    let addr = format!("0.0.0.0:{}", config.read().unwrap().port);
+    let addr = format!(
+        "0.0.0.0:{}",
+        config.read().unwrap_or_else(|e| e.into_inner()).port
+    ); // v0.11.0 (CR-04)
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Proxy ready to accept requests");
     {
-        let cfg = config.read().unwrap();
+        let cfg = config.read().unwrap_or_else(|e| e.into_inner()); // v0.11.0 (CR-04)
         tracing::info!(
             "Concurrency: {} per model, {}s permit timeout",
             cfg.max_concurrent_per_model,
@@ -216,14 +220,26 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     // Hot-reload config on SIGHUP
     let reload_config = config.clone();
+    // v0.11.0 (HI-06): Serialize reloads — prevent SIGHUP/watcher race
+    let reload_in_progress = Arc::new(AtomicBool::new(false));
+    let reload_flag_sighup = reload_in_progress.clone();
+    let reload_flag_watcher = reload_in_progress.clone();
     tokio::spawn(async move {
         let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
         loop {
             sighup.recv().await;
             tracing::info!("🔄 SIGHUP received — reloading config...");
+            // v0.11.0 (HI-06): Skip if another reload is already in progress
+            if reload_flag_sighup
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+                .is_err()
+            {
+                tracing::warn!("⚠️ Config reload already in progress (SIGHUP skipped)");
+                continue;
+            }
             match Config::reload(cli_debug, cli_verbose, cli_port) {
                 Ok(new_config) => {
-                    let mut cfg = reload_config.write().unwrap();
+                    let mut cfg = reload_config.write().unwrap_or_else(|e| e.into_inner()); // v0.11.0 (CR-04)
                     let old_maps = cfg.model_map.len();
                     *cfg = new_config;
                     tracing::info!(
@@ -236,6 +252,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     tracing::error!("❌ Config reload failed: {}", e);
                 }
             }
+            reload_flag_sighup.store(false, Ordering::SeqCst);
         }
     });
 
@@ -304,9 +321,17 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
             last_reload = std::time::Instant::now();
             tracing::info!("🔄 .env changed — auto-reloading config...");
+            // v0.11.0 (HI-06): Skip if another reload is already in progress
+            if reload_flag_watcher
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+                .is_err()
+            {
+                tracing::warn!("⚠️ Config reload already in progress (watcher skipped)");
+                continue;
+            }
             match Config::reload(cli_debug, cli_verbose, cli_port) {
                 Ok(new_config) => {
-                    let mut cfg = watch_config.write().unwrap();
+                    let mut cfg = watch_config.write().unwrap_or_else(|e| e.into_inner()); // v0.11.0 (CR-04)
                     let old_maps = cfg.model_map.len();
                     *cfg = new_config;
                     tracing::info!(
@@ -319,6 +344,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     tracing::error!("❌ Auto-reload failed: {}", e);
                 }
             }
+            reload_flag_watcher.store(false, Ordering::SeqCst);
         }
     });
 

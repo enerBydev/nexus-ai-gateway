@@ -24,6 +24,10 @@ const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplification (1.58x
 const RETRY_BASE_MS: u64 = 1500; // Kept for reference, overridden per error class
 const MIN_CLAMP_TOKENS: u32 = 4096;
 
+// v0.11.0: Stream stability constants (CR-01, CR-02)
+const CHUNK_TIMEOUT_SECS: u64 = 120; // Max seconds to wait for next SSE chunk from NIM
+const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
+
 // ─── Smart Retry Infrastructure (3-Layer Error Classification) ─────────
 
 /// Parsed NIM/OpenAI error response with structured fields
@@ -305,7 +309,13 @@ fn classify_error(upstream: &UpstreamError) -> ErrorClass {
         422 => ErrorClass::Fatal {
             reason: "422 unprocessable entity (L2)",
         },
-        406..=412 | 414..=421 | 423..=499 => ErrorClass::Fatal {
+        // v0.11.0 (HI-04): HTTP 408 is a timeout — should be retried, not fatal
+        408 => ErrorClass::Retryable {
+            base_delay_ms: 5000,
+            max_retries: 3,
+            reason: "408 request timeout (L2)",
+        },
+        406..=407 | 409..=412 | 414..=421 | 423..=499 => ErrorClass::Fatal {
             reason: "unknown 4xx client error (L2)",
         },
         501 | 505..=528 | 530..=599 => ErrorClass::Retryable {
@@ -831,9 +841,13 @@ pub async fn proxy_handler(
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
-    // Read config from RwLock and clone for this request
-    // This ensures we don't hold the lock across async boundaries
-    let config = Arc::new(shared_config.read().unwrap().clone());
+    // v0.11.0 (CR-04): Recover from poisoned RwLock instead of panicking
+    let config = Arc::new(
+        shared_config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
+    );
     let is_streaming = req.stream.unwrap_or(false);
 
     tracing::info!(
@@ -913,6 +927,7 @@ pub async fn proxy_handler(
             model_semaphores,
             calibration,
             estimated_input, // v10.3: pass pre-computed estimate to avoid double tiktoken
+            context_limit,   // v0.11.0 (CR-08): for input_tokens scaling
         )
         .await
     } else {
@@ -1063,6 +1078,7 @@ async fn handle_streaming(
     model_semaphores: ModelSemaphores,
     calibration: tokenizer::CalibrationFactors,
     precomputed_estimate: u32, // v10.3: reuse pre-check estimate, avoid double tiktoken
+    context_limit: u32, // v0.11.0 (CR-08): real model context window for input_tokens scaling
 ) -> ProxyResult<Response> {
     // ╔═══════════════════════════════════════════╗
     // ║  Concurrency Shield: acquire model permit  ║
@@ -1112,6 +1128,7 @@ async fn handle_streaming(
         raw_estimate,
         nim_model_name,
         calibration,
+        context_limit, // v0.11.0 (CR-08)
     );
 
     let mut headers = HeaderMap::new();
@@ -1125,6 +1142,7 @@ async fn handle_streaming(
     Ok((headers, Body::from_stream(sse_stream)).into_response())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_sse_stream(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     original_model: String,
@@ -1133,15 +1151,30 @@ fn create_sse_stream(
     raw_tiktoken_estimate: u32,  // v8.0: raw (uncalibrated) for calibration feedback
     nim_model_name: String,      // v8.0: NIM model name for calibration key
     calibration: tokenizer::CalibrationFactors, // v8.0: calibration factors
+    context_limit: u32,          // v0.11.0 (CR-08): real model context for scaling
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
+        // v0.11.0 (CR-08): Scale input_tokens so CC auto-compact triggers correctly
+        // for models with context < Claude's 200K (e.g., Kimi K2.5 = 131K)
+        let cc_context_window: u32 = 200_000;
+        let scale_tokens = |real_tokens: u32| -> u32 {
+            if context_limit > 0 && context_limit < cc_context_window {
+                let scaled = (real_tokens as f64 * cc_context_window as f64
+                              / context_limit as f64) as u32;
+                tracing::debug!("📐 Scaling input_tokens for CC compact: {} → {} (real_ctx={}K, cc_ctx={}K)",
+                    real_tokens, scaled, context_limit / 1000, cc_context_window / 1000);
+                scaled
+            } else {
+                real_tokens // GLM5 (202K) ≥ Claude (200K) → no scaling needed
+            }
+        };
         // ╔═════════════════════════════════════════════════════════╗
         // ║  Concurrency Shield: _permit lives here until stream    ║
         // ║  ends → slot freed only on completion/disconnect.       ║
         // ╚═════════════════════════════════════════════════════════╝
         let _ = &_permit;  // prevent compiler from optimizing the move away
 
-        let mut buffer = String::new();
+        let mut buffer = String::with_capacity(8192); // v0.11.0: pre-allocate + size limit (CR-02)
         let mut message_id = None;
         let mut current_model = None;
         let mut content_index = 0;
@@ -1170,11 +1203,47 @@ fn create_sse_stream(
 
         tokio::pin!(stream);
 
-        while let Some(chunk) = stream.next().await {
+        // v0.11.0: Stream loop with timeout (CR-01) — prevents indefinite hang if NIM stops sending
+        let chunk_timeout = Duration::from_secs(CHUNK_TIMEOUT_SECS);
+        loop {
+            let chunk = match tokio::time::timeout(chunk_timeout, stream.next()).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break, // Stream ended normally
+                Err(_) => {
+                    // v0.11.0 (CR-01): NIM stopped sending chunks — graceful shutdown
+                    tracing::error!("⏰ Stream chunk timeout after {}s — NIM stopped sending", CHUNK_TIMEOUT_SECS);
+                    // Emit graceful end_turn so CC doesn't hang
+                    if has_sent_message_start {
+                        if current_block_type.is_some() {
+                            let stop_block = json!({"type": "content_block_stop", "index": content_index});
+                            yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n",
+                                serde_json::to_string(&stop_block).unwrap_or_default())));
+                        }
+                        let delta_event = json!({
+                            "type": "message_delta",
+                            "delta": { "stop_reason": "end_turn", "stop_sequence": serde_json::Value::Null },
+                            "usage": { "input_tokens": accumulated_input_tokens, "output_tokens": accumulated_output_tokens }
+                        });
+                        yield Ok(Bytes::from(format!("event: message_delta\ndata: {}\n\n",
+                            serde_json::to_string(&delta_event).unwrap_or_default())));
+                        let stop_event = json!({"type": "message_stop"});
+                        yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n",
+                            serde_json::to_string(&stop_event).unwrap_or_default())));
+                    }
+                    break;
+                }
+            };
             match chunk {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
                     buffer.push_str(&text);
+
+                    // v0.11.0 (CR-02): Buffer size guard — prevents OOM if NIM sends data without delimiters
+                    if buffer.len() > MAX_SSE_BUFFER {
+                        tracing::error!("⛔ SSE buffer overflow: {} bytes exceeds {}MB limit — aborting stream",
+                            buffer.len(), MAX_SSE_BUFFER / 1024 / 1024);
+                        break;
+                    }
 
                     while let Some(pos) = buffer.find("\n\n") {
                         let line = buffer[..pos].to_string();
@@ -1195,8 +1264,9 @@ fn create_sse_stream(
                                                 "stop_reason": stop,
                                                 "stop_sequence": serde_json::Value::Null
                                             },
+                                            // v0.11.0 (CR-08): Scale input_tokens for CC auto-compact
                                             "usage": {
-                                                "input_tokens": accumulated_input_tokens,
+                                                "input_tokens": scale_tokens(accumulated_input_tokens),
                                                 "output_tokens": accumulated_output_tokens
                                             }
                                         });
@@ -1252,10 +1322,13 @@ fn create_sse_stream(
                                                     model: original_model_owned.clone(),  // Phase 7: use original ClaudeModelID
                                                     usage: anthropic::Usage {
                                                         // v7.0: Use tiktoken estimate (>0) instead of always-zero
-                                                        input_tokens: chunk.usage.as_ref()
-                                                            .map(|u| u.prompt_tokens)
-                                                            .filter(|&t| t > 0)
-                                                            .unwrap_or(estimated_input_tokens),
+                                                        // v0.11.0 (CR-08): Scale for CC auto-compact
+                                                        input_tokens: scale_tokens(
+                                                            chunk.usage.as_ref()
+                                                                .map(|u| u.prompt_tokens)
+                                                                .filter(|&t| t > 0)
+                                                                .unwrap_or(estimated_input_tokens)
+                                                        ),
                                                         output_tokens: 0,  // Per Anthropic spec: always 0 at start
                                                     },
                                                 },
@@ -1298,7 +1371,8 @@ fn create_sse_stream(
                                                             "index": content_index,
                                                             "content_block": {
                                                                 "type": "thinking",
-                                                                "thinking": ""
+                                                                "thinking": "",
+                                                                "signature": "" // v0.11.0 (CR-07): Anthropic spec requires signature field
                                                             }
                                                         });
                                                         let sse_data = format!("event: content_block_start\ndata: {}\n\n",
@@ -1572,10 +1646,11 @@ fn create_sse_stream(
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
+                    // v0.11.0 (HI-05): Use Anthropic-native error type instead of "stream_error"
                     let error_event = json!({
                         "type": "error",
                         "error": {
-                            "type": "stream_error",
+                            "type": "api_error",
                             "message": format!("Stream error: {}", e)
                         }
                     });

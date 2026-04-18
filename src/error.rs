@@ -38,6 +38,16 @@ pub enum ProxyError {
     /// v6.1: Context overflow — returns 400 so CC does NOT retry
     #[error("Context overflow: {0}")]
     ContextOverflow(String),
+
+    /// v0.11.0: Stream interrupted — NIM stopped sending chunks
+    #[allow(dead_code)]
+    #[error("Stream timeout: {0}")]
+    StreamTimeout(String),
+
+    /// v0.11.0: Buffer overflow — SSE buffer exceeded safety limit
+    #[allow(dead_code)]
+    #[error("Buffer overflow: {0}")]
+    BufferOverflow(String),
 }
 
 /// Map HTTP status to Anthropic-native error type.
@@ -46,7 +56,7 @@ pub enum ProxyError {
 ///   - "overloaded_error" → CC retries internally
 ///   - "api_error" → CC retries internally
 ///   - Others → CC shows error to user
-fn anthropic_error_type(status: StatusCode) -> &'static str {
+pub(crate) fn anthropic_error_type(status: StatusCode) -> &'static str {
     match status.as_u16() {
         400 => "invalid_request_error",
         401 => "authentication_error",
@@ -76,6 +86,10 @@ impl IntoResponse for ProxyError {
             ProxyError::WebFetch(msg) => (StatusCode::BAD_GATEWAY, msg),
             // v6.1: 400 so CC treats it as non-retriable → immediate /compact feedback
             ProxyError::ContextOverflow(msg) => (StatusCode::BAD_REQUEST, msg),
+            // v0.11.0: Stream timeout → 504 Gateway Timeout (retryable)
+            ProxyError::StreamTimeout(msg) => (StatusCode::GATEWAY_TIMEOUT, msg),
+            // v0.11.0: Buffer overflow → 502 Bad Gateway (retryable)
+            ProxyError::BufferOverflow(msg) => (StatusCode::BAD_GATEWAY, msg),
         };
 
         // Anthropic-native response format — CC recognizes these error types
@@ -93,3 +107,7 @@ impl IntoResponse for ProxyError {
 
 /// Result type for proxy operations
 pub type ProxyResult<T> = Result<T, ProxyError>;
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_test;

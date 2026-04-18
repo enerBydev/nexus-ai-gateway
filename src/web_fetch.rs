@@ -30,6 +30,59 @@ pub fn is_web_fetch_tool(name: &str) -> bool {
 
 // ========== EJECUCIÓN ==========
 
+// v0.11.0 (CR-05): SSRF protection — block requests to internal/metadata endpoints
+fn is_url_safe(url: &str) -> bool {
+    // Extract host from URL
+    let host = match url.split("://").nth(1) {
+        Some(rest) => rest
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or(""),
+        None => return false,
+    };
+
+    let blocked_prefixes = [
+        "127.",
+        "0.0.0.0",
+        "localhost",
+        "169.254.", // AWS/GCP metadata
+        "10.",      // RFC1918 Class A
+        "172.16.",
+        "172.17.",
+        "172.18.",
+        "172.19.",
+        "172.20.",
+        "172.21.",
+        "172.22.",
+        "172.23.",
+        "172.24.",
+        "172.25.",
+        "172.26.",
+        "172.27.",
+        "172.28.",
+        "172.29.",
+        "172.30.",
+        "172.31.",  // RFC1918 Class B
+        "192.168.", // RFC1918 Class C
+        "[::1]",
+        "[::0]", // IPv6 loopback/unspecified
+    ];
+
+    let blocked_exact = ["metadata.google.internal", "metadata.google"];
+
+    if blocked_prefixes.iter().any(|b| host.starts_with(b)) {
+        return false;
+    }
+    if blocked_exact.iter().any(|b| host.eq_ignore_ascii_case(b)) {
+        return false;
+    }
+
+    true
+}
+
 /// Ejecuta HTTP GET y devuelve contenido como texto
 pub async fn execute_fetch(
     client: &Client,
@@ -42,6 +95,15 @@ pub async fn execute_fetch(
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(ProxyError::WebFetch(format!(
             "Invalid URL (must start with http/https): {}",
+            url
+        )));
+    }
+
+    // v0.11.0 (CR-05): SSRF protection — block internal/metadata IPs
+    if !is_url_safe(url) {
+        tracing::warn!("🛡️ SSRF blocked: {}", url);
+        return Err(ProxyError::WebFetch(format!(
+            "URL blocked by security policy (internal/metadata address): {}",
             url
         )));
     }
@@ -102,48 +164,82 @@ pub async fn execute_fetch(
     Ok(truncated)
 }
 
-// ========== HTML → TEXTO ==========
+// v0.11.0 (HI-02): Cached regex patterns — compiled once, reused on every call
+use std::sync::OnceLock;
+
+struct HtmlRegexes {
+    script: Regex,
+    style: Regex,
+    nav: Regex,
+    footer: Regex,
+    header: Regex,
+    headings: [Regex; 6],
+    br: Regex,
+    block_end: Regex,
+    tags: Regex,
+    spaces: Regex,
+    newlines: Regex,
+}
+
+fn html_regexes() -> &'static HtmlRegexes {
+    static REGEXES: OnceLock<HtmlRegexes> = OnceLock::new();
+    REGEXES.get_or_init(|| HtmlRegexes {
+        script: Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap(),
+        style: Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap(),
+        nav: Regex::new(r"(?si)<nav[^>]*>.*?</nav>").unwrap(),
+        footer: Regex::new(r"(?si)<footer[^>]*>.*?</footer>").unwrap(),
+        header: Regex::new(r"(?si)<header[^>]*>.*?</header>").unwrap(),
+        headings: [
+            Regex::new(r"(?si)<h1[^>]*>(.*?)</h1>").unwrap(),
+            Regex::new(r"(?si)<h2[^>]*>(.*?)</h2>").unwrap(),
+            Regex::new(r"(?si)<h3[^>]*>(.*?)</h3>").unwrap(),
+            Regex::new(r"(?si)<h4[^>]*>(.*?)</h4>").unwrap(),
+            Regex::new(r"(?si)<h5[^>]*>(.*?)</h5>").unwrap(),
+            Regex::new(r"(?si)<h6[^>]*>(.*?)</h6>").unwrap(),
+        ],
+        br: Regex::new(r"(?i)<br\s*/?>").unwrap(),
+        block_end: Regex::new(r"(?i)</(?:p|div|li|tr|h[1-6])>").unwrap(),
+        tags: Regex::new(r"<[^>]+>").unwrap(),
+        spaces: Regex::new(r"[ \t]+").unwrap(),
+        newlines: Regex::new(r"\n{3,}").unwrap(),
+    })
+}
+
+// v0.11.0: Cached regex for URL extraction fallback
+fn url_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"https?://[^\s"',\}]+"#).unwrap())
+}
 
 /// Elimina tags HTML y extrae texto legible
 pub fn strip_html_tags(html: &str) -> String {
+    let re = html_regexes();
     let mut text = html.to_string();
 
-    // 1. Eliminar <script>...</script> y <style>...</style>
-    let re_script = Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap();
-    text = re_script.replace_all(&text, "").to_string();
+    // 1. Eliminar <script>, <style>
+    text = re.script.replace_all(&text, "").to_string();
+    text = re.style.replace_all(&text, "").to_string();
 
-    let re_style = Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap();
-    text = re_style.replace_all(&text, "").to_string();
+    // 2. Eliminar <nav>, <footer>, <header>
+    text = re.nav.replace_all(&text, "").to_string();
+    text = re.footer.replace_all(&text, "").to_string();
+    text = re.header.replace_all(&text, "").to_string();
 
-    // 2. Eliminar <nav>, <footer>, <header> (noise)
-    let re_nav = Regex::new(r"(?si)<nav[^>]*>.*?</nav>").unwrap();
-    text = re_nav.replace_all(&text, "").to_string();
-
-    let re_footer = Regex::new(r"(?si)<footer[^>]*>.*?</footer>").unwrap();
-    text = re_footer.replace_all(&text, "").to_string();
-
-    let re_header = Regex::new(r"(?si)<header[^>]*>.*?</header>").unwrap();
-    text = re_header.replace_all(&text, "").to_string();
-
-    // 3. Convertir headings a markdown-style BEFORE stripping closing tags
-    for level in 1..=6usize {
-        let hashes = "#".repeat(level);
-        let pattern = format!(r"(?si)<h{}[^>]*>(.*?)</h{}>", level, level);
-        let re = Regex::new(&pattern).unwrap();
-        let replacement = format!("\n{} $1\n", hashes);
-        text = re.replace_all(&text, replacement.as_str()).to_string();
+    // 3. Convertir headings a markdown-style
+    let hashes = ["#", "##", "###", "####", "#####", "######"];
+    for (i, heading_re) in re.headings.iter().enumerate() {
+        let replacement = format!("\n{} $1\n", hashes[i]);
+        text = heading_re
+            .replace_all(&text, replacement.as_str())
+            .to_string();
     }
 
     // 4. Convertir <br>, </p>, </div>, </li> a newlines
-    let re_br = Regex::new(r"(?i)<br\s*/?>").unwrap();
-    text = re_br.replace_all(&text, "\n").to_string();
-
-    let re_block_end = Regex::new(r"(?i)</(?:p|div|li|tr|h[1-6])>").unwrap();
-    text = re_block_end.replace_all(&text, "\n").to_string();
+    text = re.br.replace_all(&text, "\n").to_string();
+    text = re.block_end.replace_all(&text, "\n").to_string();
 
     // 5. Strip remaining HTML tags
-    let re_tags = Regex::new(r"<[^>]+>").unwrap();
-    text = re_tags.replace_all(&text, "").to_string();
+    text = re.tags.replace_all(&text, "").to_string();
 
     // 6. Decode common entities
     text = text
@@ -156,11 +252,8 @@ pub fn strip_html_tags(html: &str) -> String {
         .replace("&nbsp;", " ");
 
     // 7. Collapse whitespace
-    let re_spaces = Regex::new(r"[ \t]+").unwrap();
-    text = re_spaces.replace_all(&text, " ").to_string();
-
-    let re_newlines = Regex::new(r"\n{3,}").unwrap();
-    text = re_newlines.replace_all(&text, "\n\n").to_string();
+    text = re.spaces.replace_all(&text, " ").to_string();
+    text = re.newlines.replace_all(&text, "\n\n").to_string();
 
     text.trim().to_string()
 }
@@ -200,8 +293,8 @@ pub fn extract_url_from_raw(raw: &str) -> Option<String> {
     }
 
     // Regex fallback: find first https?://... URL in the string
-    let re = Regex::new(r#"https?://[^\s"',\}]+"#).unwrap();
-    if let Some(m) = re.find(raw) {
+    // v0.11.0 (HI-02): Use cached regex
+    if let Some(m) = url_regex().find(raw) {
         return Some(m.as_str().to_string());
     }
 
@@ -258,5 +351,39 @@ mod tests {
         let result = truncate_content(&long);
         assert!(result.len() < long.len());
         assert!(result.contains("[Content truncated"));
+    }
+
+    // v0.11.0 (CR-05): SSRF protection tests
+    #[test]
+    fn test_url_safety_blocks_internal() {
+        assert!(!is_url_safe("http://127.0.0.1/admin"));
+        assert!(!is_url_safe("http://localhost:8080/secret"));
+        assert!(!is_url_safe("http://10.0.0.1/internal"));
+        assert!(!is_url_safe("http://172.16.0.1/private"));
+        assert!(!is_url_safe("http://192.168.1.1/router"));
+        assert!(!is_url_safe("http://169.254.169.254/latest/meta-data/"));
+        assert!(!is_url_safe("http://0.0.0.0/anything"));
+        assert!(!is_url_safe(
+            "http://metadata.google.internal/computeMetadata/v1/"
+        ));
+    }
+
+    #[test]
+    fn test_url_safety_allows_external() {
+        assert!(is_url_safe("https://example.com/page"));
+        assert!(is_url_safe("https://api.github.com/repos"));
+        assert!(is_url_safe("https://docs.rs/crate/tokio"));
+        assert!(is_url_safe("http://8.8.8.8/dns"));
+        assert!(is_url_safe("https://172.217.14.206/search")); // Google public IP, not 172.16-31.*
+    }
+
+    // v0.11.0 (HI-02): Regex caching test
+    #[test]
+    fn test_regex_lazy_init_consistency() {
+        // Call strip_html_tags twice — second call should use cached regexes
+        let html = "<p>Test <b>bold</b></p>";
+        let r1 = strip_html_tags(html);
+        let r2 = strip_html_tags(html);
+        assert_eq!(r1, r2); // Same result = regex cache is consistent
     }
 }
