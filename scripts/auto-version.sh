@@ -135,7 +135,17 @@ if [ "$MODE" = "--apply" ]; then
     git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
     
     echo ""
-    echo "✅ Auto-version applied: $CURRENT_VERSION → $NEW_VERSION"
+    echo "🔨 Rebuilding binary with new version..."
+    cargo install --path . --force 2>&1 | tail -3
+    
+    echo ""
+    INSTALLED_VERSION=$(nexus-ai-gateway --version 2>/dev/null | awk '{print $2}')
+    if [ "$INSTALLED_VERSION" = "$NEW_VERSION" ]; then
+        echo "✅ Auto-version applied: $CURRENT_VERSION → $NEW_VERSION (binary verified)"
+    else
+        echo "⚠️  Auto-version applied: $CURRENT_VERSION → $NEW_VERSION"
+        echo "   Binary reports: ${INSTALLED_VERSION:-unknown} (manual rebuild may be needed)"
+    fi
     echo "   Run: git push origin main --tags"
 elif [ "$MODE" = "--dry-run" ]; then
     echo ""
