@@ -782,11 +782,17 @@ async fn resilient_send_raw(
                 // v10.2: For input_tokens overflow, calculate exact safe max_tokens
                 let new_max = if reason.contains("input_tokens overflow") {
                     if let Some(safe) = extract_safe_max_tokens_from_error(&upstream_err.message) {
+                        // v0.11.0: Subtract safety margin to absorb NIM re-tokenization drift
+                        // NIM adds ~257 tokens per retry (chat template expansion).
+                        // Without margin: attempt1=63743, NIM says input=139010 (+257) → fail
+                        // With margin:    attempt1=61695, NIM says input=139010 → still fits
+                        let margin = 2048 + (attempt * 1024); // Growing margin per retry
+                        let safe_with_margin = safe.saturating_sub(margin).max(1024);
                         tracing::warn!(
-                            "🔧 [stream] input_tokens overflow (attempt {}/{}): exact clamp max_tokens → {}",
-                            attempt, MAX_RETRIES, safe
+                            "🔧 [stream] input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens → {}",
+                            attempt, MAX_RETRIES, safe, margin, safe_with_margin
                         );
-                        safe
+                        safe_with_margin
                     } else {
                         let current = openai_req.max_tokens.unwrap_or(64000);
                         (current / 2).max(MIN_CLAMP_TOKENS)
