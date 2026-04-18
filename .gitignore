@@ -31,10 +31,7 @@ Thumbs.db
 /.coverage/
 
 # Documentation build
-/docs.claude/
 /docs/
-/NEXUS_DOCS_no_tocar/
-/Enlace hacia NvidiaNIM/
 
 
 # Temporary files

@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-ai-gateway"
-version = "0.10.2"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "async-stream",

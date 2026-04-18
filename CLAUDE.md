@@ -1,139 +1,123 @@
 # CLAUDE.md
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & Development Commands
+## Project Overview
+
+NEXUS-AI-Gateway is a high-performance API proxy that translates Anthropic Messages API requests to OpenAI-compatible format. It enables Claude Code to work with any OpenAI-compatible model provider (NVIDIA NIM, OpenRouter, Ollama, etc.).
+
+## Development Commands
 
 ```bash
 # Build
-cargo build --release          # Release binary (6.9 MB, stripped)
+cargo build --release          # Production build (~7.2 MB binary)
 cargo build                    # Debug build
 
-# Test
-cargo test                     # All tests
-cargo test -- --nocapture      # With stdout output
-cargo test version             # Run specific test pattern
+# Testing
+cargo test                     # Run all 32 tests
+cargo test -- --nocapture      # Show println output
+cargo test tokenizer           # Run specific test module
 
-# Lint & Format
-cargo fmt -- --check           # Check formatting
-cargo clippy -- -D warnings    # Clippy with warnings as errors
-cargo fmt && cargo clippy -- -D warnings  # Fix format + check
+# Linting & Formatting
+cargo fmt --check              # Check formatting
+cargo clippy -- -D warnings    # Lint (warnings as errors)
 
-# Run
-cargo run                      # Development mode
-cargo run -- --daemon          # Background daemon
-cargo run -- --help            # CLI reference
+# Security Audit
+cargo audit                    # Check for CVEs in dependencies
 
-# Task runner (alternative)
-task build                     # Build release
+# Task Runner (alternative)
 task test                      # Run tests
-task check                     # fmt-check + lint + test
-task setup                     # Full setup (install + hooks + service)
+task version-check             # Verify VERSION/Cargo.toml/lib.rs sync
+task setup                     # Full setup (build + hooks)
 ```
 
-## Architecture Overview
+## Architecture
 
-NEXUS-AI-Gateway is an Anthropic API proxy that translates requests to OpenAI-compatible endpoints. Key modules:
+### Core Request Flow
+```
+Claude Code → POST /v1/messages → Proxy → Transform to OpenAI format → Upstream API
+                    ↑                                              ↓
+              SSE Stream ← Transform back to Anthropic ← SSE Stream
+```
+
+### Key Modules (by size/complexity)
 
 | Module | Purpose |
 |--------|---------|
-| `proxy.rs` | Core proxy logic: retry system (3-layer error classification), concurrency shield (per-model semaphores), auto-discovery (dynamic context limits), streaming SSE translation |
-| `transform.rs` | Bidirectional Anthropic ↔ OpenAI protocol conversion (request/response/streaming) |
-| `config.rs` | Configuration loading, multi-upstream routing, model mapping, hot-reload |
-| `scan.rs` | Claude Code binary scanner: model ID extraction, tool discovery, .env/launcher generation |
-| `web_fetch.rs` | WebFetch tool interceptor: HTTP GET, HTML→text conversion, content truncation |
-| `error.rs` | Error types with Anthropic-native response formatting |
+| `proxy.rs` | Core proxy: 3-layer retry system, concurrency shield (per-model semaphores), auto-discovery, SSE streaming |
+| `setup.rs` | 6-phase interactive setup wizard |
+| `scan.rs` | Claude Code binary scanner (model IDs, tools, capabilities) |
+| `transform.rs` | Bidirectional Anthropic ↔ OpenAI protocol conversion |
+| `config.rs` | Config loading, multi-upstream routing, model mapping |
+| `config_cmd.rs` | `config show/set/test` CLI commands |
+| `tokenizer.rs` | Token estimation using tiktoken cl100k_base |
+| `web_fetch.rs` | Intercepts `web_fetch` tool calls, fetches locally, strips HTML |
 | `models/anthropic.rs` | Anthropic API types (request/response/streaming) |
-| `models/openai.rs` | OpenAI API types (request/response/streaming) |
+| `models/openai.rs` | OpenAI API types |
 
-### Key Design Patterns
+### Critical Design Decisions
 
-1. **3-Layer Error Classification** (proxy.rs): L0 structural (typed error fields) → L1 content-aware (pattern matching) → L2 status-based. Determines retry vs fatal.
+1. **No Anthropic API key validation** — Any non-empty key is accepted; the gateway validates upstream credentials only.
 
-2. **Concurrency Shield**: Per-model semaphores (5 slots, 180s timeout) prevent upstream overload. Semaphore permit lives inside SSE stream.
+2. **Thinking forced globally** — All requests include `enable_thinking=true` via `chat_template_kwargs` for better NIM model output.
 
-3. **Auto-Discovery**: First request to a model probes for `max_total_tokens`, caches for 1 hour, pre-clamps all future requests.
+3. **Model identity preserved** — Responses always return the original Claude model ID (e.g., `claude-sonnet-4-6`) even when routed to different upstream models.
 
-4. **Streaming-First**: SSE translation happens in-stream. No buffering of complete responses.
+4. **Anthropic-native errors** — All error responses use Anthropic's error format with proper `type` fields for correct Claude Code handling.
 
-### Data Flow
-
-```
-Claude Code → /v1/messages → [proxy.rs] → transform.rs (Anthropic→OpenAI)
-                                                    ↓
-                                              upstream request
-                                                    ↓
-                                              [retry/semaphore]
-                                                    ↓
-                                              upstream response
-                                                    ↓
-                                            transform.rs (OpenAI→Anthropic)
-                                                    ↓
-Claude Code ← SSE stream ← [proxy.rs] ←────────────┘
-```
+5. **Auto-fix on overflow** — `max_tokens` overflow triggers automatic halving (minimum 4096) with retry.
 
 ## Version Management
 
-Three sources must stay synchronized:
-- `VERSION` file (source of truth)
-- `Cargo.toml` `version = "..."`
-- `src/lib.rs` `pub const VERSION: &str = "..."`
+Three files must stay synchronized:
+- `VERSION` — Single line version string
+- `Cargo.toml` — `version = "X.Y.Z"`
+- `src/lib.rs` — `pub const VERSION: &str = "X.Y.Z"`
+
+Run `task version-check` to verify sync. CI enforces this on every push.
+
+## Model Mapping Configuration
+
+Environment variables route Claude models to upstream providers:
 
 ```bash
-# Verify sync
-task version-check
-
-# Bump version (updates all 3 sources)
-./scripts/bump-version.sh X.Y.Z
-
-# Auto-version from conventional commits
-task auto-version-dry    # Preview
-task auto-version        # Apply
+# Format: MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>
+MODEL_MAP_claude_opus_4_6=default:z-ai/glm5
+MODEL_MAP_claude_sonnet_4_6=bigmodel:glm-4-plus
+MODEL_MAP_claude_haiku_4_5=default:moonshotai/kimi-k2.5
 ```
 
-## Git Hooks
+Hyphens in Claude model IDs become underscores in env var names.
 
-Portable hooks in `scripts/hooks/` activated via `git config core.hooksPath`:
+## Git Workflow
 
-| Hook | Actions |
-|------|---------|
-| `pre-commit` | `cargo fmt --check` + `cargo clippy` + secrets scan |
-| `commit-msg` | Conventional commit format validation (`feat:`, `fix:`, etc.) |
-| `post-commit` | Version bump preview |
-| `pre-push` | 3-way version sync + `cargo test` + `cargo audit` |
+- **Main branch is protected** — No direct pushes, PRs required
+- **Conventional commits** — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `ci:`, `perf:`
+- **Pre-commit hooks** — Format check, clippy, secrets scan
+- **Pre-push hooks** — Tests, clippy, `cargo audit`, version sync check
 
-```bash
-task setup-hooks  # Activate hooks
-```
+## Testing Strategy
 
-## Configuration
+- Unit tests in `#[cfg(test)]` modules within source files
+- Integration tests in `tests/` directory
+- Coverage target: 80%+
+- Test modules: `tokenizer_test.rs`, `transform_test.rs`, `error_test.rs`
 
-Config file search order:
-1. `--config /path/to/file` (CLI flag)
+## Configuration Files
+
+Config search order:
+1. `-c, --config <FILE>` (CLI flag)
 2. `./.env` (current directory)
 3. `~/.nexus-ai-gateway.env` (home directory)
 4. `/etc/nexus-ai-gateway/.env` (system-wide)
 
-Model routing via env vars: `MODEL_MAP_claude_sonnet_4_6=default:qwen/qwen3-coder-480b`
+## API Endpoints
 
-Hot-reload: SIGHUP or file watcher on config file.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/messages` | POST | Main proxy endpoint (Anthropic Messages API) |
+| `/v1/messages/count_tokens` | POST | Token count estimation |
+| `/health` | GET | Health check (returns `OK`) |
 
-## Testing Notes
+## Port Convention
 
-- Integration tests in `tests/` run as separate binaries
-- `version_sync.rs` verifies VERSION/Cargo.toml/lib.rs sync
-- No external services required for tests
-- For proxy testing, mock upstream responses (no real API calls)
-
-## Common Development Tasks
-
-When adding new features:
-1. Update models in `models/anthropic.rs` or `models/openai.rs` if changing API types
-2. Update `transform.rs` if changing protocol conversion logic
-3. Update `proxy.rs` if changing retry/semaphore/streaming behavior
-4. Run `task check` before committing
-
-When fixing bugs:
-1. Check error classification in `proxy.rs` (L0/L1/L2 layers)
-2. Check streaming SSE conversion in `transform.rs`
-3. Add regression test in appropriate module
+Default port **8315**: N(78) + E(69) + U(85) + S(83) = 315 → 8315
