@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-04-19
+
+### Added
+- Circuit breaker module for upstream request protection (prevents cascade failures)
+- L2 rate limit detection system for provider-side concurrency caps
+- Configurable CC_CONTEXT_WINDOW environment variable for auto-compact scaling
+- Partial flush optimization for streaming (100ms timeout, 512 byte minimum)
+- Prompt caching header (anthropic-beta: prompt-caching-2024-06-01)
+
+### Changed
+- HTTP connection pool increased from 10 to 50 for multi-agent scenarios
+- HTTP/2 enabled for better multiplexing
+- Added tcp_nodelay and tcp_keepalive for connection health
+- Enhanced error logging with structured metrics
+
+### Fixed
+- Prevented cascade timeouts on rate limit errors
+- Reduced latency in streaming with partial flush
+- Missing cache activation header added to all requests
+
+### Technical Details
+- Pool idle timeout set to 30 seconds for faster connection release
+- HTTP/2 prior knowledge mode enabled
+- TCP keepalive set to 60 seconds
+
+---
+
 ## [0.11.1] - 2026-04-18
 
 ### Added

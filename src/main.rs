@@ -1,3 +1,4 @@
+mod circuit_breaker;
 mod cli;
 mod config;
 mod config_cmd;
@@ -163,7 +164,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .connect_timeout(std::time::Duration::from_secs(10))
-        .pool_max_idle_per_host(10)
+        // v0.12.0: HTTP Client Hardening (Gap #3, #4)
+        .pool_max_idle_per_host(50) // Increased from 10 for multi-agent scenarios
+        .pool_idle_timeout(std::time::Duration::from_secs(30)) // Faster release
+        .use_rustls_tls()
+        .http2_prior_knowledge() // HTTP/2 for multiplexing
+        .tcp_nodelay(true) // Reduce latency
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60))) // Detect dead connections
         .build()?;
 
     // v5.0: Auto-discovery model capabilities cache
