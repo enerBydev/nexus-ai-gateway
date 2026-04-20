@@ -25,21 +25,24 @@ pub enum CircuitState {
 ///
 /// Tracks consecutive failures and opens the circuit when threshold is reached.
 /// After recovery timeout, transitions to half-open to test if upstream recovered.
+/// Uses CAS-based probe admission to guarantee only one probe at a time.
+/// Uses generation counter to prevent stale in-flight completions from changing state.
 pub struct CircuitBreaker {
     state: RwLock<CircuitState>,
     failure_count: AtomicU32,
     failure_threshold: u32,
     recovery_timeout: Duration,
     last_failure: RwLock<Option<Instant>>,
+    /// Tracks how many probes have been admitted in current HalfOpen phase.
+    /// CAS on this field ensures only one probe is admitted at a time.
     half_open_probes: AtomicU32,
+    /// Generation counter incremented on each HalfOpen transition.
+    /// Callers receive the generation when admitted and must present it
+    /// when recording results, preventing stale in-flight completions.
+    generation: AtomicU32,
 }
 
 impl CircuitBreaker {
-    /// Create a new circuit breaker
-    ///
-    /// # Arguments
-    /// * `failure_threshold` - Number of consecutive failures before opening
-    /// * `recovery_timeout` - Time to wait before testing recovery
     pub fn new(failure_threshold: u32, recovery_timeout: Duration) -> Self {
         Self {
             state: RwLock::new(CircuitState::Closed),
@@ -48,39 +51,65 @@ impl CircuitBreaker {
             recovery_timeout,
             last_failure: RwLock::new(None),
             half_open_probes: AtomicU32::new(0),
+            generation: AtomicU32::new(0),
         }
     }
 
-    /// Check if requests should be allowed
-    pub async fn is_allowed(&self) -> bool {
+    /// Check if requests should be allowed.
+    /// Returns (allowed, generation) where generation must be passed
+    /// to record_success/record_failure to prevent stale completions.
+    pub async fn is_allowed(&self) -> (bool, u32) {
         let state = *self.state.read().await;
         match state {
-            CircuitState::Closed => true,
+            CircuitState::Closed => {
+                let gen = self.generation.load(Ordering::SeqCst);
+                (true, gen)
+            }
             CircuitState::Open => {
-                // Check if recovery timeout has passed
                 let last = self.last_failure.read().await;
                 if let Some(instant) = *last {
                     if instant.elapsed() >= self.recovery_timeout {
-                        // Transition to half-open
-                        self.half_open_probes.store(0, Ordering::SeqCst);
+                        // Atomically reserve the probe slot via CAS.
+                        // This ensures only one caller gets through the transition.
+                        if self
+                            .half_open_probes
+                            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_err()
+                        {
+                            // Another thread already transitioned and reserved the probe
+                            drop(last);
+                            tracing::debug!(
+                                "HalfOpen: probe already reserved by another thread during transition"
+                            );
+                            return (false, 0);
+                        }
+                        // Increment generation to invalidate stale in-flight completions
+                        let new_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
                         drop(last);
                         *self.state.write().await = CircuitState::HalfOpen;
-                        tracing::info!(" Circuit breaker transitioning to HALF-OPEN");
-                        return true;
+                        tracing::info!(
+                            "Circuit breaker transitioning to HALF-OPEN (generation={})",
+                            new_gen
+                        );
+                        return (true, new_gen);
                     }
                 }
-                false
+                (false, 0)
             }
             CircuitState::HalfOpen => {
-                // Only allow limited probes in HalfOpen
-                let probes = self.half_open_probes.fetch_add(1, Ordering::SeqCst);
-                if probes < 1 {
-                    // Only allow 1 probe
-                    tracing::debug!(" HalfOpen: allowing probe request #{}", probes + 1);
-                    true
+                // CAS ensures only one probe is admitted at a time.
+                // Unlike fetch_add, rejected callers don't increment the counter.
+                if self
+                    .half_open_probes
+                    .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    let gen = self.generation.load(Ordering::SeqCst);
+                    tracing::debug!("HalfOpen: allowing probe request (generation={})", gen);
+                    (true, gen)
                 } else {
-                    tracing::debug!(" HalfOpen: rejecting request (probe already in progress)");
-                    false
+                    tracing::debug!("HalfOpen: rejecting request (probe already in progress)");
+                    (false, 0)
                 }
             }
         }
@@ -91,13 +120,28 @@ impl CircuitBreaker {
         *self.state.read().await
     }
 
-    /// Record a successful request
-    pub async fn record_success(&self) {
+    /// Record a successful request.
+    /// The generation parameter must match the current generation to prevent
+    /// stale in-flight completions from closing the circuit.
+    pub async fn record_success(&self, generation: u32) {
         let current_state = *self.state.read().await;
+        let current_gen = self.generation.load(Ordering::SeqCst);
+
+        // Reject stale completions from before the current HalfOpen phase
+        if generation != current_gen && current_state != CircuitState::Closed {
+            tracing::warn!(
+                "Ignoring stale success (gen={}, current_gen={}, state={:?}) - result from previous generation",
+                generation, current_gen, current_state
+            );
+            return;
+        }
+
         match current_state {
             CircuitState::HalfOpen => {
-                // Successful probe - close the circuit
-                tracing::info!(" Circuit breaker closing after successful probe");
+                tracing::info!(
+                    "Circuit breaker closing after successful probe (generation={})",
+                    generation
+                );
                 self.failure_count.store(0, Ordering::SeqCst);
                 self.half_open_probes.store(0, Ordering::SeqCst);
                 *self.state.write().await = CircuitState::Closed;
@@ -107,26 +151,42 @@ impl CircuitBreaker {
                 self.failure_count.store(0, Ordering::SeqCst);
             }
             CircuitState::Open => {
-                // Stale success from before circuit opened - ignore
-                tracing::warn!(" Received success while circuit is OPEN - ignoring stale result");
+                tracing::warn!("Received success while circuit is OPEN - ignoring stale result");
             }
         }
     }
 
-    /// Record a failed request
-    pub async fn record_failure(&self) {
+    /// Record a failed request.
+    /// The generation parameter must match the current generation to prevent
+    /// stale in-flight completions from re-opening the circuit.
+    pub async fn record_failure(&self, generation: u32) {
+        let current_gen = self.generation.load(Ordering::SeqCst);
+        let current_state = *self.state.read().await;
+
+        // Reject stale completions from before the current HalfOpen phase
+        if generation != current_gen && current_state != CircuitState::Closed {
+            tracing::debug!(
+                "Ignoring stale failure (gen={}, current_gen={}, state={:?}) - result from previous generation",
+                generation, current_gen, current_state
+            );
+            return;
+        }
+
         let count = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
         *self.last_failure.write().await = Some(Instant::now());
-        let current_state = *self.state.read().await;
+
         if current_state == CircuitState::HalfOpen {
             // Failed during half-open, go back to open
             self.half_open_probes.store(0, Ordering::SeqCst);
             *self.state.write().await = CircuitState::Open;
-            tracing::warn!(" Circuit breaker back to OPEN after failure in half-open");
+            tracing::warn!(
+                "Circuit breaker back to OPEN after failure in half-open (generation={})",
+                generation
+            );
         } else if count >= self.failure_threshold {
             *self.state.write().await = CircuitState::Open;
             tracing::warn!(
-                " Circuit breaker OPEN after {} consecutive failures (threshold={})",
+                "Circuit breaker OPEN after {} consecutive failures (threshold={})",
                 count,
                 self.failure_threshold
             );
@@ -147,26 +207,59 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_starts_closed() {
         let cb = CircuitBreaker::default();
-        assert!(cb.is_allowed().await);
+        let (allowed, _gen) = cb.is_allowed().await;
+        assert!(allowed);
         assert_eq!(cb.state().await, CircuitState::Closed);
     }
 
     #[tokio::test]
     async fn test_circuit_breaker_opens_after_threshold() {
         let cb = CircuitBreaker::new(2, Duration::from_secs(30));
-        cb.record_failure().await;
+        let (allowed, gen) = cb.is_allowed().await;
+        assert!(allowed);
+        cb.record_failure(gen).await;
         assert_eq!(cb.state().await, CircuitState::Closed);
-        cb.record_failure().await;
+
+        let (allowed, gen) = cb.is_allowed().await;
+        assert!(allowed);
+        cb.record_failure(gen).await;
         assert_eq!(cb.state().await, CircuitState::Open);
-        assert!(!cb.is_allowed().await);
+
+        let (allowed, _) = cb.is_allowed().await;
+        assert!(!allowed);
     }
 
     #[tokio::test]
     async fn test_circuit_breaker_resets_on_success() {
         let cb = CircuitBreaker::new(2, Duration::from_secs(30));
-        cb.record_failure().await;
-        cb.record_success().await;
+        let (allowed, gen) = cb.is_allowed().await;
+        assert!(allowed);
+        cb.record_failure(gen).await;
+
+        let (allowed, gen) = cb.is_allowed().await;
+        assert!(allowed);
+        cb.record_success(gen).await;
         assert_eq!(cb.state().await, CircuitState::Closed);
-        assert!(cb.is_allowed().await);
+
+        let (allowed, _) = cb.is_allowed().await;
+        assert!(allowed);
+    }
+
+    #[tokio::test]
+    async fn test_stale_success_ignored() {
+        let cb = CircuitBreaker::new(2, Duration::from_secs(30));
+
+        // Get admission with generation 0
+        let (allowed, old_gen) = cb.is_allowed().await;
+        assert!(allowed);
+
+        // Open the circuit
+        cb.record_failure(old_gen).await;
+        cb.record_failure(old_gen).await;
+        assert_eq!(cb.state().await, CircuitState::Open);
+
+        // A stale success with old generation should be ignored
+        cb.record_success(old_gen).await;
+        assert_eq!(cb.state().await, CircuitState::Open);
     }
 }
