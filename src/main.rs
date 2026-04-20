@@ -168,7 +168,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .pool_max_idle_per_host(50) // Increased from 10 for multi-agent scenarios
         .pool_idle_timeout(std::time::Duration::from_secs(30)) // Faster release
         .use_rustls_tls()
-        .http2_prior_knowledge() // HTTP/2 for multiplexing
+        // REMOVED: http2_prior_knowledge - breaks HTTP/1.1-only upstreams
+        // HTTP/2 is still used via ALPN negotiation when available
         .tcp_nodelay(true) // Reduce latency
         .tcp_keepalive(Some(std::time::Duration::from_secs(60))) // Detect dead connections
         .build()?;
@@ -183,6 +184,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     // v8.0: Per-model token calibration factors (EMA-based, converges to ~98% accuracy)
     let calibration_factors = tokenizer::CalibrationFactors::new();
+    // v0.12.0: Circuit breaker for upstream protection
+    let circuit_breaker: proxy::CircuitBreaker = Arc::new(circuit_breaker::CircuitBreaker::new(
+        3,
+        std::time::Duration::from_secs(30),
+    ));
 
     // Save CLI flags for hot-reload
     let cli_debug = config.debug;
@@ -205,6 +211,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .layer(Extension(model_cache))
         .layer(Extension(model_semaphores))
         .layer(Extension(calibration_factors))
+        .layer(Extension(circuit_breaker))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
@@ -281,7 +288,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
         let rt = tokio::runtime::Handle::current();
         let mut debouncer = match new_debouncer(
-            std::time::Duration::from_secs(5), // v10.3: was 1s — caused reload storm + write lock contention
+            std::time::Duration::from_secs(10), // > cooldown * 2 to prevent burst reloads
             move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, _>| {
                 if let Ok(evts) = events {
                     for evt in evts {
@@ -315,14 +322,15 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         tracing::info!(
-            "👁 Watching {} for changes (auto-reload enabled, 5s debounce)",
+            "👁 Watching {} for changes (auto-reload enabled, 10s debounce)",
             env_path.display()
         );
 
         // v10.3: Add cooldown to prevent rapid-fire reloads from write lock contention
         let mut last_reload = std::time::Instant::now();
         while rx.recv().await.is_some() {
-            if last_reload.elapsed().as_secs() < 3 {
+            if last_reload.elapsed().as_secs() < 5 {
+                // Increased for stability
                 tracing::debug!("🔄 .env change debounced (cooldown)");
                 continue;
             }

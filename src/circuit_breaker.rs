@@ -3,7 +3,8 @@
 //! Implements the circuit breaker pattern to prevent cascade failures
 //! when the upstream API becomes unhealthy.
 
-#![allow(dead_code)] // v0.12.0: Circuit breaker integration in progress
+// v0.12.0: Temporary allow until CB is fully integrated into request flow
+#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};

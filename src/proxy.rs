@@ -1,5 +1,5 @@
 #[allow(unused_imports)] // v0.12.0: Circuit breaker integration pending
-use crate::circuit_breaker::{CircuitBreaker, CircuitState};
+use crate::circuit_breaker::{self, CircuitState};
 use crate::config::{Config, SharedConfig};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
@@ -18,7 +18,7 @@ use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{RwLock as AsyncRwLock, Semaphore};
 
 const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplification (1.58x→~1.3x)
@@ -29,10 +29,6 @@ const MIN_CLAMP_TOKENS: u32 = 4096;
 // v0.11.0: Stream stability constants (CR-01, CR-02)
 const CHUNK_TIMEOUT_SECS: u64 = 120; // Max seconds to wait for next SSE chunk from NIM
 const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
-
-// v0.12.0: Streaming flush optimization (Gap #2)
-const FLUSH_TIMEOUT_MS: u64 = 500; // More tolerant with NIM thinking
-const MIN_FLUSH_SIZE: usize = 128; // More responsive
 
 // ─── Smart Retry Infrastructure (3-Layer Error Classification) ─────────
 
@@ -127,8 +123,10 @@ fn extract_nested_error(msg: &str) -> Option<UpstreamError> {
 const L2_RATE_LIMIT_PATTERNS: &[&str] = &[
     "NIM concurrency cap (L2)",
     "concurrency limit exceeded",
-    "rate limit exceeded",
+    // REMOVED: "rate limit exceeded" - too broad, captures non-L2 rate limits
     "too many concurrent requests",
+    "concurrent request limit",   // Alternative pattern
+    "simultaneous request limit", // Alternative pattern
 ];
 
 /// Check if error indicates L2 rate limit (provider-side concurrency)
@@ -519,6 +517,7 @@ async fn get_context_limit(
 
 /// Shared collection of per-model semaphores.
 pub type ModelSemaphores = Arc<AsyncRwLock<HashMap<String, Arc<Semaphore>>>>;
+pub type CircuitBreaker = Arc<circuit_breaker::CircuitBreaker>;
 
 /// Acquire a concurrency permit for a specific NIM model.
 async fn acquire_model_permit(
@@ -915,6 +914,7 @@ async fn resilient_send_raw(
 pub async fn proxy_handler(
     Extension(shared_config): Extension<SharedConfig>,
     Extension(client): Extension<Client>,
+    Extension(_circuit_breaker): Extension<CircuitBreaker>,
     Extension(model_cache): Extension<ModelCache>,
     Extension(model_semaphores): Extension<ModelSemaphores>,
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
@@ -1263,7 +1263,6 @@ fn create_sse_stream(
         let _ = &_permit;  // prevent compiler from optimizing the move away
 
         let mut buffer = String::with_capacity(8192);
-        let mut last_flush = Instant::now(); // v0.11.0: pre-allocate + size limit (CR-02)
         let mut message_id = None;
         let mut current_model = None;
         let mut content_index = 0;
@@ -1327,21 +1326,6 @@ fn create_sse_stream(
                     let text = String::from_utf8_lossy(&bytes);
                     buffer.push_str(&text);
 
-                    // v0.12.0: Partial flush optimization (Gap #2)
-                    if buffer.len() >= MIN_FLUSH_SIZE && last_flush.elapsed() > Duration::from_millis(FLUSH_TIMEOUT_MS) {
-                        // Only flush if we're not in the middle of an SSE event
-                        let in_event = buffer.trim().starts_with("event:") || buffer.trim().starts_with("data:");
-                        if !in_event {
-                            tracing::trace!(
-                                "🔄 Partial flush: {} bytes after {}ms",
-                                buffer.len(),
-                                last_flush.elapsed().as_millis()
-                            );
-                            yield Ok(Bytes::from(buffer.clone()));
-                            buffer.clear();
-                            last_flush = Instant::now();
-                        }
-                    }
 
                     // v0.11.0 (CR-02): Buffer size guard — prevents OOM if NIM sends data without delimiters
                     if buffer.len() > MAX_SSE_BUFFER {
