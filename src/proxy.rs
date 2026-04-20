@@ -31,8 +31,8 @@ const CHUNK_TIMEOUT_SECS: u64 = 120; // Max seconds to wait for next SSE chunk f
 const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
 
 // v0.12.0: Streaming flush optimization (Gap #2)
-const FLUSH_TIMEOUT_MS: u64 = 100; // Maximum time before flush
-const MIN_FLUSH_SIZE: usize = 512; // Minimum bytes before partial flush
+const FLUSH_TIMEOUT_MS: u64 = 500; // More tolerant with NIM thinking
+const MIN_FLUSH_SIZE: usize = 128; // More responsive
 
 // ─── Smart Retry Infrastructure (3-Layer Error Classification) ─────────
 
@@ -1454,7 +1454,21 @@ fn create_sse_stream(
                                                 tracing::debug!("🧹 Discarding poisoned reasoning chunk");
                                             } else {
                                                 // Check if this chunk contains the poison delimiter
-                                                let emit_text = if let Some(pos) = reasoning.find("</previous_reasoning>") {
+                                                let emit_text = if reasoning.contains("<previous_reasoning") {
+                            // FIX F1: Detect opening tag (without closing >)
+                            reasoning_poisoned = true;
+                            let pos = reasoning.find("<previous_reasoning").unwrap_or(0);
+                            let clean = &reasoning[..pos];
+                            tracing::info!(
+                                "🧹 Reasoning sanitized: cut at <previous_reasoning> ({} chars discarded)",
+                                reasoning.len() - pos
+                            );
+                            if clean.trim().is_empty() {
+                                None
+                            } else {
+                                Some(clean.to_string())
+                            }
+                        } else if let Some(pos) = reasoning.find("</previous_reasoning>") {
                                                     reasoning_poisoned = true;
                                                     let clean = &reasoning[..pos];
                                                     tracing::info!("🧹 Reasoning sanitized: cut at </previous_reasoning> ({} chars discarded)",
@@ -1509,6 +1523,17 @@ fn create_sse_stream(
                                                     // Everything after poison → discard content too
                                                     tracing::debug!("🧹 Discarding poisoned content chunk ({} chars)", content.len());
                                                     None
+                        } else if content.contains("<previous_reasoning") {
+                            // FIX F1b: Detect opening tag in content
+                            reasoning_poisoned = true;
+                            let pos = content.find("<previous_reasoning").unwrap_or(0);
+                            let clean = &content[..pos];
+                            tracing::info!("🧹 Content sanitized: cut at <previous_reasoning>");
+                            if clean.trim().is_empty() {
+                                None
+                            } else {
+                                Some(clean.to_string())
+                            }
                                                 } else if let Some(pos) = content.find("</previous_reasoning>") {
                                                     reasoning_poisoned = true;
                                                     let clean = &content[..pos];
