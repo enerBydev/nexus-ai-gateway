@@ -247,19 +247,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_stale_success_ignored() {
-        let cb = CircuitBreaker::new(2, Duration::from_secs(30));
+        let cb = CircuitBreaker::new(2, Duration::from_millis(10));
 
         // Get admission with generation 0
         let (allowed, old_gen) = cb.is_allowed().await;
         assert!(allowed);
+        assert_eq!(old_gen, 0);
 
         // Open the circuit
         cb.record_failure(old_gen).await;
         cb.record_failure(old_gen).await;
         assert_eq!(cb.state().await, CircuitState::Open);
 
+        // Wait for recovery timeout to allow transition to HalfOpen
+        tokio::time::sleep(Duration::from_millis(15)).await;
+
+        // Transition to HalfOpen by calling is_allowed (bumps generation to 1)
+        let (allowed, new_gen) = cb.is_allowed().await;
+        assert!(allowed);
+        assert_eq!(new_gen, 1);
+        assert_eq!(cb.state().await, CircuitState::HalfOpen);
+
         // A stale success with old generation should be ignored
         cb.record_success(old_gen).await;
-        assert_eq!(cb.state().await, CircuitState::Open);
+        assert_eq!(cb.state().await, CircuitState::HalfOpen);
     }
 }
