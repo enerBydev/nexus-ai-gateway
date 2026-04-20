@@ -31,6 +31,7 @@ pub struct CircuitBreaker {
     failure_threshold: u32,
     recovery_timeout: Duration,
     last_failure: RwLock<Option<Instant>>,
+    half_open_probes: AtomicU32,
 }
 
 impl CircuitBreaker {
@@ -46,6 +47,7 @@ impl CircuitBreaker {
             failure_threshold,
             recovery_timeout,
             last_failure: RwLock::new(None),
+            half_open_probes: AtomicU32::new(0),
         }
     }
 
@@ -60,15 +62,27 @@ impl CircuitBreaker {
                 if let Some(instant) = *last {
                     if instant.elapsed() >= self.recovery_timeout {
                         // Transition to half-open
+                        self.half_open_probes.store(0, Ordering::SeqCst);
                         drop(last);
                         *self.state.write().await = CircuitState::HalfOpen;
-                        tracing::info!("🟡 Circuit breaker transitioning to HALF-OPEN");
+                        tracing::info!(" Circuit breaker transitioning to HALF-OPEN");
                         return true;
                     }
                 }
                 false
             }
-            CircuitState::HalfOpen => true,
+            CircuitState::HalfOpen => {
+                // Only allow limited probes in HalfOpen
+                let probes = self.half_open_probes.fetch_add(1, Ordering::SeqCst);
+                if probes < 1 {
+                    // Only allow 1 probe
+                    tracing::debug!(" HalfOpen: allowing probe request #{}", probes + 1);
+                    true
+                } else {
+                    tracing::debug!(" HalfOpen: rejecting request (probe already in progress)");
+                    false
+                }
+            }
         }
     }
 
@@ -80,11 +94,23 @@ impl CircuitBreaker {
     /// Record a successful request
     pub async fn record_success(&self) {
         let current_state = *self.state.read().await;
-        if current_state == CircuitState::HalfOpen {
-            tracing::info!("🟢 Circuit breaker closing after successful request");
+        match current_state {
+            CircuitState::HalfOpen => {
+                // Successful probe - close the circuit
+                tracing::info!(" Circuit breaker closing after successful probe");
+                self.failure_count.store(0, Ordering::SeqCst);
+                self.half_open_probes.store(0, Ordering::SeqCst);
+                *self.state.write().await = CircuitState::Closed;
+            }
+            CircuitState::Closed => {
+                // Normal operation - just reset failure count
+                self.failure_count.store(0, Ordering::SeqCst);
+            }
+            CircuitState::Open => {
+                // Stale success from before circuit opened - ignore
+                tracing::warn!(" Received success while circuit is OPEN - ignoring stale result");
+            }
         }
-        self.failure_count.store(0, Ordering::SeqCst);
-        *self.state.write().await = CircuitState::Closed;
     }
 
     /// Record a failed request
@@ -94,12 +120,13 @@ impl CircuitBreaker {
         let current_state = *self.state.read().await;
         if current_state == CircuitState::HalfOpen {
             // Failed during half-open, go back to open
+            self.half_open_probes.store(0, Ordering::SeqCst);
             *self.state.write().await = CircuitState::Open;
-            tracing::warn!("🔴 Circuit breaker back to OPEN after failure in half-open");
+            tracing::warn!(" Circuit breaker back to OPEN after failure in half-open");
         } else if count >= self.failure_threshold {
             *self.state.write().await = CircuitState::Open;
             tracing::warn!(
-                "🔴 Circuit breaker OPEN after {} consecutive failures (threshold={})",
+                " Circuit breaker OPEN after {} consecutive failures (threshold={})",
                 count,
                 self.failure_threshold
             );
