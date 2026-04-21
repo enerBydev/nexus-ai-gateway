@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Removed partial flush that caused 73.7% of stream decoding errors
-- Prevented cascade timeouts on rate limit errors
+- Improved rate-limit detection/backoff groundwork to reduce cascade timeout risk
 - Missing cache activation header added to all requests
 - L2 rate limit false positives from overly broad "rate limit exceeded" pattern
 - Circuit breaker HalfOpen unlimited traffic (now limited to 1 probe)

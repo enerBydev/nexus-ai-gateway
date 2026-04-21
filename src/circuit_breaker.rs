@@ -127,11 +127,15 @@ impl CircuitBreaker {
         let current_state = *self.state.read().await;
         let current_gen = self.generation.load(Ordering::SeqCst);
 
-        // Reject stale completions from before the current HalfOpen phase
-        if generation != current_gen && current_state != CircuitState::Closed {
+        // Reject ALL stale completions regardless of current state.
+        // A generation mismatch means the result is from a previous
+        // HalfOpen phase — even if the circuit has since closed,
+        // stale results must not mutate the breaker.
+        if generation != current_gen {
             tracing::warn!(
-                "Ignoring stale success (gen={}, current_gen={}, state={:?}) - result from previous generation",
-                generation, current_gen, current_state
+                "Ignoring stale success (gen={}, current_gen={}) - result from previous generation",
+                generation,
+                current_gen
             );
             return;
         }
@@ -163,11 +167,14 @@ impl CircuitBreaker {
         let current_gen = self.generation.load(Ordering::SeqCst);
         let current_state = *self.state.read().await;
 
-        // Reject stale completions from before the current HalfOpen phase
-        if generation != current_gen && current_state != CircuitState::Closed {
+        // Reject ALL stale completions regardless of current state.
+        // A generation mismatch means the result is from a previous
+        // HalfOpen phase — stale results must not mutate the breaker.
+        if generation != current_gen {
             tracing::debug!(
-                "Ignoring stale failure (gen={}, current_gen={}, state={:?}) - result from previous generation",
-                generation, current_gen, current_state
+                "Ignoring stale failure (gen={}, current_gen={}) - result from previous generation",
+                generation,
+                current_gen
             );
             return;
         }
@@ -247,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stale_success_ignored() {
-        let cb = CircuitBreaker::new(2, Duration::from_millis(10));
+        let cb = CircuitBreaker::new(2, Duration::from_millis(0));
 
         // Get admission with generation 0
         let (allowed, old_gen) = cb.is_allowed().await;
@@ -259,17 +266,19 @@ mod tests {
         cb.record_failure(old_gen).await;
         assert_eq!(cb.state().await, CircuitState::Open);
 
-        // Wait for recovery timeout to allow transition to HalfOpen
-        tokio::time::sleep(Duration::from_millis(15)).await;
-
-        // Transition to HalfOpen by calling is_allowed (bumps generation to 1)
+        // Move to half-open, which advances the generation.
+        // Recovery timeout is 0ms so the transition is immediate.
         let (allowed, new_gen) = cb.is_allowed().await;
         assert!(allowed);
         assert_eq!(new_gen, 1);
         assert_eq!(cb.state().await, CircuitState::HalfOpen);
 
-        // A stale success with old generation should be ignored
+        // A stale success with old generation should be ignored.
         cb.record_success(old_gen).await;
         assert_eq!(cb.state().await, CircuitState::HalfOpen);
+
+        // A current-generation success should close the circuit.
+        cb.record_success(new_gen).await;
+        assert_eq!(cb.state().await, CircuitState::Closed);
     }
 }
