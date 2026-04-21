@@ -37,12 +37,24 @@ jobs:
           CURRENT_VERSION=$(cat VERSION)
           CURRENT_TAG="v${CURRENT_VERSION}"
 
-          if ! git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
+          # If the current version's tag doesn't exist (e.g., manual version bump
+          # without tag), fall back to the most recent tag as commit baseline.
+          if git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
+            BASE_TAG="$CURRENT_TAG"
+            TAG_EXISTS=true
+          else
+            BASE_TAG=$(git tag --sort=-version:refname | head -1)
+            TAG_EXISTS=false
+            echo "⚠️ Tag $CURRENT_TAG not found — using $BASE_TAG as baseline"
+          fi
+
+          if [ -z "$BASE_TAG" ]; then
             echo "bump=none" >> $GITHUB_OUTPUT
+            echo "⚠️ No tags found — skipping auto-version"
             exit 0
           fi
 
-          COMMITS=$(git log "${CURRENT_TAG}..HEAD" --oneline 2>/dev/null)
+          COMMITS=$(git log "${BASE_TAG}..HEAD" --oneline 2>/dev/null)
           TOTAL=$(echo "$COMMITS" | grep -c '.' || true)
 
           if [ "$TOTAL" -eq 0 ]; then
@@ -69,6 +81,7 @@ jobs:
 
           echo "bump=$BUMP" >> $GITHUB_OUTPUT
           echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "tag_exists=${TAG_EXISTS:-false}" >> $GITHUB_OUTPUT
           echo "total=$TOTAL" >> $GITHUB_OUTPUT
           echo "feat=$FEAT" >> $GITHUB_OUTPUT
           echo "fix=$FIX" >> $GITHUB_OUTPUT
@@ -80,6 +93,15 @@ jobs:
           echo "ci=$CI" >> $GITHUB_OUTPUT
 
           echo "📊 Analysis: $TOTAL commits | bump=$BUMP"
+
+      - name: Tag current version if missing
+        if: steps.analyze.outputs.tag_exists == 'false'
+        run: |
+          CURRENT_VERSION=$(cat VERSION)
+          CURRENT_TAG="v${CURRENT_VERSION}"
+          echo "📌 Creating missing tag $CURRENT_TAG for current version"
+          git tag -a "$CURRENT_TAG" -m "Release $CURRENT_TAG"
+          git push origin "$CURRENT_TAG"
 
       - name: Calculate new version
         id: version
