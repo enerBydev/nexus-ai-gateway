@@ -6,3 +6,4 @@
 /// Current version of the crate
 /// This should be kept in sync with Cargo.toml and VERSION file
 pub const VERSION: &str = "0.12.1";
+// TEST: auto-version PR merge verification (remove after test)
