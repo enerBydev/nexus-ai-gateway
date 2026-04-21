@@ -90,13 +90,24 @@ pub fn anthropic_to_openai(
             Some(
                 filtered
                     .into_iter()
-                    .map(|t| openai::Tool {
-                        tool_type: "function".to_string(),
-                        function: openai::Function {
-                            name: t.name,
-                            description: t.description,
-                            parameters: ensure_valid_schema(clean_schema(t.input_schema)),
-                        },
+                    .map(|t| {
+                        let parameters = if t.input_schema.is_null() {
+                            tracing::debug!(
+                                "Tool '{}' has null input_schema, using default schema",
+                                t.name
+                            );
+                            json!({ "type": "object", "properties": {}, "required": [] })
+                        } else {
+                            ensure_valid_schema(clean_schema(t.input_schema))
+                        };
+                        openai::Tool {
+                            tool_type: "function".to_string(),
+                            function: openai::Function {
+                                name: t.name,
+                                description: t.description,
+                                parameters,
+                            },
+                        }
                     })
                     .collect(),
             )
