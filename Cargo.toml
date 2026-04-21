@@ -1,6 +1,6 @@
 [package]
 name = "nexus-ai-gateway"
-version = "0.11.1"
+version = "0.12.0"
 edition = "2021"
 authors = ["enerBydev <zakutnii.ivan@gmail.com>"]
 description = "High-performance Anthropic API proxy to OpenAI-compatible endpoints"
@@ -19,7 +19,7 @@ tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"] }
 axum = { version = "0.7", features = ["http2"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking", "http2"], default-features = false }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

@@ -1,3 +1,5 @@
+#[allow(unused_imports)] // v0.12.0: Circuit breaker integration pending
+use crate::circuit_breaker::{self, CircuitState};
 use crate::config::{Config, SharedConfig};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
@@ -113,6 +115,56 @@ fn extract_nested_error(msg: &str) -> Option<UpstreamError> {
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Rate Limit Detection System (Gap #7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// L2 rate limit patterns from various providers
+const L2_RATE_LIMIT_PATTERNS: &[&str] = &[
+    "NIM concurrency cap (L2)",
+    "concurrency limit exceeded",
+    // REMOVED: "rate limit exceeded" - too broad, captures non-L2 rate limits
+    "too many concurrent requests",
+    "concurrent request limit",   // Alternative pattern
+    "simultaneous request limit", // Alternative pattern
+];
+
+/// Check if error indicates L2 rate limit (provider-side concurrency)
+fn is_l2_rate_limit(error: &UpstreamError) -> bool {
+    L2_RATE_LIMIT_PATTERNS.iter().any(|pattern| {
+        error
+            .message
+            .to_lowercase()
+            .contains(&pattern.to_lowercase())
+    })
+}
+
+/// L2 rate limit backoff configuration
+#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+const L2_BACKOFF_MULTIPLIER: f64 = 2.0;
+#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+const L2_MIN_BACKOFF_MS: u64 = 2000;
+#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+const L2_MAX_BACKOFF_MS: u64 = 30000;
+#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+const L2_JITTER_PERCENT: f64 = 0.25;
+
+/// Log L2 rate limit with actionable information
+#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+fn log_l2_rate_limit(model: &str, error: &UpstreamError) {
+    tracing::warn!(
+        target: "nexus::rate_limit",
+        "🚫 L2_RATE_LIMIT model={} message=\"{}\"",
+        model,
+        error.message.chars().take(200).collect::<String>()
+    );
+    tracing::info!(
+        target: "nexus::metrics",
+        "METRIC rate_limit_l2_total{{model=\"{}\"}} 1",
+        model
+    );
+}
+
 /// Error classification: 3 layers (Structural → Content-Aware → Status-Based)
 #[derive(Debug)]
 enum ErrorClass {
@@ -204,6 +256,19 @@ fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
 /// Layer 2: Status-Based — HTTP status code fallback
 fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     let lower = upstream.message.to_lowercase();
+
+    // Check for L2 rate limit first (more specific)
+    if is_l2_rate_limit(upstream) {
+        tracing::warn!(
+            "⚠️ L2 rate limit detected: {} - using extended backoff",
+            upstream.message.chars().take(100).collect::<String>()
+        );
+        return ErrorClass::Retryable {
+            base_delay_ms: L2_MIN_BACKOFF_MS,
+            max_retries: 3,
+            reason: "L2 rate limit — provider concurrency cap",
+        };
+    }
 
     // ╔══════════════════════════════════════════════════════════╗
     // ║  LAYER 0: Structural — NIM typed error fields            ║
@@ -374,6 +439,8 @@ async fn probe_model_limit(
     let mut req_builder = client
         .post(&url)
         .header("Content-Type", "application/json")
+        // v0.12.0: Prompt caching header (Gap #1)
+        .header("anthropic-beta", "prompt-caching-2024-06-01")
         .json(&probe_body)
         .timeout(Duration::from_secs(15));
 
@@ -450,6 +517,7 @@ async fn get_context_limit(
 
 /// Shared collection of per-model semaphores.
 pub type ModelSemaphores = Arc<AsyncRwLock<HashMap<String, Arc<Semaphore>>>>;
+pub type CircuitBreaker = Arc<circuit_breaker::CircuitBreaker>;
 
 /// Acquire a concurrency permit for a specific NIM model.
 async fn acquire_model_permit(
@@ -550,6 +618,8 @@ async fn resilient_send(
         attempt += 1;
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
+            // v0.12.0: Prompt caching header (Gap #1)
+            .header("anthropic-beta", "prompt-caching-2024-06-01")
             .json(&*openai_req)
             .timeout(Duration::from_secs(900));
 
@@ -686,6 +756,8 @@ async fn resilient_send_raw(
         attempt += 1;
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
+            // v0.12.0: Prompt caching header (Gap #1)
+            .header("anthropic-beta", "prompt-caching-2024-06-01")
             .json(&*openai_req)
             .timeout(Duration::from_secs(900));
 
@@ -842,6 +914,7 @@ async fn resilient_send_raw(
 pub async fn proxy_handler(
     Extension(shared_config): Extension<SharedConfig>,
     Extension(client): Extension<Client>,
+    Extension(_circuit_breaker): Extension<CircuitBreaker>,
     Extension(model_cache): Extension<ModelCache>,
     Extension(model_semaphores): Extension<ModelSemaphores>,
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
@@ -1162,7 +1235,16 @@ fn create_sse_stream(
     async_stream::stream! {
         // v0.11.0 (CR-08): Scale input_tokens so CC auto-compact triggers correctly
         // for models with context < Claude's 200K (e.g., Kimi K2.5 = 131K)
-        let cc_context_window: u32 = 200_000;
+        // v0.12.0: Configurable CC context window (Gap #5)
+        let cc_context_window: u32 = std::env::var("CC_CONTEXT_WINDOW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200_000);
+        tracing::debug!(
+            "📐 Auto-compact scaling: cc_context_window={}K, model_context={}K",
+            cc_context_window / 1000,
+            context_limit / 1000
+        );
         let scale_tokens = |real_tokens: u32| -> u32 {
             if context_limit > 0 && context_limit < cc_context_window {
                 let scaled = (real_tokens as f64 * cc_context_window as f64
@@ -1180,7 +1262,7 @@ fn create_sse_stream(
         // ╚═════════════════════════════════════════════════════════╝
         let _ = &_permit;  // prevent compiler from optimizing the move away
 
-        let mut buffer = String::with_capacity(8192); // v0.11.0: pre-allocate + size limit (CR-02)
+        let mut buffer = String::with_capacity(8192);
         let mut message_id = None;
         let mut current_model = None;
         let mut content_index = 0;
@@ -1243,6 +1325,7 @@ fn create_sse_stream(
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
                     buffer.push_str(&text);
+
 
                     // v0.11.0 (CR-02): Buffer size guard — prevents OOM if NIM sends data without delimiters
                     if buffer.len() > MAX_SSE_BUFFER {
@@ -1355,7 +1438,21 @@ fn create_sse_stream(
                                                 tracing::debug!("🧹 Discarding poisoned reasoning chunk");
                                             } else {
                                                 // Check if this chunk contains the poison delimiter
-                                                let emit_text = if let Some(pos) = reasoning.find("</previous_reasoning>") {
+                                                let emit_text = if reasoning.contains("<previous_reasoning") {
+                            // FIX F1: Detect opening tag (without closing >)
+                            reasoning_poisoned = true;
+                            let pos = reasoning.find("<previous_reasoning").unwrap_or(0);
+                            let clean = &reasoning[..pos];
+                            tracing::info!(
+                                "🧹 Reasoning sanitized: cut at <previous_reasoning> ({} chars discarded)",
+                                reasoning.len() - pos
+                            );
+                            if clean.trim().is_empty() {
+                                None
+                            } else {
+                                Some(clean.to_string())
+                            }
+                        } else if let Some(pos) = reasoning.find("</previous_reasoning>") {
                                                     reasoning_poisoned = true;
                                                     let clean = &reasoning[..pos];
                                                     tracing::info!("🧹 Reasoning sanitized: cut at </previous_reasoning> ({} chars discarded)",
@@ -1410,6 +1507,17 @@ fn create_sse_stream(
                                                     // Everything after poison → discard content too
                                                     tracing::debug!("🧹 Discarding poisoned content chunk ({} chars)", content.len());
                                                     None
+                        } else if content.contains("<previous_reasoning") {
+                            // FIX F1b: Detect opening tag in content
+                            reasoning_poisoned = true;
+                            let pos = content.find("<previous_reasoning").unwrap_or(0);
+                            let clean = &content[..pos];
+                            tracing::info!("🧹 Content sanitized: cut at <previous_reasoning>");
+                            if clean.trim().is_empty() {
+                                None
+                            } else {
+                                Some(clean.to_string())
+                            }
                                                 } else if let Some(pos) = content.find("</previous_reasoning>") {
                                                     reasoning_poisoned = true;
                                                     let clean = &content[..pos];
