@@ -344,6 +344,39 @@ nexus-ai-gateway -c /path/to/custom.env setup --quick
 3. `~/.nexus-ai-gateway.env` (home directory)
 4. `/etc/nexus-ai-gateway/.env` (system-wide)
 
+### Prompt Caching
+
+NEXUS-AI-Gateway supports Anthropic's prompt caching protocol for cost optimization and reduced latency.
+
+#### How It Works
+
+1. **Claude Code** sends `cache_control: {"type": "ephemeral"}` markers on system prompts and content blocks
+2. The gateway extracts these markers and logs them for observability
+3. For **Anthropic upstream**: The `anthropic-beta: prompt-caching-2024-06-01` header is sent automatically, enabling server-side cache
+4. For **NIM/OpenAI upstream**: Cache markers are logged but the OpenAI protocol has no cache equivalent. The gateway reports `cache_creation_input_tokens: 0` and `cache_read_input_tokens: 0` (honest zeros)
+
+#### Configuration
+
+```bash
+# Upstream type determines caching behavior
+export NEXUS_UPSTREAM_TYPE=anthropic  # Enables anthropic-beta header
+# OR
+export NEXUS_UPSTREAM_TYPE=nim        # Default — no cache header sent
+
+# Proxy-side cache (for self-hosted NIM with KV cache reuse)
+export NIM_PROMPT_CACHE_ENABLED=true
+export NIM_PROMPT_CACHE_MAX_ENTRIES=1000
+export NIM_PROMPT_CACHE_TTL_SECS=300
+```
+
+#### Architecture
+
+```
+Claude Code → cache_control markers → Gateway extracts markers
+                                    → Anthropic: header + body passthrough → Server-side cache ✓
+                                    → NIM: markers logged, honest zero tokens reported → KV reuse only if enabled
+```
+
 ### Port Convention
 
 The default port **8315** is derived from the project acronym:

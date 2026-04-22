@@ -53,6 +53,7 @@ Claude Code → POST /v1/messages → Proxy → Transform to OpenAI format → U
 | `web_fetch.rs` | Intercepts `web_fetch` tool calls, fetches locally, strips HTML |
 | `models/anthropic.rs` | Anthropic API types (request/response/streaming) |
 | `models/openai.rs` | OpenAI API types |
+| `prompt_cache.rs` | Proxy-side SHA-256 cache for NIM KV_REUSE (TTL+LRU, 7 unit tests) |
 
 ### Critical Design Decisions
 
@@ -65,6 +66,8 @@ Claude Code → POST /v1/messages → Proxy → Transform to OpenAI format → U
 4. **Anthropic-native errors** — All error responses use Anthropic's error format with proper `type` fields for correct Claude Code handling.
 
 5. **Auto-fix on overflow** — `max_tokens` overflow triggers automatic halving (minimum 4096) with retry.
+
+6. **Prompt caching bridge** — `cache_control` markers are extracted and logged; `anthropic-beta` header sent only to Anthropic upstream; honest zero cache tokens for NIM (no fake cache hits).
 
 ## Version Management
 
