@@ -124,6 +124,29 @@ pub fn anthropic_to_openai(
         });
     }
 
+    #[allow(clippy::collapsible_match)]
+    // PHASE 15: Extract cache markers from message content blocks
+    for msg in &req.messages {
+        if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
+            for block in blocks {
+                if let anthropic::ContentBlock::Text {
+                    ref text,
+                    ref cache_control,
+                } = block
+                {
+                    if let Some(ref cc) = cache_control {
+                        cache_markers.push(CacheMarker {
+                            content_hash: PromptCache::hash_content(text),
+                            token_count: PromptCache::estimate_tokens(text),
+                            location: CacheLocation::MessageContent,
+                            cache_control_value: cc.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // Convert user/assistant messages
     for msg in req.messages {
         let converted = convert_message(msg)?;

@@ -324,4 +324,103 @@ mod tests {
         assert_eq!(stats.total_misses, 1);
         assert!((stats.hit_rate - 0.5).abs() < 0.01);
     }
+    // =========================================================================
+    // PHASE 21: Stress test concurrent cache access
+    // =========================================================================
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_cache_access() {
+        let cache = std::sync::Arc::new(PromptCache::new(100, Duration::from_secs(300)));
+
+        // Spawn 10 tasks that concurrently store and lookup entries
+        let mut handles = Vec::new();
+
+        for i in 0..10 {
+            let cache_clone = cache.clone();
+            let handle = tokio::spawn(async move {
+                let content = format!("content_{}", i);
+                let hash = PromptCache::hash_content(&content);
+
+                // Store an entry
+                cache_clone
+                    .store(&hash, 10 + i as u32, CacheLocation::MessageContent)
+                    .await;
+
+                // Immediately lookup
+                let hit = cache_clone.lookup(&hash).await;
+
+                // Lookup another task's entry (may or may not exist yet)
+                let other_content = format!("content_{}", (i + 5) % 10);
+                let other_hash = PromptCache::hash_content(&other_content);
+                let _other_hit = cache_clone.lookup(&other_hash).await;
+
+                hit
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            let result = handle.await.expect("Task should complete without panic");
+            // Each task should have found its own entry (hit)
+            assert!(result.is_some(), "Each task should find its own entry");
+        }
+
+        // Verify final cache state - should have entries
+        let final_stats = cache.stats().await;
+        assert!(
+            final_stats.total_entries > 0,
+            "Cache should have entries after concurrent access"
+        );
+    }
+
+    // =========================================================================
+    // PHASE 22: Benchmark prompt cache operations
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cache_performance_bulk_operations() {
+        use std::time::Instant;
+
+        let cache = PromptCache::new(2000, Duration::from_secs(300));
+
+        let start = Instant::now();
+
+        // Insert 1000 entries
+        let mut hashes = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            let content = format!("bulk_content_{}", i);
+            let hash = PromptCache::hash_content(&content);
+            hashes.push(hash.clone());
+            cache.store(&hash, 10, CacheLocation::MessageContent).await;
+        }
+
+        // Lookup 1000 times
+        for hash in &hashes {
+            let _hit = cache.lookup(hash).await;
+        }
+
+        let elapsed = start.elapsed();
+
+        // Verify all operations complete under 100ms total (rough sanity check)
+        // This is intentionally generous - on CI/hardware this might need tuning
+        // The important thing is this test documents expected performance
+        println!("Bulk operations took: {:?}", elapsed);
+
+        // Soft assertion - log warning if slow, but don't fail test to avoid flakiness
+        if elapsed.as_millis() > 100 {
+            eprintln!(
+                "WARNING: Cache bulk operations took {:?}, expected under 100ms",
+                elapsed
+            );
+        }
+
+        // Verify all entries are retrievable
+        for hash in &hashes {
+            assert!(
+                cache.lookup(hash).await.is_some(),
+                "All stored entries should be retrievable"
+            );
+        }
+    }
 }
