@@ -68,6 +68,13 @@ pub struct Config {
     pub max_concurrent_per_model: usize,
     pub permit_timeout_secs: u64,
     pub upstream_type: UpstreamType,
+    // Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
+    #[allow(dead_code)]
+    pub prompt_cache_enabled: bool,
+    #[allow(dead_code)]
+    pub prompt_cache_max_entries: usize,
+    #[allow(dead_code)]
+    pub prompt_cache_ttl_secs: u64,
 }
 
 impl Config {
@@ -240,6 +247,19 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(UpstreamType::NIM);
 
+        // v0.13.0: Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
+        let prompt_cache_enabled = env::var("NIM_PROMPT_CACHE_ENABLED")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(false);
+        let prompt_cache_max_entries = env::var("NIM_PROMPT_CACHE_MAX_ENTRIES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+        let prompt_cache_ttl_secs = env::var("NIM_PROMPT_CACHE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+
         Ok(Config {
             port,
             base_url,
@@ -256,6 +276,9 @@ impl Config {
             max_concurrent_per_model,
             permit_timeout_secs,
             upstream_type,
+            prompt_cache_enabled,
+            prompt_cache_max_entries,
+            prompt_cache_ttl_secs,
         })
     }
 

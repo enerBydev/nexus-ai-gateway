@@ -959,7 +959,11 @@ pub async fn proxy_handler(
         );
     }
 
-    let (mut openai_req, upstream_name) = transform::anthropic_to_openai(req.clone(), &config)?;
+    let transform_result = transform::anthropic_to_openai(req.clone(), &config)?;
+    let mut openai_req = transform_result.request;
+    let upstream_name = transform_result.upstream_name;
+    // PHASE 16: Cache markers available for cache integration
+    let _cache_markers = transform_result.cache_markers;
 
     // === Pre-check: Dynamic context limit clamping (Doc1) ===
     let context_limit = get_context_limit(
@@ -1137,7 +1141,8 @@ async fn handle_non_streaming(
 
                 let mut rebuilt_req = original_req.clone();
                 rebuilt_req.messages = current_messages.clone();
-                (current_openai_req, _) = transform::anthropic_to_openai(rebuilt_req, &config)?;
+                let transform_result = transform::anthropic_to_openai(rebuilt_req, &config)?;
+                current_openai_req = transform_result.request;
 
                 tracing::info!(
                     "[WebFetch] Re-sending to NIM with tool_result (attempt #{})",
@@ -1314,7 +1319,7 @@ fn create_sse_stream(
                         let delta_event = json!({
                             "type": "message_delta",
                             "delta": { "stop_reason": "end_turn", "stop_sequence": serde_json::Value::Null },
-                            "usage": { "input_tokens": accumulated_input_tokens, "output_tokens": accumulated_output_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 }
+                            "usage": { "input_tokens": accumulated_input_tokens, "output_tokens": accumulated_output_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 } // TODO: PHASE 17 — Add dynamic cache token values
                         });
                         yield Ok(Bytes::from(format!("event: message_delta\ndata: {}\n\n",
                             serde_json::to_string(&delta_event).unwrap_or_default())));

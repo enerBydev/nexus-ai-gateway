@@ -1,7 +1,33 @@
 use crate::config::Config;
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
+use crate::prompt_cache::{CacheLocation, PromptCache};
 use serde_json::{json, Value};
+
+/// Cache marker extracted from Anthropic request before transformation
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct CacheMarker {
+    /// SHA-256 hash of the cache_control-marked content
+    pub content_hash: String,
+    /// Estimated token count
+    pub token_count: u32,
+    /// Where the marker was found
+    pub location: CacheLocation,
+    /// The cache_control value (for logging/debugging)
+    pub cache_control_value: serde_json::Value,
+}
+
+/// Result of Anthropic → OpenAI transformation with cache metadata
+#[derive(Debug)]
+pub struct TransformResult {
+    /// The transformed OpenAI request
+    pub request: openai::OpenAIRequest,
+    /// Which upstream to route to
+    pub upstream_name: String,
+    /// Cache markers extracted from the request
+    pub cache_markers: Vec<CacheMarker>,
+}
 
 /// Resolve model name and upstream from model map or config defaults
 fn resolve_model_and_upstream(
@@ -36,13 +62,16 @@ fn resolve_model_and_upstream(
 pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     config: &Config,
-) -> ProxyResult<(openai::OpenAIRequest, String)> {
+) -> ProxyResult<TransformResult> {
     // v5.0: Force thinking (effort max) for ALL models globally.
     // CC defaults to effort=medium which sends thinking.type="adaptive".
     // NIM models produce better output with enable_thinking=true.
     // This ensures all models (Sonnet, Haiku, GLM4.7, Kimi, Qwen, etc.)
     // receive proper thinking configuration, not just Opus.
     let has_thinking = true;
+
+    // Initialize cache markers vector for PHASE 15
+    let mut cache_markers: Vec<CacheMarker> = Vec::new();
 
     // Resolve model AND upstream via model map or config
     let (model, upstream_name) = resolve_model_and_upstream(&req.model, has_thinking, config);
@@ -53,6 +82,20 @@ pub fn anthropic_to_openai(
     // Add system message if present
     // NOTE: Some NIM models (e.g. Qwen3.5) only accept ONE system message.
     // CC sends system as array of blocks → we consolidate into a single message.
+    // PHASE 15: Extract cache markers from system prompts before processing
+    if let Some(anthropic::SystemPrompt::Multiple(ref messages)) = req.system {
+        for m in messages {
+            if let Some(ref cc) = m.cache_control {
+                cache_markers.push(CacheMarker {
+                    content_hash: PromptCache::hash_content(&m.text),
+                    token_count: PromptCache::estimate_tokens(&m.text),
+                    location: CacheLocation::SystemPrompt,
+                    cache_control_value: cc.clone(),
+                });
+            }
+        }
+    }
+
     if let Some(system) = req.system {
         let system_text = match system {
             anthropic::SystemPrompt::Single(text) => text,
@@ -124,8 +167,8 @@ pub fn anthropic_to_openai(
         }
     });
 
-    Ok((
-        openai::OpenAIRequest {
+    Ok(TransformResult {
+        request: openai::OpenAIRequest {
             model,
             messages: openai_messages,
             max_tokens: Some(req.max_tokens),
@@ -151,7 +194,8 @@ pub fn anthropic_to_openai(
             },
         },
         upstream_name,
-    ))
+        cache_markers,
+    })
 }
 
 /// Convert a single Anthropic message to one or more OpenAI messages
