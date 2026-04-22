@@ -167,10 +167,48 @@ pub enum ResponseContent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    // Cache token fields (PHASE 1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
+    // Cache creation breakdown by TTL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CacheCreation>,
+    // Server tool usage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUse>,
+    // Service metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<u32>,
+}
+
+/// Cache creation breakdown by TTL (matches Anthropic API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheCreation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral_5m_input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral_1h_input_tokens: Option<u32>,
+}
+
+/// Server-side tool usage tracking (matches Anthropic API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerToolUse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_fetch_requests: Option<u32>,
 }
 
 /// Streaming event types

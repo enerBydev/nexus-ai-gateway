@@ -3,6 +3,40 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::{env, path::PathBuf};
 
+/// Upstream API type — determines protocol behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum UpstreamType {
+    Anthropic,
+    NIM,
+    OpenAI,
+    OpenRouter,
+}
+
+impl std::fmt::Display for UpstreamType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpstreamType::Anthropic => write!(f, "anthropic"),
+            UpstreamType::NIM => write!(f, "nim"),
+            UpstreamType::OpenAI => write!(f, "openai"),
+            UpstreamType::OpenRouter => write!(f, "openrouter"),
+        }
+    }
+}
+
+impl std::str::FromStr for UpstreamType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "anthropic" => Ok(UpstreamType::Anthropic),
+            "nim" => Ok(UpstreamType::NIM),
+            "openai" => Ok(UpstreamType::OpenAI),
+            "openrouter" => Ok(UpstreamType::OpenRouter),
+            other => Err(format!("unknown upstream type: {}", other)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpstreamConfig {
     pub base_url: String,
@@ -33,6 +67,7 @@ pub struct Config {
     // Concurrency tuning (Opción B: read from .env)
     pub max_concurrent_per_model: usize,
     pub permit_timeout_secs: u64,
+    pub upstream_type: UpstreamType,
 }
 
 impl Config {
@@ -200,6 +235,10 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(180);
+        let upstream_type = std::env::var("NEXUS_UPSTREAM_TYPE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(UpstreamType::NIM);
 
         Ok(Config {
             port,
@@ -216,6 +255,7 @@ impl Config {
             model_map,
             max_concurrent_per_model,
             permit_timeout_secs,
+            upstream_type,
         })
     }
 

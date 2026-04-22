@@ -58,7 +58,17 @@ pub fn anthropic_to_openai(
             anthropic::SystemPrompt::Single(text) => text,
             anthropic::SystemPrompt::Multiple(messages) => messages
                 .into_iter()
-                .map(|m| m.text)
+                .map(|m| {
+                    if let Some(ref cc) = m.cache_control {
+                        tracing::debug!(
+                            target: "nexus::cache",
+                            "cache_control in system prompt block (len={}): {:?}",
+                            m.text.len(),
+                            cc
+                        );
+                    }
+                    m.text
+                })
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         };
@@ -164,7 +174,18 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
 
             for block in blocks {
                 match block {
-                    anthropic::ContentBlock::Text { text, .. } => {
+                    anthropic::ContentBlock::Text {
+                        text,
+                        cache_control,
+                    } => {
+                        if let Some(ref cc) = cache_control {
+                            tracing::debug!(
+                                target: "nexus::cache",
+                                "cache_control in content block (len={}): {:?}",
+                                text.len(),
+                                cc
+                            );
+                        }
                         current_content_parts.push(openai::ContentPart::Text { text });
                     }
                     anthropic::ContentBlock::Image { source } => {
@@ -194,7 +215,17 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             anthropic::ToolResultContent::Blocks(blocks) => blocks
                                 .into_iter()
                                 .filter_map(|b| match b {
-                                    anthropic::ContentBlock::Text { text, .. } => Some(text),
+                                    anthropic::ContentBlock::Text { text, cache_control } => {
+                                if let Some(ref cc) = cache_control {
+                                    tracing::debug!(
+                                        target: "nexus::cache",
+                                        "cache_control in ToolResult content block (len={}): {:?}",
+                                        text.len(),
+                                        cc
+                                    );
+                                }
+                                Some(text)
+                            }
                                     _ => None,
                                 })
                                 .collect::<Vec<_>>()
@@ -429,6 +460,9 @@ pub fn openai_to_anthropic(
         usage: anthropic::Usage {
             input_tokens: resp.usage.prompt_tokens,
             output_tokens: resp.usage.completion_tokens,
+            cache_creation_input_tokens: Some(0), // NIM doesn't cache — honest zero
+            cache_read_input_tokens: Some(0),     // NIM doesn't cache — honest zero
+            ..Default::default()
         },
     })
 }

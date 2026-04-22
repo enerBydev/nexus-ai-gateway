@@ -1,6 +1,6 @@
 #[allow(unused_imports)] // v0.12.0: Circuit breaker integration pending
 use crate::circuit_breaker::{self, CircuitState};
-use crate::config::{Config, SharedConfig};
+use crate::config::{Config, SharedConfig, UpstreamType};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use crate::tokenizer;
@@ -439,8 +439,6 @@ async fn probe_model_limit(
     let mut req_builder = client
         .post(&url)
         .header("Content-Type", "application/json")
-        // v0.12.0: Prompt caching header (Gap #1)
-        .header("anthropic-beta", "prompt-caching-2024-06-01")
         .json(&probe_body)
         .timeout(Duration::from_secs(15));
 
@@ -618,13 +616,16 @@ async fn resilient_send(
         attempt += 1;
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
-            // v0.12.0: Prompt caching header (Gap #1)
-            .header("anthropic-beta", "prompt-caching-2024-06-01")
             .json(&*openai_req)
             .timeout(Duration::from_secs(900));
 
         if let Some(api_key) = &config.get_upstream_key(upstream_name) {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        // v0.13.0: Only send anthropic-beta to Anthropic endpoints
+        if config.upstream_type == UpstreamType::Anthropic {
+            req_builder = req_builder.header("anthropic-beta", "prompt-caching-2024-06-01");
         }
 
         let response = req_builder.send().await?;
@@ -756,13 +757,16 @@ async fn resilient_send_raw(
         attempt += 1;
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
-            // v0.12.0: Prompt caching header (Gap #1)
-            .header("anthropic-beta", "prompt-caching-2024-06-01")
             .json(&*openai_req)
             .timeout(Duration::from_secs(900));
 
         if let Some(api_key) = &config.get_upstream_key(upstream_name) {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        // v0.13.0: Only send anthropic-beta to Anthropic endpoints
+        if config.upstream_type == UpstreamType::Anthropic {
+            req_builder = req_builder.header("anthropic-beta", "prompt-caching-2024-06-01");
         }
 
         let response = req_builder.send().await?;
@@ -1310,7 +1314,7 @@ fn create_sse_stream(
                         let delta_event = json!({
                             "type": "message_delta",
                             "delta": { "stop_reason": "end_turn", "stop_sequence": serde_json::Value::Null },
-                            "usage": { "input_tokens": accumulated_input_tokens, "output_tokens": accumulated_output_tokens }
+                            "usage": { "input_tokens": accumulated_input_tokens, "output_tokens": accumulated_output_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 }
                         });
                         yield Ok(Bytes::from(format!("event: message_delta\ndata: {}\n\n",
                             serde_json::to_string(&delta_event).unwrap_or_default())));
@@ -1356,7 +1360,9 @@ fn create_sse_stream(
                                             // v0.11.0 (CR-08): Scale input_tokens for CC auto-compact
                                             "usage": {
                                                 "input_tokens": scale_tokens(accumulated_input_tokens),
-                                                "output_tokens": accumulated_output_tokens
+                                                "output_tokens": accumulated_output_tokens,
+                                "cache_creation_input_tokens": 0,
+                                "cache_read_input_tokens": 0
                                             }
                                         });
                                         let sse_data = format!("event: message_delta\ndata: {}\n\n",
@@ -1419,6 +1425,9 @@ fn create_sse_stream(
                                                                 .unwrap_or(estimated_input_tokens)
                                                         ),
                                                         output_tokens: 0,  // Per Anthropic spec: always 0 at start
+                                                        cache_creation_input_tokens: Some(0), // NIM doesn't cache — honest zero
+                                                        cache_read_input_tokens: Some(0),    // NIM doesn't cache — honest zero
+                                                        ..Default::default()
                                                     },
                                                 },
                                             };
