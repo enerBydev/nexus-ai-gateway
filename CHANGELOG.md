@@ -34,6 +34,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.0] - 2026-04-22
+
+### Added
+- Prompt caching bridge for Anthropic API compatibility
+- `anthropic::Usage` extended with 10 cache/token fields (cache_creation_input_tokens, cache_read_input_tokens, CacheCreation, ServerToolUse, etc.)
+- Honest zero cache tokens (`Some(0)`) reported for NIM endpoints (NIM doesn't cache)
+- Conditional `anthropic-beta: prompt-caching-2024-06-01` header — only sent to Anthropic upstream
+- Proxy-side prompt cache module (`src/prompt_cache.rs`)
+- SHA-256 content hashing for cache key generation
+- TTL-based expiration (default 5 min) + LRU eviction (default 1000 entries)
+- Designed for NIM self-hosted with `NIM_ENABLE_KV_CACHE_REUSE=1`
+- Cache marker extraction from Anthropic requests
+- `CacheMarker` struct: content_hash, token_count, location, cache_control_value
+- `TransformResult` struct: request + upstream_name + cache_markers
+- Extracts `cache_control: {"type": "ephemeral"}` from system prompts and content blocks
+- Cache observability via `tracing::debug!` at cache_control drop points
+- New environment variables:
+  - `NEXUS_UPSTREAM_TYPE` (anthropic|nim|openai|openrouter, default: nim)
+  - `NIM_PROMPT_CACHE_ENABLED` (default: false)
+  - `NIM_PROMPT_CACHE_MAX_ENTRIES` (default: 1000)
+  - `NIM_PROMPT_CACHE_TTL_SECS` (default: 300)
+- 8 new integration tests (58 total, up from 50)
+- CacheMarker extraction, TransformResult validation
+- Concurrent cache access, bulk operation performance
+
+### Changed
+- `anthropic_to_openai()` now returns `TransformResult` instead of `(OpenAIRequest, String)` tuple
+- `anthropic-beta` header only sent when `NEXUS_UPSTREAM_TYPE=anthropic`
+- Streaming responses include `cache_creation_input_tokens: 0` and `cache_read_input_tokens: 0`
+
+### Fixed
+- Missing `anthropic-beta` header prevented cache activation for Anthropic upstream
+- Cache token fields absent from streaming message_start, message_delta, and timeout events
+
+---
+
 ## [0.12.1] - 2026-04-21
 
 ### Added
