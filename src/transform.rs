@@ -1,7 +1,33 @@
 use crate::config::Config;
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
+use crate::prompt_cache::{CacheLocation, PromptCache};
 use serde_json::{json, Value};
+
+/// Cache marker extracted from Anthropic request before transformation
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct CacheMarker {
+    /// SHA-256 hash of the cache_control-marked content
+    pub content_hash: String,
+    /// Estimated token count
+    pub token_count: u32,
+    /// Where the marker was found
+    pub location: CacheLocation,
+    /// The cache_control value (for logging/debugging)
+    pub cache_control_value: serde_json::Value,
+}
+
+/// Result of Anthropic → OpenAI transformation with cache metadata
+#[derive(Debug)]
+pub struct TransformResult {
+    /// The transformed OpenAI request
+    pub request: openai::OpenAIRequest,
+    /// Which upstream to route to
+    pub upstream_name: String,
+    /// Cache markers extracted from the request
+    pub cache_markers: Vec<CacheMarker>,
+}
 
 /// Resolve model name and upstream from model map or config defaults
 fn resolve_model_and_upstream(
@@ -36,13 +62,16 @@ fn resolve_model_and_upstream(
 pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     config: &Config,
-) -> ProxyResult<(openai::OpenAIRequest, String)> {
+) -> ProxyResult<TransformResult> {
     // v5.0: Force thinking (effort max) for ALL models globally.
     // CC defaults to effort=medium which sends thinking.type="adaptive".
     // NIM models produce better output with enable_thinking=true.
     // This ensures all models (Sonnet, Haiku, GLM4.7, Kimi, Qwen, etc.)
     // receive proper thinking configuration, not just Opus.
     let has_thinking = true;
+
+    // Initialize cache markers vector for PHASE 15
+    let mut cache_markers: Vec<CacheMarker> = Vec::new();
 
     // Resolve model AND upstream via model map or config
     let (model, upstream_name) = resolve_model_and_upstream(&req.model, has_thinking, config);
@@ -53,12 +82,36 @@ pub fn anthropic_to_openai(
     // Add system message if present
     // NOTE: Some NIM models (e.g. Qwen3.5) only accept ONE system message.
     // CC sends system as array of blocks → we consolidate into a single message.
+    // PHASE 15: Extract cache markers from system prompts before processing
+    if let Some(anthropic::SystemPrompt::Multiple(ref messages)) = req.system {
+        for m in messages {
+            if let Some(ref cc) = m.cache_control {
+                cache_markers.push(CacheMarker {
+                    content_hash: PromptCache::hash_content(&m.text),
+                    token_count: PromptCache::estimate_tokens(&m.text),
+                    location: CacheLocation::SystemPrompt,
+                    cache_control_value: cc.clone(),
+                });
+            }
+        }
+    }
+
     if let Some(system) = req.system {
         let system_text = match system {
             anthropic::SystemPrompt::Single(text) => text,
             anthropic::SystemPrompt::Multiple(messages) => messages
                 .into_iter()
-                .map(|m| m.text)
+                .map(|m| {
+                    if let Some(ref cc) = m.cache_control {
+                        tracing::debug!(
+                            target: "nexus::cache",
+                            "cache_control in system prompt block (len={}): {:?}",
+                            m.text.len(),
+                            cc
+                        );
+                    }
+                    m.text
+                })
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         };
@@ -69,6 +122,57 @@ pub fn anthropic_to_openai(
             tool_call_id: None,
             name: None,
         });
+    }
+
+    #[allow(clippy::collapsible_match)]
+    // PHASE 15: Extract cache markers from message content blocks
+    for msg in &req.messages {
+        if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
+            for block in blocks {
+                if let anthropic::ContentBlock::Text {
+                    ref text,
+                    ref cache_control,
+                } = block
+                {
+                    if let Some(ref cc) = cache_control {
+                        cache_markers.push(CacheMarker {
+                            content_hash: PromptCache::hash_content(text),
+                            token_count: PromptCache::estimate_tokens(text),
+                            location: CacheLocation::MessageContent,
+                            cache_control_value: cc.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Issue 2: Also extract cache markers from nested ToolResult content blocks
+    for msg in &req.messages {
+        if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
+            for block in blocks {
+                if let anthropic::ContentBlock::ToolResult {
+                    content: anthropic::ToolResultContent::Blocks(tool_blocks),
+                    ..
+                } = block
+                {
+                    for tool_block in tool_blocks {
+                        if let anthropic::ContentBlock::Text {
+                            ref text,
+                            cache_control: Some(ref cc),
+                        } = tool_block
+                        {
+                            cache_markers.push(CacheMarker {
+                                content_hash: PromptCache::hash_content(text),
+                                token_count: PromptCache::estimate_tokens(text),
+                                location: CacheLocation::MessageContent,
+                                cache_control_value: cc.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Convert user/assistant messages
@@ -114,8 +218,8 @@ pub fn anthropic_to_openai(
         }
     });
 
-    Ok((
-        openai::OpenAIRequest {
+    Ok(TransformResult {
+        request: openai::OpenAIRequest {
             model,
             messages: openai_messages,
             max_tokens: Some(req.max_tokens),
@@ -141,7 +245,8 @@ pub fn anthropic_to_openai(
             },
         },
         upstream_name,
-    ))
+        cache_markers,
+    })
 }
 
 /// Convert a single Anthropic message to one or more OpenAI messages
@@ -164,7 +269,18 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
 
             for block in blocks {
                 match block {
-                    anthropic::ContentBlock::Text { text, .. } => {
+                    anthropic::ContentBlock::Text {
+                        text,
+                        cache_control,
+                    } => {
+                        if let Some(ref cc) = cache_control {
+                            tracing::debug!(
+                                target: "nexus::cache",
+                                "cache_control in content block (len={}): {:?}",
+                                text.len(),
+                                cc
+                            );
+                        }
                         current_content_parts.push(openai::ContentPart::Text { text });
                     }
                     anthropic::ContentBlock::Image { source } => {
@@ -194,7 +310,17 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             anthropic::ToolResultContent::Blocks(blocks) => blocks
                                 .into_iter()
                                 .filter_map(|b| match b {
-                                    anthropic::ContentBlock::Text { text, .. } => Some(text),
+                                    anthropic::ContentBlock::Text { text, cache_control } => {
+                                if let Some(ref cc) = cache_control {
+                                    tracing::debug!(
+                                        target: "nexus::cache",
+                                        "cache_control in ToolResult content block (len={}): {:?}",
+                                        text.len(),
+                                        cc
+                                    );
+                                }
+                                Some(text)
+                            }
                                     _ => None,
                                 })
                                 .collect::<Vec<_>>()
@@ -429,6 +555,9 @@ pub fn openai_to_anthropic(
         usage: anthropic::Usage {
             input_tokens: resp.usage.prompt_tokens,
             output_tokens: resp.usage.completion_tokens,
+            cache_creation_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
+            cache_read_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
+            ..Default::default()
         },
     })
 }

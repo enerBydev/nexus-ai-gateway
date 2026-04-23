@@ -3,6 +3,40 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::{env, path::PathBuf};
 
+/// Upstream API type — determines protocol behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum UpstreamType {
+    Anthropic,
+    NIM,
+    OpenAI,
+    OpenRouter,
+}
+
+impl std::fmt::Display for UpstreamType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpstreamType::Anthropic => write!(f, "anthropic"),
+            UpstreamType::NIM => write!(f, "nim"),
+            UpstreamType::OpenAI => write!(f, "openai"),
+            UpstreamType::OpenRouter => write!(f, "openrouter"),
+        }
+    }
+}
+
+impl std::str::FromStr for UpstreamType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "anthropic" => Ok(UpstreamType::Anthropic),
+            "nim" => Ok(UpstreamType::NIM),
+            "openai" => Ok(UpstreamType::OpenAI),
+            "openrouter" => Ok(UpstreamType::OpenRouter),
+            other => Err(format!("unknown upstream type: {}", other)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpstreamConfig {
     pub base_url: String,
@@ -33,6 +67,14 @@ pub struct Config {
     // Concurrency tuning (Opción B: read from .env)
     pub max_concurrent_per_model: usize,
     pub permit_timeout_secs: u64,
+    pub upstream_type: UpstreamType,
+    // Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
+    #[allow(dead_code)]
+    pub prompt_cache_enabled: bool,
+    #[allow(dead_code)]
+    pub prompt_cache_max_entries: usize,
+    #[allow(dead_code)]
+    pub prompt_cache_ttl_secs: u64,
 }
 
 impl Config {
@@ -200,6 +242,32 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(180);
+        let upstream_type = match std::env::var("NEXUS_UPSTREAM_TYPE") {
+            Ok(val) => match val.parse::<UpstreamType>() {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!(
+                        "Invalid NEXUS_UPSTREAM_TYPE='{}' — valid values are: anthropic, nim, openai, openrouter. Defaulting to nim.",
+                        val
+                    );
+                    UpstreamType::NIM
+                }
+            },
+            Err(_) => UpstreamType::NIM,
+        };
+
+        // v0.13.0: Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
+        let prompt_cache_enabled = env::var("NIM_PROMPT_CACHE_ENABLED")
+            .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(false);
+        let prompt_cache_max_entries = env::var("NIM_PROMPT_CACHE_MAX_ENTRIES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+        let prompt_cache_ttl_secs = env::var("NIM_PROMPT_CACHE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
 
         Ok(Config {
             port,
@@ -216,6 +284,10 @@ impl Config {
             model_map,
             max_concurrent_per_model,
             permit_timeout_secs,
+            upstream_type,
+            prompt_cache_enabled,
+            prompt_cache_max_entries,
+            prompt_cache_ttl_secs,
         })
     }
 
@@ -244,6 +316,13 @@ impl Config {
             .get(upstream_name)
             .or_else(|| self.upstreams.get("default"))
             .and_then(|u| u.api_key.clone())
+    }
+
+    /// Get the UpstreamType for a specific upstream.
+    /// Currently returns the global upstream_type (all upstreams must be same type).
+    /// Future: support per-upstream type configuration.
+    pub fn get_upstream_type(&self, _upstream_name: &str) -> UpstreamType {
+        self.upstream_type
     }
 
     /// Reload config from environment/dotenv file
