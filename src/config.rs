@@ -258,7 +258,7 @@ impl Config {
 
         // v0.13.0: Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
         let prompt_cache_enabled = env::var("NIM_PROMPT_CACHE_ENABLED")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
             .unwrap_or(false);
         let prompt_cache_max_entries = env::var("NIM_PROMPT_CACHE_MAX_ENTRIES")
             .ok()

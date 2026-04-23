@@ -371,7 +371,7 @@ export NIM_PROMPT_CACHE_TTL_SECS=300
 
 #### Architecture
 
-```
+```text
 Claude Code → cache_control markers → Gateway extracts markers
                                     → Anthropic: header + body passthrough → Server-side cache ✓
                                     → NIM: markers logged, honest zero tokens reported → KV reuse only if enabled
