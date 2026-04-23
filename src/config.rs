@@ -242,10 +242,19 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(180);
-        let upstream_type = std::env::var("NEXUS_UPSTREAM_TYPE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(UpstreamType::NIM);
+        let upstream_type = match std::env::var("NEXUS_UPSTREAM_TYPE") {
+            Ok(val) => match val.parse::<UpstreamType>() {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!(
+                        "Invalid NEXUS_UPSTREAM_TYPE='{}' — valid values are: anthropic, nim, openai, openrouter. Defaulting to nim.",
+                        val
+                    );
+                    UpstreamType::NIM
+                }
+            },
+            Err(_) => UpstreamType::NIM,
+        };
 
         // v0.13.0: Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
         let prompt_cache_enabled = env::var("NIM_PROMPT_CACHE_ENABLED")
@@ -307,6 +316,13 @@ impl Config {
             .get(upstream_name)
             .or_else(|| self.upstreams.get("default"))
             .and_then(|u| u.api_key.clone())
+    }
+
+    /// Get the UpstreamType for a specific upstream.
+    /// Currently returns the global upstream_type (all upstreams must be same type).
+    /// Future: support per-upstream type configuration.
+    pub fn get_upstream_type(&self, _upstream_name: &str) -> UpstreamType {
+        self.upstream_type
     }
 
     /// Reload config from environment/dotenv file

@@ -147,6 +147,34 @@ pub fn anthropic_to_openai(
         }
     }
 
+    // Issue 2: Also extract cache markers from nested ToolResult content blocks
+    for msg in &req.messages {
+        if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
+            for block in blocks {
+                if let anthropic::ContentBlock::ToolResult {
+                    content: anthropic::ToolResultContent::Blocks(tool_blocks),
+                    ..
+                } = block
+                {
+                    for tool_block in tool_blocks {
+                        if let anthropic::ContentBlock::Text {
+                            ref text,
+                            cache_control: Some(ref cc),
+                        } = tool_block
+                        {
+                            cache_markers.push(CacheMarker {
+                                content_hash: PromptCache::hash_content(text),
+                                token_count: PromptCache::estimate_tokens(text),
+                                location: CacheLocation::MessageContent,
+                                cache_control_value: cc.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Convert user/assistant messages
     for msg in req.messages {
         let converted = convert_message(msg)?;
@@ -527,8 +555,8 @@ pub fn openai_to_anthropic(
         usage: anthropic::Usage {
             input_tokens: resp.usage.prompt_tokens,
             output_tokens: resp.usage.completion_tokens,
-            cache_creation_input_tokens: Some(0), // NIM doesn't cache — honest zero
-            cache_read_input_tokens: Some(0),     // NIM doesn't cache — honest zero
+            cache_creation_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
+            cache_read_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
             ..Default::default()
         },
     })

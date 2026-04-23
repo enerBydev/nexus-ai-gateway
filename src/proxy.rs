@@ -624,7 +624,7 @@ async fn resilient_send(
         }
 
         // v0.13.0: Only send anthropic-beta to Anthropic endpoints
-        if config.upstream_type == UpstreamType::Anthropic {
+        if config.get_upstream_type(upstream_name) == UpstreamType::Anthropic {
             req_builder = req_builder.header("anthropic-beta", "prompt-caching-2024-06-01");
         }
 
@@ -765,7 +765,7 @@ async fn resilient_send_raw(
         }
 
         // v0.13.0: Only send anthropic-beta to Anthropic endpoints
-        if config.upstream_type == UpstreamType::Anthropic {
+        if config.get_upstream_type(upstream_name) == UpstreamType::Anthropic {
             req_builder = req_builder.header("anthropic-beta", "prompt-caching-2024-06-01");
         }
 
@@ -1319,7 +1319,7 @@ fn create_sse_stream(
                         let delta_event = json!({
                             "type": "message_delta",
                             "delta": { "stop_reason": "end_turn", "stop_sequence": serde_json::Value::Null },
-                            "usage": { "input_tokens": accumulated_input_tokens, "output_tokens": accumulated_output_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 } // TODO: PHASE 17 — Add dynamic cache token values
+                            "usage": { "input_tokens": scale_tokens(accumulated_input_tokens), "output_tokens": accumulated_output_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 } // TODO: PHASE 17 — Add dynamic cache token values
                         });
                         yield Ok(Bytes::from(format!("event: message_delta\ndata: {}\n\n",
                             serde_json::to_string(&delta_event).unwrap_or_default())));
@@ -1430,8 +1430,8 @@ fn create_sse_stream(
                                                                 .unwrap_or(estimated_input_tokens)
                                                         ),
                                                         output_tokens: 0,  // Per Anthropic spec: always 0 at start
-                                                        cache_creation_input_tokens: Some(0), // NIM doesn't cache — honest zero
-                                                        cache_read_input_tokens: Some(0),    // NIM doesn't cache — honest zero
+                                                        cache_creation_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
+                                                        cache_read_input_tokens: Some(0),    // TODO: When Anthropic upstream is supported, populate from response
                                                         ..Default::default()
                                                     },
                                                 },
