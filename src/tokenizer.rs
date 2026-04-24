@@ -97,11 +97,8 @@ pub fn estimate_input_tokens(request_body: &serde_json::Value) -> u32 {
     let all_text = collect_request_text(request_body);
 
     // Count messages for overhead calculation
-    let message_count = request_body
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let message_count =
+        request_body.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
 
     // Tokenize using tiktoken cl100k_base singleton (cached — ~0ms after first call)
     // PERF FIX: cl100k_base() creates a NEW BPE instance each call (~100-300ms),
@@ -167,9 +164,7 @@ impl CalibrationFactors {
     /// Create a new calibration tracker with no prior observations.
     /// All models start with factor = 1.0 (no correction).
     pub fn new() -> Self {
-        Self {
-            data: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { data: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     /// Get the current correction factor for a model.
@@ -218,10 +213,9 @@ impl CalibrationFactors {
 
         // v0.11.0 (MD-01): Single write lock for both factor + observation
         let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
-        let entry = data.entry(model.to_string()).or_insert(CalibrationEntry {
-            factor: 1.0,
-            observations: 0,
-        });
+        let entry = data
+            .entry(model.to_string())
+            .or_insert(CalibrationEntry { factor: 1.0, observations: 0 });
         let old_factor = entry.factor;
         entry.factor = old_factor * (1.0 - alpha) + observed_ratio * alpha;
         entry.observations += 1;

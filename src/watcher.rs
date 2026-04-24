@@ -24,12 +24,7 @@ impl CCWatcher {
             .map(|h| h.join(".nexus-ai-gateway-scan.json"))
             .unwrap_or_else(|| PathBuf::from("/tmp/nexus-ai-gateway-scan.json"));
 
-        CCWatcher {
-            binary_path,
-            last_sha256: initial_sha256,
-            last_scan: initial_scan,
-            state_path,
-        }
+        CCWatcher { binary_path, last_sha256: initial_sha256, last_scan: initial_scan, state_path }
     }
 
     // ============================================================

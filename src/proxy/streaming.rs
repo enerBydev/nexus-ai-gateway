@@ -42,11 +42,7 @@ pub(crate) async fn handle_streaming(
     .await?;
 
     let url = config.get_upstream_url(upstream_name);
-    tracing::debug!(
-        "Sending streaming request to {} (upstream: {})",
-        url,
-        upstream_name
-    );
+    tracing::debug!("Sending streaming request to {} (upstream: {})", url, upstream_name);
     tracing::debug!("Request model: {}", openai_req.model);
 
     let mut mutable_req = openai_req;
@@ -61,14 +57,9 @@ pub(crate) async fn handle_streaming(
         nim_model_name
     );
 
-    let response = resilient_send_raw(
-        &client,
-        &config,
-        &mut mutable_req,
-        upstream_name,
-        _circuit_breaker,
-    )
-    .await?;
+    let response =
+        resilient_send_raw(&client, &config, &mut mutable_req, upstream_name, _circuit_breaker)
+            .await?;
 
     let stream = response.bytes_stream();
     let original_model_owned = original_model.to_string();
@@ -85,10 +76,7 @@ pub(crate) async fn handle_streaming(
     );
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_static("text/event-stream"),
-    );
+    headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
     headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     headers.insert("Connection", HeaderValue::from_static("keep-alive"));
 

@@ -29,11 +29,7 @@ pub(crate) const MIN_CLAMP_TOKENS: u32 = 4096;
 #[derive(Debug)]
 pub(crate) enum ErrorClass {
     /// Transient server error — retry with exponential backoff + jitter
-    Retryable {
-        base_delay_ms: u64,
-        max_retries: u32,
-        reason: &'static str,
-    },
+    Retryable { base_delay_ms: u64, max_retries: u32, reason: &'static str },
     /// Parameter error — auto-correct (reduce max_tokens) and retry
     Fixable { reason: &'static str },
     /// Fatal error — return immediately to CC with Anthropic-native error type
@@ -88,26 +84,14 @@ pub(crate) const FATAL_PATTERNS: &[&str] = &[
 /// However, the model's context length is only {limit} tokens"
 /// Returns: context_limit - real_input - safety_margin (256 tokens)
 pub(crate) fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
-    let real_input: u32 = error_regexes()
-        .input_tokens
-        .captures(message)?
-        .get(1)?
-        .as_str()
-        .parse()
-        .ok()?;
-    let context_limit: u32 = error_regexes()
-        .context_length
-        .captures(message)?
-        .get(1)?
-        .as_str()
-        .parse()
-        .ok()?;
+    let real_input: u32 =
+        error_regexes().input_tokens.captures(message)?.get(1)?.as_str().parse().ok()?;
+    let context_limit: u32 =
+        error_regexes().context_length.captures(message)?.get(1)?.as_str().parse().ok()?;
 
     // Safety margin: 256 tokens to guarantee fit across tokenizer differences
-    let safe_max = context_limit
-        .saturating_sub(real_input)
-        .saturating_sub(256)
-        .max(MIN_CLAMP_TOKENS);
+    let safe_max =
+        context_limit.saturating_sub(real_input).saturating_sub(256).max(MIN_CLAMP_TOKENS);
 
     tracing::info!(
         "📐 Extracted from NIM error: input={}, limit={}, safe_max={}",
@@ -164,15 +148,13 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     // ╚══════════════════════════════════════════════════════════╝
     for pattern in FATAL_PATTERNS {
         if lower.contains(pattern) {
-            return ErrorClass::Fatal {
-                reason: "fatal pattern in error body (L1)",
-            };
+            return ErrorClass::Fatal { reason: "fatal pattern in error body (L1)" };
         }
     }
     for pattern in FIXABLE_PATTERNS {
         if lower.contains(pattern) {
             return ErrorClass::Fixable {
-                reason: "fixable pattern — token/context overflow (L1)",
+                reason: "fixable pattern — token/context overflow (L1)"
             };
         }
     }
@@ -220,47 +202,29 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
             max_retries: 3,
             reason: "529 overloaded (L2)",
         },
-        400 => ErrorClass::Fatal {
-            reason: "400 bad request — no fixable pattern (L2)",
-        },
-        401 => ErrorClass::Fatal {
-            reason: "401 unauthorized (L2)",
-        },
-        402 => ErrorClass::Fatal {
-            reason: "402 billing error (L2)",
-        },
-        403 => ErrorClass::Fatal {
-            reason: "403 forbidden (L2)",
-        },
-        404 => ErrorClass::Fatal {
-            reason: "404 not found (L2)",
-        },
-        405 => ErrorClass::Fatal {
-            reason: "405 method not allowed (L2)",
-        },
-        413 => ErrorClass::Fixable {
-            reason: "413 payload too large (L2)",
-        },
-        422 => ErrorClass::Fatal {
-            reason: "422 unprocessable entity (L2)",
-        },
+        400 => ErrorClass::Fatal { reason: "400 bad request — no fixable pattern (L2)" },
+        401 => ErrorClass::Fatal { reason: "401 unauthorized (L2)" },
+        402 => ErrorClass::Fatal { reason: "402 billing error (L2)" },
+        403 => ErrorClass::Fatal { reason: "403 forbidden (L2)" },
+        404 => ErrorClass::Fatal { reason: "404 not found (L2)" },
+        405 => ErrorClass::Fatal { reason: "405 method not allowed (L2)" },
+        413 => ErrorClass::Fixable { reason: "413 payload too large (L2)" },
+        422 => ErrorClass::Fatal { reason: "422 unprocessable entity (L2)" },
         // v0.11.0 (HI-04): HTTP 408 is a timeout — should be retried, not fatal
         408 => ErrorClass::Retryable {
             base_delay_ms: 5000,
             max_retries: 3,
             reason: "408 request timeout (L2)",
         },
-        406..=407 | 409..=412 | 414..=421 | 423..=499 => ErrorClass::Fatal {
-            reason: "unknown 4xx client error (L2)",
-        },
+        406..=407 | 409..=412 | 414..=421 | 423..=499 => {
+            ErrorClass::Fatal { reason: "unknown 4xx client error (L2)" }
+        }
         501 | 505..=528 | 530..=599 => ErrorClass::Retryable {
             base_delay_ms: 2000,
             max_retries: 2,
             reason: "unknown 5xx server error (L2)",
         },
-        _ => ErrorClass::Fatal {
-            reason: "unexpected status code (L2)",
-        },
+        _ => ErrorClass::Fatal { reason: "unexpected status code (L2)" },
     }
 }
 

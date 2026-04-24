@@ -18,8 +18,6 @@ pub mod rate_limit;
 pub mod retry;
 pub mod streaming;
 
-use std::sync::Arc;
-
 use axum::{response::Response, Extension, Json};
 use reqwest::Client;
 
@@ -38,9 +36,7 @@ pub use discovery::{get_context_limit, ModelCache};
 fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
     // Model must be non-empty
     if req.model.is_empty() {
-        return Err(ProxyError::Transform(
-            "model field is required and cannot be empty".into(),
-        ));
+        return Err(ProxyError::Transform("model field is required and cannot be empty".into()));
     }
 
     // Messages must be non-empty
@@ -52,9 +48,7 @@ fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
 
     // max_tokens must be > 0
     if req.max_tokens == 0 {
-        return Err(ProxyError::Transform(
-            "max_tokens must be greater than 0".into(),
-        ));
+        return Err(ProxyError::Transform("max_tokens must be greater than 0".into()));
     }
 
     // temperature must be in [0, 1] if specified
@@ -93,19 +87,11 @@ pub async fn proxy_handler(
     validate_request(&req)?;
 
     // v0.11.0 (CR-04): Recover from poisoned RwLock instead of panicking
-    let config = Arc::new(
-        shared_config
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone(),
-    );
+    // v4.1: ArcSwap provides lock-free reads, no poisoning possible
+    let config = shared_config.load_full();
     let is_streaming = req.stream.unwrap_or(false);
 
-    tracing::info!(
-        "Received request: model={} streaming={}",
-        req.model,
-        is_streaming
-    );
+    tracing::info!("Received request: model={} streaming={}", req.model, is_streaming);
 
     // v8.0: Log CC thinking/effort params for forensic investigation
     if let Some(thinking) = req.extra.get("thinking") {
@@ -134,14 +120,8 @@ pub async fn proxy_handler(
     let _cache_markers = transform_result.cache_markers;
 
     // === Pre-check: Dynamic context limit clamping (Doc1) ===
-    let context_limit = get_context_limit(
-        &model_cache,
-        &client,
-        &config,
-        &openai_req.model,
-        &upstream_name,
-    )
-    .await;
+    let context_limit =
+        get_context_limit(&model_cache, &client, &config, &openai_req.model, &upstream_name).await;
 
     // v10.2: Use tiktoken (cl100k_base) for accurate pre-check instead of crude JSON.len()/4
     let estimated_input = tokenizer::estimate_from_openai_request(&openai_req);
@@ -149,10 +129,8 @@ pub async fn proxy_handler(
 
     if estimated_input + requested_output > context_limit {
         // Use 256-token safety margin to account for tiktoken vs NIM tokenizer differences
-        let safe_output = context_limit
-            .saturating_sub(estimated_input)
-            .saturating_sub(256)
-            .clamp(1024, 64000);
+        let safe_output =
+            context_limit.saturating_sub(estimated_input).saturating_sub(256).clamp(1024, 64000);
         tracing::warn!(
             "⚠️ Pre-check: ~{}tok + {}tok > {}tok (model={}, tiktoken). Clamping → {}",
             estimated_input,

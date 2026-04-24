@@ -12,12 +12,9 @@ pub(crate) const L2_RATE_LIMIT_PATTERNS: &[&str] = &[
 
 /// Check if error indicates L2 rate limit (provider-side concurrency)
 pub(crate) fn is_l2_rate_limit(error: &UpstreamError) -> bool {
-    L2_RATE_LIMIT_PATTERNS.iter().any(|pattern| {
-        error
-            .message
-            .to_lowercase()
-            .contains(&pattern.to_lowercase())
-    })
+    L2_RATE_LIMIT_PATTERNS
+        .iter()
+        .any(|pattern| error.message.to_lowercase().contains(&pattern.to_lowercase()))
 }
 
 /// L2 rate limit backoff configuration

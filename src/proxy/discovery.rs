@@ -32,17 +32,11 @@ pub(crate) const DEFAULT_CONTEXT_LIMIT: u32 = 131_072;
 
 // FASE 3.6: Environment-variable configurable probe settings
 fn cache_ttl_secs() -> u64 {
-    std::env::var("PROBE_CACHE_TTL_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3600)
+    std::env::var("PROBE_CACHE_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(3600)
 }
 
 fn probe_timeout_secs() -> u64 {
-    std::env::var("PROBE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(15)
+    std::env::var("PROBE_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(15)
 }
 
 fn probing_disabled() -> bool {
@@ -54,20 +48,18 @@ fn probing_disabled() -> bool {
 /// Get model limit override from MODEL_LIMIT_OVERRIDES env var
 /// Format: "model-id1:limit1,model-id2:limit2"
 fn get_model_limit_override(model_id: &str) -> Option<u32> {
-    std::env::var("MODEL_LIMIT_OVERRIDES")
-        .ok()
-        .and_then(|overrides| {
-            overrides.split(',').find_map(|entry| {
-                let mut parts = entry.trim().split(':');
-                let model = parts.next()?;
-                let limit: u32 = parts.next()?.trim().parse().ok()?;
-                if model == model_id {
-                    Some(limit)
-                } else {
-                    None
-                }
-            })
+    std::env::var("MODEL_LIMIT_OVERRIDES").ok().and_then(|overrides| {
+        overrides.split(',').find_map(|entry| {
+            let mut parts = entry.trim().split(':');
+            let model = parts.next()?;
+            let limit: u32 = parts.next()?.trim().parse().ok()?;
+            if model == model_id {
+                Some(limit)
+            } else {
+                None
+            }
         })
+    })
 }
 
 /// Probe NIM to discover a model's max_total_tokens.
@@ -138,10 +130,7 @@ pub async fn get_context_limit(
     }
 
     // 2. Get upstream base URL (without /v1/chat/completions)
-    let upstream = config
-        .upstreams
-        .get(upstream_name)
-        .or_else(|| config.upstreams.get("default"));
+    let upstream = config.upstreams.get(upstream_name).or_else(|| config.upstreams.get("default"));
 
     let (base_url, api_key) = match upstream {
         Some(u) => (u.base_url.clone(), u.api_key.as_deref()),
@@ -153,18 +142,11 @@ pub async fn get_context_limit(
         let mut cache_write = cache.write().await;
         cache_write.insert(
             model.to_string(),
-            ModelCapabilities {
-                max_total_tokens: limit,
-                probed_at: std::time::Instant::now(),
-            },
+            ModelCapabilities { max_total_tokens: limit, probed_at: std::time::Instant::now() },
         );
         return limit;
     }
 
-    tracing::warn!(
-        "⚠️ Could not probe model '{}', using default {}",
-        model,
-        DEFAULT_CONTEXT_LIMIT
-    );
+    tracing::warn!("⚠️ Could not probe model '{}', using default {}", model, DEFAULT_CONTEXT_LIMIT);
     DEFAULT_CONTEXT_LIMIT
 }

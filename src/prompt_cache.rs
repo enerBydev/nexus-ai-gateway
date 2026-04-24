@@ -156,10 +156,8 @@ impl PromptCache {
 
         // LRU eviction if at capacity
         if entries.len() >= self.max_entries {
-            if let Some(evict_key) = entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_accessed)
-                .map(|(k, _)| k.clone())
+            if let Some(evict_key) =
+                entries.iter().min_by_key(|(_, e)| e.last_accessed).map(|(k, _)| k.clone())
             {
                 entries.remove(&evict_key);
                 self.evictions.fetch_add(1, Ordering::Relaxed);
@@ -231,11 +229,7 @@ impl PromptCache {
             total_hits: hits,
             total_misses: misses,
             total_evictions: self.evictions.load(Ordering::Relaxed),
-            hit_rate: if total > 0 {
-                hits as f64 / total as f64
-            } else {
-                0.0
-            },
+            hit_rate: if total > 0 { hits as f64 / total as f64 } else { 0.0 },
         }
     }
 }
@@ -343,9 +337,7 @@ mod tests {
                 let hash = PromptCache::hash_content(&content);
 
                 // Store an entry
-                cache_clone
-                    .store(&hash, 10 + i as u32, CacheLocation::MessageContent)
-                    .await;
+                cache_clone.store(&hash, 10 + i as u32, CacheLocation::MessageContent).await;
 
                 // Immediately lookup
                 let hit = cache_clone.lookup(&hash).await;
@@ -369,10 +361,7 @@ mod tests {
 
         // Verify final cache state - should have entries
         let final_stats = cache.stats().await;
-        assert!(
-            final_stats.total_entries > 0,
-            "Cache should have entries after concurrent access"
-        );
+        assert!(final_stats.total_entries > 0, "Cache should have entries after concurrent access");
     }
 
     // =========================================================================
@@ -410,18 +399,12 @@ mod tests {
 
         // Soft assertion - log warning if slow, but don't fail test to avoid flakiness
         if elapsed.as_millis() > 100 {
-            eprintln!(
-                "WARNING: Cache bulk operations took {:?}, expected under 100ms",
-                elapsed
-            );
+            eprintln!("WARNING: Cache bulk operations took {:?}, expected under 100ms", elapsed);
         }
 
         // Verify all entries are retrievable
         for hash in &hashes {
-            assert!(
-                cache.lookup(hash).await.is_some(),
-                "All stored entries should be retrievable"
-            );
+            assert!(cache.lookup(hash).await.is_some(), "All stored entries should be retrievable");
         }
     }
 }

@@ -1,0 +1,9 @@
+[build]
+jobs = -1
+
+[env]
+RUST_BACKTRACE = "1"
+
+[profile.dev.package]
+tokio.opt-level = 2
+reqwest.opt-level = 2

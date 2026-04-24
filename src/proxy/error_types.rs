@@ -14,27 +14,14 @@ pub(crate) struct UpstreamError {
 /// Parse NIM/OpenAI error response to extract structured error info.
 /// Handles nested errors where NIM wraps a 400 inside a 502.
 pub(crate) fn parse_upstream_error(status: u16, body: &str) -> UpstreamError {
-    let mut err = UpstreamError {
-        status,
-        message: body.to_string(),
-        ..Default::default()
-    };
+    let mut err = UpstreamError { status, message: body.to_string(), ..Default::default() };
 
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(error_obj) = json.get("error") {
-            err.message = error_obj
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or(body)
-                .to_string();
-            err.error_type = error_obj
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            err.param = error_obj
-                .get("param")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            err.message =
+                error_obj.get("message").and_then(|v| v.as_str()).unwrap_or(body).to_string();
+            err.error_type = error_obj.get("type").and_then(|v| v.as_str()).map(String::from);
+            err.param = error_obj.get("param").and_then(|v| v.as_str()).map(String::from);
             err.code = error_obj.get("code").and_then(|v| match v {
                 serde_json::Value::String(s) => Some(s.clone()),
                 serde_json::Value::Number(n) => Some(n.to_string()),

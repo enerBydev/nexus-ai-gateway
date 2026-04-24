@@ -76,6 +76,12 @@ indicatif = "0.17"
 # SSRF Protection
 ipnet = "2"
 
+# Lock-free config reads
+arc-swap = "1"
+
+[dev-dependencies]
+wiremock = "0.5"
+
 [profile.release]
 opt-level = "z"        # Optimize for size
 lto = true             # Enable Link Time Optimization
