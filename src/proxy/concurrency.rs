@@ -73,10 +73,7 @@ pub(crate) async fn acquire_model_permit(
         }
         Ok(Err(_)) => {
             tracing::error!("🛡️ Semaphore CLOSED for '{}' — this is a bug", model);
-            Err(ProxyError::Internal(format!(
-                "Semaphore closed for '{}'",
-                model
-            )))
+            Err(ProxyError::Internal(format!("Semaphore closed for '{}'", model)))
         }
         Err(_) => {
             tracing::error!(

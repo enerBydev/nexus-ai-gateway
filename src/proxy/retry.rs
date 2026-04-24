@@ -64,10 +64,7 @@ pub(crate) async fn resilient_send(
             return Ok(resp);
         }
 
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
 
         // Record circuit breaker failure
         circuit_breaker.record_failure(generation).await;
@@ -86,11 +83,7 @@ pub(crate) async fn resilient_send(
         tracing::debug!("🧠 Classified: {:?} (status={})", class, status.as_u16());
 
         match class {
-            ErrorClass::Retryable {
-                base_delay_ms,
-                max_retries,
-                reason,
-            } => {
+            ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
                 if attempt >= max_retries {
                     tracing::error!(
                         "⛔ {} [{}]: exhausted {} retries — giving up",
@@ -218,10 +211,7 @@ pub(crate) async fn resilient_send_raw(
             return Ok(response);
         }
 
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
 
         // Record circuit breaker failure
         circuit_breaker.record_failure(generation).await;
@@ -237,18 +227,10 @@ pub(crate) async fn resilient_send_raw(
         );
 
         let class = classify_error(&upstream_err);
-        tracing::debug!(
-            "🧠 [stream] Classified: {:?} (status={})",
-            class,
-            status.as_u16()
-        );
+        tracing::debug!("🧠 [stream] Classified: {:?} (status={})", class, status.as_u16());
 
         match class {
-            ErrorClass::Retryable {
-                base_delay_ms,
-                max_retries,
-                reason,
-            } => {
+            ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
                 if attempt >= max_retries {
                     tracing::error!(
                         "⛔ [stream] {} [{}]: exhausted {} retries — giving up",

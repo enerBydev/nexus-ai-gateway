@@ -17,10 +17,7 @@ pub(crate) fn find_web_fetch_in_response(
     resp: &anthropic::AnthropicResponse,
 ) -> Option<(String, String, serde_json::Value)> {
     for content in &resp.content {
-        if let anthropic::ResponseContent::ToolUse {
-            id, name, input, ..
-        } = content
-        {
+        if let anthropic::ResponseContent::ToolUse { id, name, input, .. } = content {
             if web_fetch::is_web_fetch_tool(name) {
                 return Some((id.clone(), name.clone(), input.clone()));
             }

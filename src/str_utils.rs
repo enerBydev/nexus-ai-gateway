@@ -44,11 +44,7 @@ pub fn safe_truncate_from_end(s: &str, max_chars: usize) -> &str {
     if total <= max_chars {
         return s;
     }
-    let start = s
-        .char_indices()
-        .nth(total - max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+    let start = s.char_indices().nth(total - max_chars).map(|(i, _)| i).unwrap_or(0);
     &s[start..]
 }
 

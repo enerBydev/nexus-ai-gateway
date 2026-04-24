@@ -36,13 +36,7 @@ pub fn is_web_fetch_tool(name: &str) -> bool {
 fn is_url_safe(url: &str) -> bool {
     // Extract host from URL
     let host = match url.split("://").nth(1) {
-        Some(rest) => rest
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or(""),
+        Some(rest) => rest.split('/').next().unwrap_or("").split(':').next().unwrap_or(""),
         None => return false,
     };
 
@@ -98,10 +92,9 @@ fn is_private_ip(ip: IpAddr) -> bool {
         "fc00::/7",
         "fe80::/10",
     ];
-    private_ranges.iter().any(|cidr| {
-        cidr.parse::<ipnet::IpNet>()
-            .is_ok_and(|net| net.contains(&ip))
-    })
+    private_ranges
+        .iter()
+        .any(|cidr| cidr.parse::<ipnet::IpNet>().is_ok_and(|net| net.contains(&ip)))
 }
 
 /// Ejecuta HTTP GET y devuelve contenido como texto
@@ -133,10 +126,7 @@ pub async fn execute_fetch(
     let response = client
         .get(url)
         .header("User-Agent", USER_AGENT)
-        .header(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        )
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
         .header("Accept-Language", "en-US,en;q=0.9,es;q=0.8")
         .timeout(Duration::from_secs(config.web_fetch_timeout_secs))
         .send()
@@ -177,11 +167,7 @@ pub async fn execute_fetch(
     // Si es HTML, strip tags
     let text = strip_html_tags(&body);
     let truncated = truncate_content(&text);
-    tracing::info!(
-        "[WebFetch] HTML→text: {} → {} chars",
-        body.len(),
-        truncated.len()
-    );
+    tracing::info!("[WebFetch] HTML→text: {} → {} chars", body.len(), truncated.len());
     Ok(truncated)
 }
 
@@ -250,9 +236,7 @@ pub fn strip_html_tags(html: &str) -> String {
     let hashes = ["#", "##", "###", "####", "#####", "######"];
     for (i, heading_re) in re.headings.iter().enumerate() {
         let replacement = format!("\n{} $1\n", hashes[i]);
-        text = heading_re
-            .replace_all(&text, replacement.as_str())
-            .to_string();
+        text = heading_re.replace_all(&text, replacement.as_str()).to_string();
     }
 
     // 4. Convertir <br>, </p>, </div>, </li> a newlines
@@ -287,10 +271,7 @@ fn truncate_content(text: &str) -> String {
         text.to_string()
     } else {
         let truncated = crate::str_utils::safe_truncate(text, MAX_CONTENT_CHARS);
-        format!(
-            "{}\n\n[Content truncated at {} characters]",
-            truncated, MAX_CONTENT_CHARS
-        )
+        format!("{}\n\n[Content truncated at {} characters]", truncated, MAX_CONTENT_CHARS)
     }
 }
 
@@ -384,9 +365,7 @@ mod tests {
         assert!(!is_url_safe("http://192.168.1.1/router"));
         assert!(!is_url_safe("http://169.254.169.254/latest/meta-data/"));
         assert!(!is_url_safe("http://0.0.0.0/anything"));
-        assert!(!is_url_safe(
-            "http://metadata.google.internal/computeMetadata/v1/"
-        ));
+        assert!(!is_url_safe("http://metadata.google.internal/computeMetadata/v1/"));
     }
 
     #[test]

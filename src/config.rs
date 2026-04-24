@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::{env, path::PathBuf};
 
 /// Upstream API type — determines protocol behavior
@@ -125,9 +125,7 @@ impl Config {
 
     /// Create Config from a HashMap (used for thread-safe reload)
     fn from_map(data: &HashMap<String, String>) -> Result<Self> {
-        let port = Self::get_from_map(data, "PORT")
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8315);
+        let port = Self::get_from_map(data, "PORT").and_then(|p| p.parse().ok()).unwrap_or(8315);
 
         let base_url = Self::get_from_map(data, "UPSTREAM_BASE_URL").ok_or_else(|| {
             anyhow::anyhow!(
@@ -156,10 +154,7 @@ impl Config {
 
         if base_url.ends_with("/v1") {
             eprintln!("⚠️ WARNING: UPSTREAM_BASE_URL ends with '/v1'");
-            eprintln!(
-                " This will result in URLs like: {}/v1/chat/completions",
-                base_url
-            );
+            eprintln!(" This will result in URLs like: {}/v1/chat/completions", base_url);
             eprintln!(" Consider removing '/v1' from UPSTREAM_BASE_URL");
             eprintln!(" Correct: https://openrouter.ai/api");
             eprintln!(" Wrong: https://openrouter.ai/api/v1");
@@ -181,10 +176,7 @@ impl Config {
         let mut upstreams = HashMap::new();
         upstreams.insert(
             "default".to_string(),
-            UpstreamConfig {
-                base_url: base_url.clone(),
-                api_key: api_key.clone(),
-            },
+            UpstreamConfig { base_url: base_url.clone(), api_key: api_key.clone() },
         );
 
         if let Some(bm_url) = Self::get_from_map(data, "UPSTREAM_BIGMODEL_BASE_URL") {
@@ -227,11 +219,7 @@ impl Config {
             }
         }
 
-        eprintln!(
-            " 📊 Upstreams: {}, Model mappings: {}",
-            upstreams.len(),
-            model_map.len()
-        );
+        eprintln!(" 📊 Upstreams: {}, Model mappings: {}", upstreams.len(), model_map.len());
 
         let max_concurrent_per_model = Self::get_from_map(data, "MAX_CONCURRENT_PER_MODEL")
             .and_then(|v| v.parse().ok())
@@ -294,10 +282,7 @@ impl Config {
             if path.exists() && dotenvy::from_path(&path).is_ok() {
                 return Some(path);
             }
-            eprintln!(
-                "⚠️  WARNING: Custom config file not found: {}",
-                path.display()
-            );
+            eprintln!("⚠️  WARNING: Custom config file not found: {}", path.display());
         }
 
         if let Ok(path) = dotenvy::dotenv() {
@@ -333,10 +318,7 @@ impl Config {
             eprintln!("ℹ️  No .env file found, using environment variables only");
         }
 
-        let port = env::var("PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8315);
+        let port = env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8315);
 
         let base_url = env::var("UPSTREAM_BASE_URL").map_err(|_| {
             anyhow::anyhow!(
@@ -356,20 +338,15 @@ impl Config {
         let reasoning_model = env::var("REASONING_MODEL").ok();
         let completion_model = env::var("COMPLETION_MODEL").ok();
 
-        let debug = env::var("DEBUG")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+        let debug =
+            env::var("DEBUG").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
 
-        let verbose = env::var("VERBOSE")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+        let verbose =
+            env::var("VERBOSE").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
 
         if base_url.ends_with("/v1") {
             eprintln!("⚠️  WARNING: UPSTREAM_BASE_URL ends with '/v1'");
-            eprintln!(
-                "   This will result in URLs like: {}/v1/chat/completions",
-                base_url
-            );
+            eprintln!("   This will result in URLs like: {}/v1/chat/completions", base_url);
             eprintln!("   Consider removing '/v1' from UPSTREAM_BASE_URL");
             eprintln!("   Correct: https://openrouter.ai/api");
             eprintln!("   Wrong:   https://openrouter.ai/api/v1");
@@ -379,24 +356,17 @@ impl Config {
             .map(|v| v != "0" && v.to_lowercase() != "false")
             .unwrap_or(true);
 
-        let web_fetch_max_retries = env::var("WEB_FETCH_MAX_RETRIES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3);
+        let web_fetch_max_retries =
+            env::var("WEB_FETCH_MAX_RETRIES").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
 
-        let web_fetch_timeout_secs = env::var("WEB_FETCH_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(15);
+        let web_fetch_timeout_secs =
+            env::var("WEB_FETCH_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
 
         // Multi-upstream configuration
         let mut upstreams = HashMap::new();
         upstreams.insert(
             "default".to_string(),
-            UpstreamConfig {
-                base_url: base_url.clone(),
-                api_key: api_key.clone(),
-            },
+            UpstreamConfig { base_url: base_url.clone(), api_key: api_key.clone() },
         );
 
         if let Ok(bm_url) = env::var("UPSTREAM_BIGMODEL_BASE_URL") {
@@ -413,10 +383,7 @@ impl Config {
         if let Ok(cf_url) = env::var("UPSTREAM_CF_BASE_URL") {
             upstreams.insert(
                 "cf".to_string(),
-                UpstreamConfig {
-                    base_url: cf_url,
-                    api_key: env::var("UPSTREAM_CF_API_KEY").ok(),
-                },
+                UpstreamConfig { base_url: cf_url, api_key: env::var("UPSTREAM_CF_API_KEY").ok() },
             );
             eprintln!("  ✅ Cloudflare upstream configured");
         }
@@ -440,22 +407,14 @@ impl Config {
             }
         }
 
-        eprintln!(
-            "  📊 Upstreams: {}, Model mappings: {}",
-            upstreams.len(),
-            model_map.len()
-        );
+        eprintln!("  📊 Upstreams: {}, Model mappings: {}", upstreams.len(), model_map.len());
 
         // Concurrency tuning (Opción B)
-        let max_concurrent_per_model = env::var("MAX_CONCURRENT_PER_MODEL")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5);
+        let max_concurrent_per_model =
+            env::var("MAX_CONCURRENT_PER_MODEL").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
 
-        let permit_timeout_secs = env::var("PERMIT_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(180);
+        let permit_timeout_secs =
+            env::var("PERMIT_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
         let upstream_type = match std::env::var("NEXUS_UPSTREAM_TYPE") {
             Ok(val) => match val.parse::<UpstreamType>() {
                 Ok(t) => t,
@@ -478,10 +437,8 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000);
-        let prompt_cache_ttl_secs = env::var("NIM_PROMPT_CACHE_TTL_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(300);
+        let prompt_cache_ttl_secs =
+            env::var("NIM_PROMPT_CACHE_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
 
         Ok(Config {
             port,
@@ -509,10 +466,7 @@ impl Config {
     /// NOTE: Currently unused but kept for future use or external callers.
     #[allow(dead_code)]
     pub fn chat_completions_url(&self) -> String {
-        format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        )
+        format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
     pub fn get_upstream_url(&self, upstream_name: &str) -> String {
@@ -521,10 +475,7 @@ impl Config {
             .get(upstream_name)
             .or_else(|| self.upstreams.get("default"))
             .expect("default upstream must exist");
-        format!(
-            "{}/v1/chat/completions",
-            upstream.base_url.trim_end_matches('/')
-        )
+        format!("{}/v1/chat/completions", upstream.base_url.trim_end_matches('/'))
     }
 
     pub fn get_upstream_key(&self, upstream_name: &str) -> Option<String> {
@@ -559,5 +510,5 @@ impl Config {
     }
 }
 
-/// Thread-safe shared config for hot-reload support
-pub type SharedConfig = Arc<RwLock<Config>>;
+/// Thread-safe shared config for hot-reload support (lock-free reads via arc-swap)
+pub type SharedConfig = Arc<arc_swap::ArcSwap<Config>>;
