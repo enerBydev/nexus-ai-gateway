@@ -18,8 +18,37 @@ use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::{RwLock as AsyncRwLock, Semaphore};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 1.3: OnceLock regex caching (avoids 10-50μs recompile per call)
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct ErrorRegexes {
+    input_tokens: regex::Regex,
+    context_length: regex::Regex,
+}
+
+fn error_regexes() -> &'static ErrorRegexes {
+    static RE: OnceLock<ErrorRegexes> = OnceLock::new();
+    RE.get_or_init(|| ErrorRegexes {
+        input_tokens: regex::Regex::new(r"passed\s+(\d+)\s+input\s+tokens").unwrap(),
+        context_length: regex::Regex::new(r"context\s+length\s+is\s+only\s+(\d+)").unwrap(),
+    })
+}
+
+struct ProbeRegexes {
+    max_total_tokens: regex::Regex,
+}
+
+fn probe_regexes() -> &'static ProbeRegexes {
+    static RE: OnceLock<ProbeRegexes> = OnceLock::new();
+    RE.get_or_init(|| ProbeRegexes {
+        max_total_tokens: regex::Regex::new(r"max_total_tokens=(\d+)").unwrap(),
+    })
+}
 
 const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplification (1.58x→~1.3x)
 #[allow(dead_code)]
@@ -228,11 +257,20 @@ const FATAL_PATTERNS: &[&str] = &[
 ///                    However, the model's context length is only {limit} tokens"
 /// Returns: context_limit - real_input - safety_margin (256 tokens)
 fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
-    let re_input = regex::Regex::new(r"passed\s+(\d+)\s+input\s+tokens").ok()?;
-    let re_limit = regex::Regex::new(r"context\s+length\s+is\s+only\s+(\d+)").ok()?;
-
-    let real_input: u32 = re_input.captures(message)?.get(1)?.as_str().parse().ok()?;
-    let context_limit: u32 = re_limit.captures(message)?.get(1)?.as_str().parse().ok()?;
+    let real_input: u32 = error_regexes()
+        .input_tokens
+        .captures(message)?
+        .get(1)?
+        .as_str()
+        .parse()
+        .ok()?;
+    let context_limit: u32 = error_regexes()
+        .context_length
+        .captures(message)?
+        .get(1)?
+        .as_str()
+        .parse()
+        .ok()?;
 
     // Safety margin: 256 tokens to guarantee fit across tokenizer differences
     let safe_max = context_limit
@@ -450,8 +488,7 @@ async fn probe_model_limit(
     let body = resp.text().await.ok()?;
 
     // Parse "max_total_tokens=262144" from NIM error message
-    let re = regex::Regex::new(r"max_total_tokens=(\d+)").ok()?;
-    let caps = re.captures(&body)?;
+    let caps = probe_regexes().max_total_tokens.captures(&body)?;
     let limit: u32 = caps.get(1)?.as_str().parse().ok()?;
 
     tracing::info!("🔍 Probed model '{}': max_total_tokens = {}", model, limit);
@@ -915,6 +952,54 @@ async fn resilient_send_raw(
     }
 }
 
+/// Validate semantic correctness of an Anthropic request before sending upstream.
+/// Returns a ProxyError for invalid requests, preventing wasted API calls.
+#[allow(dead_code)]
+fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
+    // Model must be non-empty
+    if req.model.is_empty() {
+        return Err(ProxyError::Transform(
+            "model field is required and cannot be empty".into(),
+        ));
+    }
+
+    // Messages must be non-empty
+    if req.messages.is_empty() {
+        return Err(ProxyError::Transform(
+            "messages array must contain at least one message".into(),
+        ));
+    }
+
+    // max_tokens must be > 0
+    if req.max_tokens == 0 {
+        return Err(ProxyError::Transform(
+            "max_tokens must be greater than 0".into(),
+        ));
+    }
+
+    // temperature must be in [0, 1] if specified
+    if let Some(temp) = req.temperature {
+        if !(0.0..=1.0).contains(&temp) {
+            return Err(ProxyError::Transform(format!(
+                "temperature must be between 0 and 1, got {}",
+                temp
+            )));
+        }
+    }
+
+    // top_p must be in [0, 1] if specified
+    if let Some(top_p) = req.top_p {
+        if !(0.0..=1.0).contains(&top_p) {
+            return Err(ProxyError::Transform(format!(
+                "top_p must be between 0 and 1, got {}",
+                top_p
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn proxy_handler(
     Extension(shared_config): Extension<SharedConfig>,
     Extension(client): Extension<Client>,
@@ -924,6 +1009,9 @@ pub async fn proxy_handler(
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
+    // Validate request before any upstream calls
+    validate_request(&req)?;
+
     // v0.11.0 (CR-04): Recover from poisoned RwLock instead of panicking
     let config = Arc::new(
         shared_config

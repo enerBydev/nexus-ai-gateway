@@ -6,6 +6,24 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command as SysCommand;
+use std::sync::OnceLock;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 1.3: OnceLock regex caching (avoids 10-50μs recompile per call)
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct ScanRegexes {
+    date_suffix: Regex,
+    version_suffix: Regex,
+}
+
+fn scan_regexes() -> &'static ScanRegexes {
+    static RE: OnceLock<ScanRegexes> = OnceLock::new();
+    RE.get_or_init(|| ScanRegexes {
+        date_suffix: Regex::new(r"-(\d{8})").unwrap(),
+        version_suffix: Regex::new(r"-(v\d+)$").unwrap(),
+    })
+}
 
 // ============================================================
 // Phase 1.2: Core data structures
@@ -195,12 +213,16 @@ pub fn extract_model_ids(raw: &str) -> Vec<DiscoveredModel> {
 /// Categorize a model ID into tier, generation, date suffix, and version suffix
 fn categorize_model(id: &str) -> (ModelTier, String, Option<String>, Option<String>) {
     // Extract date suffix (YYYYMMDD)
-    let date_re = Regex::new(r"-(\d{8})").unwrap();
-    let date_suffix = date_re.captures(id).map(|c| c[1].to_string());
+    let date_suffix = scan_regexes()
+        .date_suffix
+        .captures(id)
+        .map(|c| c[1].to_string());
 
     // Extract version suffix (vN)
-    let ver_re = Regex::new(r"-(v\d+)$").unwrap();
-    let version_suffix = ver_re.captures(id).map(|c| c[1].to_string());
+    let version_suffix = scan_regexes()
+        .version_suffix
+        .captures(id)
+        .map(|c| c[1].to_string());
 
     // Determine tier
     let tier = if id.contains("instant") {
