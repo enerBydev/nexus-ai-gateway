@@ -607,6 +607,18 @@ fn phase5_generate_env(
     env_content.push_str("WEB_FETCH_TIMEOUT_SECS=15\n");
 
     fs::write(&env_path, &env_content)?;
+
+    // FASE 3.4: Set .env file permissions to 600 (owner-only read/write) on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::warn!("Failed to set .env permissions to 600: {}", e);
+        } else {
+            tracing::info!("Set .env permissions to 600 (owner-only read/write)");
+        }
+    }
     eprintln!(
         "  {} {}",
         style("✅").green(),
