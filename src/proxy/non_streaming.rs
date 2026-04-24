@@ -36,6 +36,7 @@ pub(crate) async fn handle_non_streaming(
     original_req: anthropic::AnthropicRequest,
     upstream_name: &str,
     model_semaphores: ModelSemaphores,
+    circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> ProxyResult<axum::response::Response> {
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
@@ -62,8 +63,14 @@ pub(crate) async fn handle_non_streaming(
 
     loop {
         // === Resilient send with auto-retry on 429/400 ===
-        let openai_resp =
-            resilient_send(&client, &config, &mut current_openai_req, upstream_name).await?;
+        let openai_resp = resilient_send(
+            &client,
+            &config,
+            &mut current_openai_req,
+            upstream_name,
+            circuit_breaker,
+        )
+        .await?;
 
         if config.verbose {
             tracing::trace!(

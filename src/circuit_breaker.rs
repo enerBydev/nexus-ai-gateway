@@ -3,9 +3,6 @@
 //! Implements the circuit breaker pattern to prevent cascade failures
 //! when the upstream API becomes unhealthy.
 
-// v0.12.0: Temporary allow until CB is fully integrated into request flow
-#![allow(dead_code)]
-
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -116,6 +113,7 @@ impl CircuitBreaker {
     }
 
     /// Get current state
+    #[allow(dead_code)]
     pub async fn state(&self) -> CircuitState {
         *self.state.read().await
     }

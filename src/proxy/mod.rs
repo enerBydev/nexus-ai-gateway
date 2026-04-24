@@ -83,7 +83,7 @@ fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
 pub async fn proxy_handler(
     Extension(shared_config): Extension<SharedConfig>,
     Extension(client): Extension<Client>,
-    Extension(_circuit_breaker): Extension<CircuitBreaker>,
+    Extension(circuit_breaker): Extension<CircuitBreaker>,
     Extension(model_cache): Extension<ModelCache>,
     Extension(model_semaphores): Extension<ModelSemaphores>,
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
@@ -183,6 +183,7 @@ pub async fn proxy_handler(
             calibration,
             estimated_input, // v10.3: pass pre-computed estimate to avoid double tiktoken
             context_limit,   // v0.11.0 (CR-08): for input_tokens scaling
+            &circuit_breaker,
         )
         .await
     } else {
@@ -193,6 +194,7 @@ pub async fn proxy_handler(
             req,
             &upstream_name,
             model_semaphores,
+            &circuit_breaker,
         )
         .await
     }
