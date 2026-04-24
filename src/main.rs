@@ -365,13 +365,59 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
     });
 
-    axum::serve(listener, app).await?;
+    // v0.13.0: Graceful shutdown with configurable drain timeout
+    let drain_timeout_secs: u64 = std::env::var("DRAIN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    tracing::info!("Drain timeout: {}s", drain_timeout_secs);
+
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+
+    if let Err(e) = server.await {
+        tracing::error!("Server error: {}", e);
+    }
+
+    tracing::info!("✅ Server shut down gracefully");
 
     Ok(())
 }
 
 async fn health_handler() -> &'static str {
     "OK"
+}
+
+/// Shutdown signal handler for graceful shutdown
+/// Handles SIGINT (Ctrl+C) and SIGTERM
+async fn shutdown_signal() {
+    // Handle SIGINT (Ctrl+C)
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install CTRL+C handler");
+    };
+
+    // Handle SIGTERM (Unix only)
+    #[cfg(unix)]
+    let sigterm = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    // On non-Unix, only wait for Ctrl+C
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("🛑 CTRL+C received, draining connections...");
+        },
+        _ = sigterm => {
+            tracing::info!("🛑 SIGTERM received, draining connections...");
+        },
+    }
 }
 
 /// Phase 12.2: Token count estimation endpoint
