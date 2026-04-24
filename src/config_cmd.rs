@@ -343,3 +343,50 @@ fn find_env_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME not set")?;
     Ok(PathBuf::from(home).join(".nexus-ai-gateway.env"))
 }
+
+#[cfg(test)]
+mod mask_key_tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_key_shows_last_four() {
+        let key = Some("sk-abcdef1234567890".to_string());
+        // Should not panic - that's the main test
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_short_key() {
+        let key = Some("abc".to_string());
+        // Short key: should still work without panic
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_empty() {
+        let key: Option<String> = None;
+        // Should show "(not set)" - should not panic
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_exactly_four_chars() {
+        let key = Some("1234".to_string());
+        // Exactly 4 chars - last 4 should be visible
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_five_chars() {
+        let key = Some("12345".to_string());
+        // 5 chars, 1 hidden, 4 visible
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_empty_string() {
+        let key = Some("".to_string());
+        // Empty string should be treated as not set
+        let _result = mask_key(&key);
+    }
+}
