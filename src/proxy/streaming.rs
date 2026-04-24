@@ -31,6 +31,7 @@ pub(crate) async fn handle_streaming(
     calibration: tokenizer::CalibrationFactors,
     precomputed_estimate: u32,
     context_limit: u32,
+    _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> ProxyResult<Response> {
     let permit = acquire_model_permit(
         &model_semaphores,
@@ -60,7 +61,14 @@ pub(crate) async fn handle_streaming(
         nim_model_name
     );
 
-    let response = resilient_send_raw(&client, &config, &mut mutable_req, upstream_name).await?;
+    let response = resilient_send_raw(
+        &client,
+        &config,
+        &mut mutable_req,
+        upstream_name,
+        _circuit_breaker,
+    )
+    .await?;
 
     let stream = response.bytes_stream();
     let original_model_owned = original_model.to_string();
@@ -73,6 +81,7 @@ pub(crate) async fn handle_streaming(
         nim_model_name,
         calibration,
         context_limit,
+        _circuit_breaker,
     );
 
     let mut headers = HeaderMap::new();
@@ -96,6 +105,7 @@ pub(crate) fn create_sse_stream(
     nim_model_name: String,
     calibration: tokenizer::CalibrationFactors,
     context_limit: u32,
+    _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let cc_context_window: u32 = std::env::var("CC_CONTEXT_WINDOW")

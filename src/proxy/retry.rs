@@ -22,11 +22,22 @@ pub(crate) async fn resilient_send(
     config: &Config,
     openai_req: &mut openai::OpenAIRequest,
     upstream_name: &str,
+    circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> ProxyResult<openai::OpenAIResponse> {
     let mut attempt: u32 = 0;
 
     loop {
         attempt += 1;
+
+        // Circuit breaker check
+        let (allowed, generation) = circuit_breaker.is_allowed().await;
+        if !allowed {
+            tracing::warn!("⚡ Circuit breaker OPEN — rejecting request (upstream unhealthy)");
+            return Err(ProxyError::Upstream(
+                "Service unavailable: circuit breaker open".to_string(),
+            ));
+        }
+
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
@@ -45,6 +56,7 @@ pub(crate) async fn resilient_send(
         let status = response.status();
 
         if status.is_success() {
+            circuit_breaker.record_success(generation).await;
             let resp: openai::OpenAIResponse = response.json().await?;
             if attempt > 1 {
                 tracing::info!("🔄 Request succeeded on attempt #{}", attempt);
@@ -56,6 +68,9 @@ pub(crate) async fn resilient_send(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
+
+        // Record circuit breaker failure
+        circuit_breaker.record_failure(generation).await;
 
         // === Smart Retry: 3-Layer Error Classification ===
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
@@ -163,11 +178,21 @@ pub(crate) async fn resilient_send_raw(
     config: &Config,
     openai_req: &mut openai::OpenAIRequest,
     upstream_name: &str,
+    circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> ProxyResult<reqwest::Response> {
     let mut attempt: u32 = 0;
 
     loop {
         attempt += 1;
+
+        // Circuit breaker check
+        let (allowed, generation) = circuit_breaker.is_allowed().await;
+        if !allowed {
+            tracing::warn!("⚡ Circuit breaker OPEN — rejecting request (upstream unhealthy)");
+            return Err(ProxyError::Upstream(
+                "Service unavailable: circuit breaker open".to_string(),
+            ));
+        }
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
@@ -186,6 +211,7 @@ pub(crate) async fn resilient_send_raw(
         let status = response.status();
 
         if status.is_success() {
+            circuit_breaker.record_success(generation).await;
             if attempt > 1 {
                 tracing::info!("🔄 Streaming request succeeded on attempt #{}", attempt);
             }
@@ -196,6 +222,9 @@ pub(crate) async fn resilient_send_raw(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
+
+        // Record circuit breaker failure
+        circuit_breaker.record_failure(generation).await;
 
         // === Smart Retry: 3-Layer Error Classification [stream] ===
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
