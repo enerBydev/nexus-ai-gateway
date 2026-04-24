@@ -265,7 +265,7 @@ fn truncate_content(text: &str) -> String {
     if text.len() <= MAX_CONTENT_CHARS {
         text.to_string()
     } else {
-        let truncated = &text[..MAX_CONTENT_CHARS];
+        let truncated = crate::str_utils::safe_truncate(text, MAX_CONTENT_CHARS);
         format!(
             "{}\n\n[Content truncated at {} characters]",
             truncated, MAX_CONTENT_CHARS

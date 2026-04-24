@@ -8,6 +8,7 @@ mod prompt_cache;
 mod proxy;
 mod scan;
 mod setup;
+mod str_utils;
 mod tokenizer;
 mod transform;
 mod watcher;
