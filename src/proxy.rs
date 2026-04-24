@@ -954,7 +954,6 @@ async fn resilient_send_raw(
 
 /// Validate semantic correctness of an Anthropic request before sending upstream.
 /// Returns a ProxyError for invalid requests, preventing wasted API calls.
-#[allow(dead_code)]
 fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
     // Model must be non-empty
     if req.model.is_empty() {
@@ -1895,4 +1894,88 @@ fn find_web_fetch_in_response(
         }
     }
     None
+}
+// ... rest of proxy.rs ...
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    fn make_valid_request() -> anthropic::AnthropicRequest {
+        anthropic::AnthropicRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![anthropic::Message {
+                role: "user".to_string(),
+                content: anthropic::MessageContent::Text("Hello".to_string()),
+                extra: serde_json::Value::Null,
+            }],
+            max_tokens: 1024,
+            system: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            metadata: None,
+            extra: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn test_valid_request_passes() {
+        let req = make_valid_request();
+        assert!(validate_request(&req).is_ok());
+    }
+
+    #[test]
+    fn test_empty_model_rejected() {
+        let mut req = make_valid_request();
+        req.model = String::new();
+        assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_empty_messages_rejected() {
+        let mut req = make_valid_request();
+        req.messages = vec![];
+        assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_zero_max_tokens_rejected() {
+        let mut req = make_valid_request();
+        req.max_tokens = 0;
+        assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_invalid_temperature_rejected() {
+        let mut req = make_valid_request();
+        req.temperature = Some(1.5);
+        assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_negative_temperature_rejected() {
+        let mut req = make_valid_request();
+        req.temperature = Some(-0.5);
+        assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_invalid_top_p_rejected() {
+        let mut req = make_valid_request();
+        req.top_p = Some(1.5);
+        assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_boundary_temperature_accepted() {
+        let mut req = make_valid_request();
+        req.temperature = Some(0.0);
+        assert!(validate_request(&req).is_ok());
+        req.temperature = Some(1.0);
+        assert!(validate_request(&req).is_ok());
+    }
 }

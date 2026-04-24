@@ -5,7 +5,7 @@ mod tests {
         AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt,
     };
     use crate::prompt_cache::CacheLocation;
-    use crate::transform::{anthropic_to_openai, sanitize_reasoning, CacheMarker, TransformResult};
+    use crate::transform::{anthropic_to_openai, sanitize_reasoning};
     use serde_json::json;
     use std::collections::HashMap;
 
