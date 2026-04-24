@@ -651,7 +651,7 @@ async fn resilient_send(
             upstream_err.status,
             upstream_err.error_type,
             upstream_err.param,
-            &upstream_err.message[..upstream_err.message.len().min(100)]
+            crate::str_utils::safe_truncate(&upstream_err.message, 100)
         );
 
         let class = classify_error(&upstream_err);
@@ -675,7 +675,7 @@ async fn resilient_send(
                         status,
                         max_retries,
                         reason,
-                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                        crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
                 let delay = delay_with_jitter(base_delay_ms, attempt);
@@ -701,7 +701,7 @@ async fn resilient_send(
                         "Fixable error after {} retries ({}): {}",
                         MAX_RETRIES,
                         reason,
-                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                        crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
                 let current = openai_req.max_tokens.unwrap_or(64000);
@@ -723,20 +723,20 @@ async fn resilient_send(
                     "💀 {} [{}]: {}",
                     status.as_u16(),
                     reason,
-                    &upstream_err.message[..upstream_err.message.len().min(500)]
+                    crate::str_utils::safe_truncate(&upstream_err.message, 500)
                 );
                 // v6.1/v10.2: input_tokens overflow → try to extract safe max_tokens
                 if reason.contains("input_tokens overflow") {
                     return Err(ProxyError::ContextOverflow(format!(
                         "Context window full: {}. Use /compact to reduce context.",
-                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                        crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
                     status,
                     reason,
-                    &upstream_err.message[..upstream_err.message.len().min(300)]
+                    crate::str_utils::safe_truncate(&upstream_err.message, 300)
                 )));
             }
         }
@@ -791,7 +791,7 @@ async fn resilient_send_raw(
             upstream_err.status,
             upstream_err.error_type,
             upstream_err.param,
-            &upstream_err.message[..upstream_err.message.len().min(100)]
+            crate::str_utils::safe_truncate(&upstream_err.message, 100)
         );
 
         let class = classify_error(&upstream_err);
@@ -819,7 +819,7 @@ async fn resilient_send_raw(
                         status,
                         max_retries,
                         reason,
-                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                        crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
                 let delay = delay_with_jitter(base_delay_ms, attempt);
@@ -840,7 +840,7 @@ async fn resilient_send_raw(
                     if reason.contains("input_tokens overflow") {
                         return Err(ProxyError::ContextOverflow(format!(
                             "Context window full: {}. Use /compact to reduce context.",
-                            &upstream_err.message[..upstream_err.message.len().min(300)]
+                            crate::str_utils::safe_truncate(&upstream_err.message, 300)
                         )));
                     }
                     tracing::error!(
@@ -852,7 +852,7 @@ async fn resilient_send_raw(
                         "Fixable error after {} retries ({}): {}",
                         MAX_RETRIES,
                         reason,
-                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                        crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
                 // v10.2: For input_tokens overflow, calculate exact safe max_tokens
@@ -895,20 +895,20 @@ async fn resilient_send_raw(
                     "💀 [stream] {} [{}]: {}",
                     status.as_u16(),
                     reason,
-                    &upstream_err.message[..upstream_err.message.len().min(500)]
+                    crate::str_utils::safe_truncate(&upstream_err.message, 500)
                 );
                 // v6.1/v10.2: input_tokens overflow → 400 (CC won't retry)
                 if reason.contains("input_tokens overflow") {
                     return Err(ProxyError::ContextOverflow(format!(
                         "Context window full: {}. Use /compact to reduce context.",
-                        &upstream_err.message[..upstream_err.message.len().min(300)]
+                        crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
                     status,
                     reason,
-                    &upstream_err.message[..upstream_err.message.len().min(300)]
+                    crate::str_utils::safe_truncate(&upstream_err.message, 300)
                 )));
             }
         }
@@ -1673,13 +1673,13 @@ fn create_sse_stream(
                                                 // Use regex-based extraction for malformed JSON
                                                 let fetch_url = web_fetch::extract_url_from_raw(&fetch_args_buffer)
                                                     .unwrap_or_else(|| {
-                                                        tracing::warn!("[WebFetch/Stream] Could not extract URL from buffer: {}", &fetch_args_buffer[..fetch_args_buffer.len().min(200)]);
+                                                        tracing::warn!("[WebFetch/Stream] Could not extract URL from buffer: {}", crate::str_utils::safe_truncate(&fetch_args_buffer, 200));
                                                         String::new()
                                                     });
 
                                                 let fetch_result = if fetch_url.is_empty() || !fetch_url.starts_with("http") {
                                                     format!("Error: Could not extract valid URL from tool args: {}",
-                                                        &fetch_args_buffer[..fetch_args_buffer.len().min(200)])
+                                                        crate::str_utils::safe_truncate(&fetch_args_buffer, 200))
                                                 } else {
                                                     tracing::info!("[WebFetch/Stream] Executing fetch for: {}", fetch_url);
 

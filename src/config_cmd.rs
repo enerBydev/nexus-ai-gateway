@@ -136,13 +136,13 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
 
 fn mask_key(key: &Option<String>) -> console::StyledObject<String> {
     match key {
-        Some(k) if k.len() > 8 => {
-            let visible = &k[..4];
-            let masked = "*".repeat(k.len().min(20) - 4);
-            style(format!("{}{}", visible, masked)).dim()
+        Some(k) if !k.is_empty() => {
+            let chars_count = k.chars().count();
+            let visible = crate::str_utils::safe_truncate_from_end(k, 4);
+            let masked = "*".repeat(chars_count.saturating_sub(4));
+            style(format!("{}{}", masked, visible)).cyan()
         }
-        Some(k) if !k.is_empty() => style("****".to_string()).dim(),
-        _ => style("(not set)".to_string()).red(),
+        _ => style("(not set)".to_string()).dim(),
     }
 }
 
