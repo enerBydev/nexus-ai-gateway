@@ -8,7 +8,8 @@
 //! 1. See cache hit rates for context management
 //! 2. Benefit from KV cache reuse for ~2x TTFT improvement
 //! 3. Track costs appropriately
-
+//!
+//! Tracking: Full integration pending — module exposed as public API (PHASE 3.5)
 #![allow(dead_code)]
 
 use std::collections::HashMap;

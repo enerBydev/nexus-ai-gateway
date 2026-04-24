@@ -21,17 +21,18 @@ pub(crate) fn is_l2_rate_limit(error: &UpstreamError) -> bool {
 }
 
 /// L2 rate limit backoff configuration
-#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+/// Tracking: Future integration for advanced L2 backoff calculation (PHASE 3.5)
+#[allow(dead_code)]
 pub(crate) const L2_BACKOFF_MULTIPLIER: f64 = 2.0;
-#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
 pub(crate) const L2_MIN_BACKOFF_MS: u64 = 2000;
-#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+/// Tracking: Future integration for advanced L2 backoff calculation (PHASE 3.5)
+#[allow(dead_code)]
 pub(crate) const L2_MAX_BACKOFF_MS: u64 = 30000;
-#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
+/// Tracking: Future integration for advanced L2 backoff calculation (PHASE 3.5)
+#[allow(dead_code)]
 pub(crate) const L2_JITTER_PERCENT: f64 = 0.25;
 
 /// Log L2 rate limit with actionable information
-#[allow(dead_code)] // v0.12.0: L2 backoff integration pending
 pub(crate) fn log_l2_rate_limit(model: &str, error: &UpstreamError) {
     tracing::warn!(
         target: "nexus::rate_limit",

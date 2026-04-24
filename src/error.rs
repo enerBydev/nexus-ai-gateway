@@ -9,6 +9,8 @@ use thiserror::Error;
 /// Application-specific errors
 #[derive(Error, Debug)]
 pub enum ProxyError {
+    /// Configuration error — reserved for future config validation
+    /// Tracking: Future integration for config validation (PHASE 3.5)
     #[allow(dead_code)]
     #[error("Configuration error: {0}")]
     Config(String),
@@ -28,6 +30,8 @@ pub enum ProxyError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// Internal error — reserved for unexpected internal failures
+    /// Tracking: Future integration for internal error handling (PHASE 3.5)
     #[allow(dead_code)]
     #[error("Internal error: {0}")]
     Internal(String),
@@ -40,11 +44,13 @@ pub enum ProxyError {
     ContextOverflow(String),
 
     /// v0.11.0: Stream interrupted — NIM stopped sending chunks
+    /// Tracking: Future integration for stream timeout handling (PHASE 3.5)
     #[allow(dead_code)]
     #[error("Stream timeout: {0}")]
     StreamTimeout(String),
 
     /// v0.11.0: Buffer overflow — SSE buffer exceeded safety limit
+    /// Tracking: Future integration for buffer overflow handling (PHASE 3.5)
     #[allow(dead_code)]
     #[error("Buffer overflow: {0}")]
     BufferOverflow(String),

@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use crate::proxy::error_types::UpstreamError;
-use crate::proxy::rate_limit::{is_l2_rate_limit, L2_MIN_BACKOFF_MS};
+use crate::proxy::rate_limit::{is_l2_rate_limit, log_l2_rate_limit, L2_MIN_BACKOFF_MS};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 1.3: OnceLock regex caching (avoids 10-50μs recompile per call)
@@ -128,6 +128,7 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
 
     // Check for L2 rate limit first (more specific)
     if is_l2_rate_limit(upstream) {
+        log_l2_rate_limit("<model>", upstream);
         tracing::warn!(
             "⚠️ L2 rate limit detected: {} - using extended backoff",
             upstream.message.chars().take(100).collect::<String>()
