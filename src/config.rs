@@ -69,10 +69,13 @@ pub struct Config {
     pub permit_timeout_secs: u64,
     pub upstream_type: UpstreamType,
     // Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
+    /// Tracking: Future integration for prompt caching (PHASE 3.5)
     #[allow(dead_code)]
     pub prompt_cache_enabled: bool,
+    /// Tracking: Future integration for prompt caching (PHASE 3.5)
     #[allow(dead_code)]
     pub prompt_cache_max_entries: usize,
+    /// Tracking: Future integration for prompt caching (PHASE 3.5)
     #[allow(dead_code)]
     pub prompt_cache_ttl_secs: u64,
 }
@@ -316,6 +319,8 @@ impl Config {
         None
     }
 
+    /// Convenience constructor — may be used in tests or external tooling
+    /// Tracking: Kept for testing convenience (PHASE 3.5)
     #[allow(dead_code)]
     pub fn from_env() -> Result<Self> {
         Self::from_env_with_path(None)
@@ -500,6 +505,8 @@ impl Config {
         })
     }
 
+    /// Returns the chat completions URL for the default upstream.
+    /// NOTE: Currently unused but kept for future use or external callers.
     #[allow(dead_code)]
     pub fn chat_completions_url(&self) -> String {
         format!(

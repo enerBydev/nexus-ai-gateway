@@ -130,7 +130,7 @@ pub async fn proxy_handler(
     let transform_result = transform::anthropic_to_openai(req.clone(), &config)?;
     let mut openai_req = transform_result.request;
     let upstream_name = transform_result.upstream_name;
-    // PHASE 16: Cache markers available for cache integration
+    // PHASE 3.5: Cache markers available for cache integration (currently unused)
     let _cache_markers = transform_result.cache_markers;
 
     // === Pre-check: Dynamic context limit clamping (Doc1) ===

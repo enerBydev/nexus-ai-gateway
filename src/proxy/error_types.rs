@@ -5,6 +5,8 @@ pub(crate) struct UpstreamError {
     pub(crate) message: String,
     pub(crate) error_type: Option<String>, // NIM: "BadRequestError", etc.
     pub(crate) param: Option<String>,      // NIM: "input_tokens", etc.
+    /// Error code field — reserved for future detailed error code handling
+    /// Tracking: Future integration for error code analysis (PHASE 3.5)
     #[allow(dead_code)]
     pub(crate) code: Option<String>, // NIM: "400", etc.
 }
