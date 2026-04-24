@@ -14,6 +14,7 @@ mod transform;
 mod watcher;
 mod web_fetch;
 
+use axum::http::HeaderValue;
 use axum::{routing::post, Extension, Router};
 use clap::Parser;
 use cli::{Cli, Command};
@@ -199,10 +200,35 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     let config: SharedConfig = Arc::new(RwLock::new(config));
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = match std::env::var("CORS_ALLOWED_ORIGINS") {
+        Ok(origins) if !origins.is_empty() => {
+            let list: Vec<HeaderValue> = origins
+                .split(',')
+                .map(|o| o.trim())
+                .filter(|o| !o.is_empty())
+                .map(|o| o.parse().expect("Invalid CORS origin"))
+                .collect();
+            tracing::info!("CORS: allowing {} origin(s)", list.len());
+            CorsLayer::new()
+                .allow_origin(list)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+        _ => {
+            // Default: localhost only for security
+            tracing::info!(
+                "CORS: default — localhost:8315 only (set CORS_ALLOWED_ORIGINS to customize)"
+            );
+            CorsLayer::new()
+                .allow_origin(
+                    "http://localhost:8315"
+                        .parse::<HeaderValue>()
+                        .expect("Valid localhost origin"),
+                )
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+    };
 
     let app = Router::new()
         .route("/v1/messages", post(proxy::proxy_handler))
