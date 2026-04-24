@@ -73,6 +73,9 @@ dialoguer = "0.11"
 console = "0.15"
 indicatif = "0.17"
 
+# SSRF Protection
+ipnet = "2"
+
 [profile.release]
 opt-level = "z"        # Optimize for size
 lto = true             # Enable Link Time Optimization

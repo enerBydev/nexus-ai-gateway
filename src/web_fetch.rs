@@ -6,9 +6,11 @@
 
 use crate::config::Config;
 use crate::error::ProxyError;
+// use ipnet::IpNet;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::Value;
+use std::net::IpAddr;
 use std::time::Duration;
 
 /// User-Agent que simula Chrome para evitar bloqueos
@@ -81,6 +83,25 @@ fn is_url_safe(url: &str) -> bool {
     }
 
     true
+}
+
+/// Check if an IP address is in RFC1918 private ranges
+#[allow(dead_code)]
+fn is_private_ip(ip: IpAddr) -> bool {
+    let private_ranges: &[&str] = &[
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    ];
+    private_ranges.iter().any(|cidr| {
+        cidr.parse::<ipnet::IpNet>()
+            .is_ok_and(|net| net.contains(&ip))
+    })
 }
 
 /// Ejecuta HTTP GET y devuelve contenido como texto
@@ -385,5 +406,22 @@ mod tests {
         let r1 = strip_html_tags(html);
         let r2 = strip_html_tags(html);
         assert_eq!(r1, r2); // Same result = regex cache is consistent
+    }
+
+    // v0.13.0: DNS-based SSRF protection tests
+    #[test]
+    fn test_private_ip_detection() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        // Private IPs should be blocked
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+
+        // Public IPs should be allowed
+        assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
     }
 }

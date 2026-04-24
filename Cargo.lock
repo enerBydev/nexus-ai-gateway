@@ -1136,6 +1136,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "indicatif",
+ "ipnet",
  "notify",
  "notify-debouncer-mini",
  "pin-project",
