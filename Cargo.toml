@@ -79,6 +79,10 @@ ipnet = "2"
 # Lock-free config reads
 arc-swap = "1"
 
+# Metrics and observability
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
 [dev-dependencies]
 wiremock = "0.5"
 
