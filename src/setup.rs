@@ -104,7 +104,7 @@ fn phase1_upstream(quick: bool) -> Result<UpstreamSetup> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Failed to create progress style: {}", e))?
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
     );
     spinner.set_message("Validating API key...");
@@ -162,7 +162,7 @@ fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMappi
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Failed to create progress style: {}", e))?
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
     );
     spinner.set_message("Scanning Claude Code binary...");
