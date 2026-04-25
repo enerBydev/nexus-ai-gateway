@@ -26,6 +26,7 @@ pub(crate) fn find_web_fetch_in_response(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_non_streaming(
     config: Arc<Config>,
     client: Client,
@@ -34,6 +35,7 @@ pub(crate) async fn handle_non_streaming(
     upstream_name: &str,
     model_semaphores: ModelSemaphores,
     circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
+    context_limit: u32, // FIX 6: for token scaling
 ) -> ProxyResult<axum::response::Response> {
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
@@ -81,20 +83,55 @@ pub(crate) async fn handle_non_streaming(
         // FIX 2: Check if context is nearly full after successful retry
         let cc_context_window: u32 =
             std::env::var("CC_CONTEXT_WINDOW").ok().and_then(|v| v.parse().ok()).unwrap_or(200_000);
+
+        // FIX 6: Token scaling for non-streaming path (parity with streaming)
+        let scale_tokens = |real_tokens: u32| -> u32 {
+            if context_limit > 0 {
+                if context_limit < cc_context_window {
+                    let scaled = (real_tokens as f64 * cc_context_window as f64
+                        / context_limit as f64) as u32;
+                    tracing::debug!(
+                        "📐 [non-streaming] Scaling up input_tokens: {} → {} (upstream_ctx={}K < cc_ctx={}K)",
+                        real_tokens,
+                        scaled,
+                        context_limit / 1000,
+                        cc_context_window / 1000
+                    );
+                    scaled
+                } else {
+                    let scaled = (real_tokens as f64 * 1.1) as u32;
+                    tracing::debug!(
+                        "📐 [non-streaming] Scaling up input_tokens: {} → {} (upstream_ctx={}K > cc_ctx={}K)",
+                        real_tokens,
+                        scaled,
+                        context_limit / 1000,
+                        cc_context_window / 1000
+                    );
+                    scaled.min(cc_context_window)
+                }
+            } else {
+                real_tokens
+            }
+        };
+
         let input_tokens = anthropic_resp.usage.input_tokens as u32;
-        let context_threshold = cc_context_window * 90 / 100;
-        if input_tokens > context_threshold {
+        let scaled_input_tokens = scale_tokens(input_tokens); // FIX 6: Apply scaling
+        let context_threshold_pct = crate::proxy::get_overflow_threshold_pct();
+        let context_threshold = cc_context_window * context_threshold_pct / 100;
+        if scaled_input_tokens > context_threshold {
             tracing::warn!(
-                "⚠️ Context nearly full ({} tokens = {}% of {}K) — returning ContextOverflow",
-                input_tokens,
-                input_tokens * 100 / cc_context_window,
-                cc_context_window / 1000
+                "⚠️ Context nearly full ({} scaled tokens = {}% of {}K, threshold={}%) — returning ContextOverflow",
+                scaled_input_tokens,
+                scaled_input_tokens * 100 / cc_context_window,
+                cc_context_window / 1000,
+                context_threshold_pct
             );
             return Err(ProxyError::ContextOverflow(format!(
-                "Context window {}% full ({}/{}). Use /compact to reduce context.",
-                input_tokens * 100 / cc_context_window,
-                input_tokens / 1000,
-                cc_context_window / 1000
+                "Context window {}% full ({}/{}, threshold={}%). Use /compact to reduce context.",
+                scaled_input_tokens * 100 / cc_context_window,
+                scaled_input_tokens / 1000,
+                cc_context_window / 1000,
+                context_threshold_pct
             )));
         }
 

@@ -14,6 +14,7 @@ pub mod concurrency;
 pub mod discovery;
 pub mod error_types;
 pub mod non_streaming;
+pub mod overflow_tracker;
 pub mod rate_limit;
 pub mod retry;
 pub mod streaming;
@@ -73,6 +74,16 @@ fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
     }
 
     Ok(())
+}
+
+/// Returns the context overflow threshold percentage (default: 80%).
+/// Configurable via CC_OVERFLOW_THRESHOLD_PCT env var (range: 50-95).
+pub(crate) fn get_overflow_threshold_pct() -> u32 {
+    std::env::var("CC_OVERFLOW_THRESHOLD_PCT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&pct| (50..=95).contains(&pct))
+        .unwrap_or(80)
 }
 
 pub async fn proxy_handler(
@@ -186,6 +197,7 @@ pub async fn proxy_handler(
             &upstream_name,
             model_semaphores,
             &circuit_breaker,
+            context_limit, // FIX 6: pass context_limit for token scaling
         )
         .await
     };
@@ -281,5 +293,37 @@ mod validation_tests {
         assert!(validate_request(&req).is_ok());
         req.temperature = Some(1.0);
         assert!(validate_request(&req).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod threshold_tests {
+    use super::*;
+
+    #[test]
+    fn test_default_threshold_is_80() {
+        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
+        assert_eq!(get_overflow_threshold_pct(), 80);
+    }
+
+    #[test]
+    fn test_custom_threshold_valid() {
+        std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "75");
+        assert_eq!(get_overflow_threshold_pct(), 75);
+        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
+    }
+
+    #[test]
+    fn test_threshold_below_minimum_rejected() {
+        std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "40");
+        assert_eq!(get_overflow_threshold_pct(), 80);
+        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
+    }
+
+    #[test]
+    fn test_threshold_above_maximum_rejected() {
+        std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "99");
+        assert_eq!(get_overflow_threshold_pct(), 80);
+        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
     }
 }

@@ -269,16 +269,19 @@ pub(crate) fn create_sse_stream(
 
                                         // FIX 2: Check if context is nearly full AFTER successful retry.
                                         // When Fixable retry succeeds (reducing max_tokens), the request
-                                        // completes but context keeps growing. If scaled tokens exceed 90%
-                                        // of CC's context window, emit an error event so CC shows "Use /compact".
+                                        // completes but context keeps growing. If scaled tokens exceed the
+                                        // configurable threshold (default 80%) of CC's context window, emit
+                                        // an error event so CC shows "Use /compact".
                                         let scaled_for_check = scale_tokens(usage.prompt_tokens);
-                                        let context_threshold = cc_context_window * 90 / 100;
+                                        let context_threshold_pct = crate::proxy::get_overflow_threshold_pct();
+                                        let context_threshold = cc_context_window * context_threshold_pct / 100;
                                         if scaled_for_check > context_threshold {
                                             tracing::warn!(
-                                                "⚠️ Context nearly full ({} scaled tokens = {}% of {}K) — emitting error to trigger /compact",
+                                                "⚠️ Context nearly full ({} scaled tokens = {}% of {}K, threshold={}%) — emitting error to trigger /compact",
                                                 scaled_for_check,
                                                 scaled_for_check * 100 / cc_context_window,
-                                                cc_context_window / 1000
+                                                cc_context_window / 1000,
+                                                context_threshold_pct
                                             );
                                             // Close any open content block before emitting error
                                             if current_block_type.is_some() {
@@ -292,10 +295,11 @@ pub(crate) fn create_sse_stream(
                                                 "error": {
                                                     "type": "invalid_request_error",
                                                     "message": format!(
-                                                        "Context window {}% full ({}/{}). Use /compact to reduce context.",
+                                                        "Context window {}% full ({}/{}K, threshold={}%). Use /compact to reduce context.",
                                                         scaled_for_check * 100 / cc_context_window,
                                                         scaled_for_check / 1000,
-                                                        cc_context_window / 1000
+                                                        cc_context_window / 1000,
+                                                        context_threshold_pct
                                                     )
                                                 }
                                             });
