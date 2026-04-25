@@ -6,9 +6,10 @@ use crate::config::{Config, UpstreamType};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::openai;
 use crate::proxy::classify::{
-    classify_error, delay_with_jitter, ErrorClass, MAX_RETRIES, MIN_CLAMP_TOKENS,
+    classify_error, delay_with_jitter, error_regexes, ErrorClass, MAX_RETRIES, MIN_CLAMP_TOKENS,
 };
 use crate::proxy::error_types::parse_upstream_error;
+use crate::proxy::overflow_tracker::OverflowLoopTracker;
 
 // v0.11.0: Stream stability constants (CR-01, CR-02)
 pub(crate) const CHUNK_TIMEOUT_SECS: u64 = 120; // Max seconds to wait for next SSE chunk from NIM
@@ -57,6 +58,7 @@ pub(crate) async fn resilient_send(
 
         if status.is_success() {
             circuit_breaker.record_success(generation).await;
+            OverflowLoopTracker::reset_tracker(&openai_req.model);
             let resp: openai::OpenAIResponse = response.json().await?;
             if attempt > 1 {
                 tracing::info!("🔄 Request succeeded on attempt #{}", attempt);
@@ -124,6 +126,29 @@ pub(crate) async fn resilient_send(
                         reason,
                         crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
+                }
+                // FIX 4: Check for overflow loop pattern before retrying
+                if reason.contains("input_tokens overflow") {
+                    let real_input = error_regexes()
+                        .input_tokens
+                        .captures(&upstream_err.message)
+                        .and_then(|c| c.get(1)?.as_str().parse::<u32>().ok())
+                        .unwrap_or(0);
+                    if real_input > 0
+                        && OverflowLoopTracker::check_overflow_loop(&openai_req.model, real_input)
+                    {
+                        tracing::warn!(
+                            "🚀 Overflow loop detected for model {} at ~{}K tokens — forcing ContextOverflow",
+                            openai_req.model,
+                            real_input / 1000
+                        );
+                        return Err(ProxyError::ContextOverflow(format!(
+                            "Overflow loop detected: {} consecutive overflows at ~{}K tokens for {}. Use /compact to reduce context.",
+                            3,
+                            real_input / 1000,
+                            openai_req.model
+                        )));
+                    }
                 }
                 let current = openai_req.max_tokens.unwrap_or(64000);
                 let new_max = (current / 2).max(MIN_CLAMP_TOKENS);
@@ -205,6 +230,7 @@ pub(crate) async fn resilient_send_raw(
 
         if status.is_success() {
             circuit_breaker.record_success(generation).await;
+            OverflowLoopTracker::reset_tracker(&openai_req.model);
             if attempt > 1 {
                 tracing::info!("🔄 Streaming request succeeded on attempt #{}", attempt);
             }
@@ -278,6 +304,29 @@ pub(crate) async fn resilient_send_raw(
                         reason,
                         crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
+                }
+                // FIX 4: Check for overflow loop pattern before retrying
+                if reason.contains("input_tokens overflow") {
+                    let real_input = error_regexes()
+                        .input_tokens
+                        .captures(&upstream_err.message)
+                        .and_then(|c| c.get(1)?.as_str().parse::<u32>().ok())
+                        .unwrap_or(0);
+                    if real_input > 0
+                        && OverflowLoopTracker::check_overflow_loop(&openai_req.model, real_input)
+                    {
+                        tracing::warn!(
+                            "🚀 [stream] Overflow loop detected for model {} at ~{}K tokens — forcing ContextOverflow",
+                            openai_req.model,
+                            real_input / 1000
+                        );
+                        return Err(ProxyError::ContextOverflow(format!(
+                            "Overflow loop detected: {} consecutive overflows at ~{}K tokens for {}. Use /compact to reduce context.",
+                            3,
+                            real_input / 1000,
+                            openai_req.model
+                        )));
+                    }
                 }
                 // v10.2: For input_tokens overflow, calculate exact safe max_tokens
                 let new_max = if reason.contains("input_tokens overflow") {
