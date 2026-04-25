@@ -78,6 +78,26 @@ pub(crate) async fn handle_non_streaming(
 
         let anthropic_resp = transform::openai_to_anthropic(openai_resp, &original_req.model)?;
 
+        // FIX 2: Check if context is nearly full after successful retry
+        let cc_context_window: u32 =
+            std::env::var("CC_CONTEXT_WINDOW").ok().and_then(|v| v.parse().ok()).unwrap_or(200_000);
+        let input_tokens = anthropic_resp.usage.input_tokens as u32;
+        let context_threshold = cc_context_window * 90 / 100;
+        if input_tokens > context_threshold {
+            tracing::warn!(
+                "⚠️ Context nearly full ({} tokens = {}% of {}K) — returning ContextOverflow",
+                input_tokens,
+                input_tokens * 100 / cc_context_window,
+                cc_context_window / 1000
+            );
+            return Err(ProxyError::ContextOverflow(format!(
+                "Context window {}% full ({}/{}). Use /compact to reduce context.",
+                input_tokens * 100 / cc_context_window,
+                input_tokens / 1000,
+                cc_context_window / 1000
+            )));
+        }
+
         if config.verbose {
             tracing::trace!(
                 "Transformed Anthropic response: {}",

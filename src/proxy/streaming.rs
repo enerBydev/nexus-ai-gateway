@@ -106,12 +106,34 @@ pub(crate) fn create_sse_stream(
             context_limit / 1000
         );
         let scale_tokens = |real_tokens: u32| -> u32 {
-            if context_limit > 0 && context_limit < cc_context_window {
-                let scaled = (real_tokens as f64 * cc_context_window as f64
-                    / context_limit as f64) as u32;
-                tracing::debug!("📐 Scaling input_tokens for CC compact: {} → {} (real_ctx={}K, cc_ctx={}K)",
-                    real_tokens, scaled, context_limit / 1000, cc_context_window / 1000);
-                scaled
+            if context_limit > 0 {
+                if context_limit < cc_context_window {
+                    // Upstream has LESS context than CC — inflate so CC sees approaching limit
+                    let scaled = (real_tokens as f64 * cc_context_window as f64
+                        / context_limit as f64) as u32;
+                    tracing::debug!(
+                        "📐 Scaling up input_tokens: {} → {} (upstream_ctx={}K < cc_ctx={}K)",
+                        real_tokens,
+                        scaled,
+                        context_limit / 1000,
+                        cc_context_window / 1000
+                    );
+                    scaled
+                } else {
+                    // Upstream has MORE context than CC — CC will hit its limit first
+                    // Add 10% buffer so CC auto-compacts before hitting the hard limit
+                    let fill_ratio = real_tokens as f64 / cc_context_window as f64;
+                    let scaled = (real_tokens as f64 * 1.1) as u32;
+                    tracing::debug!(
+                        "📐 Scaling up input_tokens: {} → {} (fill={:.1}%, upstream_ctx={}K > cc_ctx={}K)",
+                        real_tokens,
+                        scaled,
+                        fill_ratio * 100.0,
+                        context_limit / 1000,
+                        cc_context_window / 1000
+                    );
+                    scaled.min(cc_context_window) // Never exceed CC's window
+                }
             } else {
                 real_tokens
             }
@@ -148,20 +170,29 @@ pub(crate) fn create_sse_stream(
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => break,
                 Err(_) => {
-                    tracing::error!("⏰ Stream chunk timeout after {}s — NIM stopped sending", CHUNK_TIMEOUT_SECS);
+                    tracing::error!("⏰ Stream chunk timeout after {}s — emitting error event", CHUNK_TIMEOUT_SECS);
                     if has_sent_message_start {
+                        // Close any open content blocks
                         if current_block_type.is_some() {
                             let stop_block = json!({"type": "content_block_stop", "index": content_index});
                             yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n",
                                 serde_json::to_string(&stop_block).unwrap_or_default())));
                         }
-                        let delta_event = json!({
-                            "type": "message_delta",
-                            "delta": { "stop_reason": "end_turn", "stop_sequence": serde_json::Value::Null },
-                            "usage": { "input_tokens": scale_tokens(accumulated_input_tokens), "output_tokens": accumulated_output_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 }
+                        // Emit error event instead of synthetic success
+                        // CC treats api_error as retryable — will retry the request
+                        let error_event = json!({
+                            "type": "error",
+                            "error": {
+                                "type": "api_error",
+                                "message": format!(
+                                    "Stream timeout: upstream stopped responding after {}s. The response may be incomplete.",
+                                    CHUNK_TIMEOUT_SECS
+                                )
+                            }
                         });
-                        yield Ok(Bytes::from(format!("event: message_delta\ndata: {}\n\n",
-                            serde_json::to_string(&delta_event).unwrap_or_default())));
+                        yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n",
+                            serde_json::to_string(&error_event).unwrap_or_default())));
+                        // Emit message_stop to cleanly terminate the stream
                         let stop_event = json!({"type": "message_stop"});
                         yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n",
                             serde_json::to_string(&stop_event).unwrap_or_default())));
@@ -235,6 +266,45 @@ pub(crate) fn create_sse_stream(
                                         );
                                         accumulated_input_tokens = usage.prompt_tokens;
                                         accumulated_output_tokens = usage.completion_tokens;
+
+                                        // FIX 2: Check if context is nearly full AFTER successful retry.
+                                        // When Fixable retry succeeds (reducing max_tokens), the request
+                                        // completes but context keeps growing. If scaled tokens exceed 90%
+                                        // of CC's context window, emit an error event so CC shows "Use /compact".
+                                        let scaled_for_check = scale_tokens(usage.prompt_tokens);
+                                        let context_threshold = cc_context_window * 90 / 100;
+                                        if scaled_for_check > context_threshold {
+                                            tracing::warn!(
+                                                "⚠️ Context nearly full ({} scaled tokens = {}% of {}K) — emitting error to trigger /compact",
+                                                scaled_for_check,
+                                                scaled_for_check * 100 / cc_context_window,
+                                                cc_context_window / 1000
+                                            );
+                                            // Close any open content block before emitting error
+                                            if current_block_type.is_some() {
+                                                let stop_block = json!({"type": "content_block_stop", "index": content_index});
+                                                yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&stop_block).unwrap_or_default())));
+                                            }
+                                            // Emit error event with invalid_request_error type
+                                            // CC treats this as non-retryable and shows "Use /compact" to user
+                                            let error_event = json!({
+                                                "type": "error",
+                                                "error": {
+                                                    "type": "invalid_request_error",
+                                                    "message": format!(
+                                                        "Context window {}% full ({}/{}). Use /compact to reduce context.",
+                                                        scaled_for_check * 100 / cc_context_window,
+                                                        scaled_for_check / 1000,
+                                                        cc_context_window / 1000
+                                                    )
+                                                }
+                                            });
+                                            yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
+                                            // Clean stream termination
+                                            let stop_event = json!({"type": "message_stop"});
+                                            yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n", serde_json::to_string(&stop_event).unwrap_or_default())));
+                                            break;
+                                        }
                                     }
 
                                     if let Some(choice) = chunk.choices.first() {
