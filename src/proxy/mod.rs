@@ -19,6 +19,7 @@ pub mod retry;
 pub mod streaming;
 
 use axum::{response::Response, Extension, Json};
+use metrics::{counter, histogram};
 use reqwest::Client;
 
 use crate::config::SharedConfig;
@@ -83,13 +84,25 @@ pub async fn proxy_handler(
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
+    // Phase 4.5: Capture request metrics
+    let start = std::time::Instant::now();
+    let is_streaming = req.stream.unwrap_or(false);
+    let model_name = req.model.clone();
+
+    // Phase 4.5: Record request counter
+    counter!(
+        "nexus_requests_total",
+        "model" => model_name.clone(),
+        "streaming" => is_streaming.to_string()
+    )
+    .increment(1);
+
     // Validate request before any upstream calls
     validate_request(&req)?;
 
     // v0.11.0 (CR-04): Recover from poisoned RwLock instead of panicking
     // v4.1: ArcSwap provides lock-free reads, no poisoning possible
     let config = shared_config.load_full();
-    let is_streaming = req.stream.unwrap_or(false);
 
     tracing::info!("Received request: model={} streaming={}", req.model, is_streaming);
 
@@ -149,7 +162,7 @@ pub async fn proxy_handler(
         );
     }
 
-    if is_streaming {
+    let result = if is_streaming {
         let original_model = req.model.clone();
         streaming::handle_streaming(
             config,
@@ -175,7 +188,16 @@ pub async fn proxy_handler(
             &circuit_breaker,
         )
         .await
-    }
+    };
+
+    // Phase 4.5: Record request duration histogram
+    histogram!(
+        "nexus_request_duration_seconds",
+        "model" => model_name
+    )
+    .record(start.elapsed().as_secs_f64());
+
+    result
 }
 
 #[cfg(test)]

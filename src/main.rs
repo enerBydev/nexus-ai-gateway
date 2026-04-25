@@ -15,11 +15,13 @@ mod watcher;
 mod web_fetch;
 
 use axum::http::HeaderValue;
+use axum::response::Response;
 use axum::{routing::post, Extension, Router};
 use clap::Parser;
 use cli::{Cli, Command};
 use config::{Config, SharedConfig};
 use daemonize::Daemonize;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -118,6 +120,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Phase 4.5: Install Prometheus metrics recorder
+    let prometheus_handle =
+        PrometheusBuilder::new().install_recorder().expect("Failed to install Prometheus recorder");
+
     tracing::info!("Starting NEXUS-AI-Gateway v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Port: {}", config.port);
     tracing::info!("Upstream URL: {}", config.base_url);
@@ -215,12 +221,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .route("/v1/messages", post(proxy::proxy_handler))
         .route("/v1/messages/count_tokens", post(count_tokens_handler))
         .route("/health", axum::routing::get(health_handler))
+        .route("/metrics", axum::routing::get(metrics_handler))
         .layer(Extension(config.clone()))
         .layer(Extension(client))
         .layer(Extension(model_cache))
         .layer(Extension(model_semaphores))
         .layer(Extension(calibration_factors))
         .layer(Extension(circuit_breaker))
+        .layer(Extension(prometheus_handle.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
@@ -380,6 +388,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
 async fn health_handler() -> &'static str {
     "OK"
+}
+
+/// Phase 4.5: Prometheus metrics endpoint
+async fn metrics_handler(Extension(prometheus_handle): Extension<PrometheusHandle>) -> Response {
+    let response_body = prometheus_handle.render();
+    Response::builder()
+        .status(200)
+        .header("content-type", "text/plain; charset=utf-8")
+        .body(response_body.into())
+        .unwrap()
 }
 
 /// Shutdown signal handler for graceful shutdown
