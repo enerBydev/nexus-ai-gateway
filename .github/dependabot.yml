@@ -19,8 +19,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    reviewers:
-      - "enerBydev"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -42,5 +40,3 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    reviewers:
-      - "enerBydev"

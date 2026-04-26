@@ -263,10 +263,14 @@ impl Config {
         let cb_enabled = Self::get_from_map(data, "CB_ENABLED")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
-        let cb_threshold =
-            Self::get_from_map(data, "CB_THRESHOLD").and_then(|v| v.parse().ok()).unwrap_or(10);
-        let cb_recovery_secs =
-            Self::get_from_map(data, "CB_RECOVERY_SECS").and_then(|v| v.parse().ok()).unwrap_or(60);
+        let cb_threshold = Self::get_from_map(data, "CB_THRESHOLD")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+            .max(1);
+        let cb_recovery_secs = Self::get_from_map(data, "CB_RECOVERY_SECS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60)
+            .max(1);
 
         Ok(Config {
             port,
@@ -458,9 +462,10 @@ impl Config {
         // Circuit breaker configuration (v0.14.1)
         let cb_enabled =
             env::var("CB_ENABLED").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
-        let cb_threshold = env::var("CB_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let cb_threshold =
+            env::var("CB_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(10).max(1);
         let cb_recovery_secs =
-            env::var("CB_RECOVERY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+            env::var("CB_RECOVERY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60).max(1);
 
         Ok(Config {
             port,
