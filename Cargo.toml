@@ -70,8 +70,8 @@ chrono = { version = "0.4", features = ["serde"] }
 tiktoken-rs = "0.11.0"
 
 # Interactive CLI (Setup Wizard)
-dialoguer = "0.11"
-console = "0.15"
+dialoguer = "0.12"
+console = "0.16"
 indicatif = "0.18"
 
 # SSRF Protection
@@ -82,7 +82,7 @@ arc-swap = "1"
 
 # Metrics and observability
 metrics = "0.24"
-metrics-exporter-prometheus = "0.16"
+metrics-exporter-prometheus = "0.18"
 
 [dev-dependencies]
 wiremock = "=0.6.4"
