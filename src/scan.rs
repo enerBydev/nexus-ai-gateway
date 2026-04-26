@@ -6,6 +6,24 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command as SysCommand;
+use std::sync::OnceLock;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 1.3: OnceLock regex caching (avoids 10-50μs recompile per call)
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct ScanRegexes {
+    date_suffix: Regex,
+    version_suffix: Regex,
+}
+
+fn scan_regexes() -> &'static ScanRegexes {
+    static RE: OnceLock<ScanRegexes> = OnceLock::new();
+    RE.get_or_init(|| ScanRegexes {
+        date_suffix: Regex::new(r"-(\d{8})").unwrap(),
+        version_suffix: Regex::new(r"-(v\d+)$").unwrap(),
+    })
+}
 
 // ============================================================
 // Phase 1.2: Core data structures
@@ -109,9 +127,7 @@ pub fn compute_sha256(path: &Path) -> Result<String, String> {
     let mut buffer = [0u8; 8192];
 
     loop {
-        let bytes_read = file
-            .read(&mut buffer)
-            .map_err(|e| format!("Read error: {}", e))?;
+        let bytes_read = file.read(&mut buffer).map_err(|e| format!("Read error: {}", e))?;
         if bytes_read == 0 {
             break;
         }
@@ -133,10 +149,7 @@ pub fn extract_strings(path: &Path) -> Result<String, String> {
         .map_err(|e| format!("Failed to run `strings`: {}", e))?;
 
     if !output.status.success() {
-        return Err(format!(
-            "`strings` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        return Err(format!("`strings` failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -174,13 +187,7 @@ pub fn extract_model_ids(raw: &str) -> Vec<DiscoveredModel> {
         .into_iter()
         .map(|id| {
             let (tier, generation, date_suffix, version_suffix) = categorize_model(&id);
-            DiscoveredModel {
-                id,
-                generation,
-                tier,
-                date_suffix,
-                version_suffix,
-            }
+            DiscoveredModel { id, generation, tier, date_suffix, version_suffix }
         })
         .collect();
 
@@ -195,12 +202,10 @@ pub fn extract_model_ids(raw: &str) -> Vec<DiscoveredModel> {
 /// Categorize a model ID into tier, generation, date suffix, and version suffix
 fn categorize_model(id: &str) -> (ModelTier, String, Option<String>, Option<String>) {
     // Extract date suffix (YYYYMMDD)
-    let date_re = Regex::new(r"-(\d{8})").unwrap();
-    let date_suffix = date_re.captures(id).map(|c| c[1].to_string());
+    let date_suffix = scan_regexes().date_suffix.captures(id).map(|c| c[1].to_string());
 
     // Extract version suffix (vN)
-    let ver_re = Regex::new(r"-(v\d+)$").unwrap();
-    let version_suffix = ver_re.captures(id).map(|c| c[1].to_string());
+    let version_suffix = scan_regexes().version_suffix.captures(id).map(|c| c[1].to_string());
 
     // Determine tier
     let tier = if id.contains("instant") {
@@ -380,11 +385,7 @@ pub fn scan_cc_binary() -> Result<CCScanResult, String> {
     tracing::info!("🔍 Scanning CC binary: {}", binary_path.display());
 
     let sha256 = compute_sha256(&binary_path)?;
-    tracing::info!(
-        "📊 SHA256: {}...{}",
-        &sha256[..8],
-        &sha256[sha256.len() - 8..]
-    );
+    tracing::info!("📊 SHA256: {}...{}", &sha256[..8], &sha256[sha256.len() - 8..]);
 
     let raw = extract_strings(&binary_path)?;
     tracing::info!("📊 Extracted {} chars from binary", raw.len());
@@ -424,10 +425,7 @@ pub fn display_scan(result: &CCScanResult) {
     println!("╠══════════════════════════════════════════════════╣");
     println!("║ Binary: {}", result.binary_path);
     println!("║ SHA256: {}", result.binary_sha256);
-    println!(
-        "║ Scanned: {}",
-        result.scan_timestamp.format("%Y-%m-%d %H:%M:%S UTC")
-    );
+    println!("║ Scanned: {}", result.scan_timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
     println!("╠══════════════════════════════════════════════════╣");
 
     // Group models by tier
@@ -464,10 +462,7 @@ pub fn display_scan(result: &CCScanResult) {
     }
 
     println!("╠══════════════════════════════════════════════════╣");
-    println!(
-        "║ 🌐 Env Vars: {} confirmed in binary",
-        result.env_vars.len()
-    );
+    println!("║ 🌐 Env Vars: {} confirmed in binary", result.env_vars.len());
     for var in &result.env_vars {
         println!("║   ✓ {}", var);
     }

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 // ============================================================
 
 /// Watches the CC binary for updates and triggers re-scans
-#[allow(dead_code)]
 pub struct CCWatcher {
     binary_path: PathBuf,
     last_sha256: String,
@@ -14,7 +13,6 @@ pub struct CCWatcher {
     state_path: PathBuf,
 }
 
-#[allow(dead_code)]
 impl CCWatcher {
     /// Create a new watcher with an initial scan result
     pub fn new(
@@ -26,12 +24,7 @@ impl CCWatcher {
             .map(|h| h.join(".nexus-ai-gateway-scan.json"))
             .unwrap_or_else(|| PathBuf::from("/tmp/nexus-ai-gateway-scan.json"));
 
-        CCWatcher {
-            binary_path,
-            last_sha256: initial_sha256,
-            last_scan: initial_scan,
-            state_path,
-        }
+        CCWatcher { binary_path, last_sha256: initial_sha256, last_scan: initial_scan, state_path }
     }
 
     // ============================================================
@@ -39,6 +32,8 @@ impl CCWatcher {
     // ============================================================
 
     /// Check if the CC binary has been updated since last scan
+    /// NOTE: Currently unused but kept for future auto-rescan on binary update
+    #[allow(dead_code)]
     pub fn check_for_update(&mut self) -> bool {
         let current_sha256 = match scan::compute_sha256(&self.binary_path) {
             Ok(s) => s,
@@ -125,6 +120,8 @@ impl CCWatcher {
     }
 
     /// Get the last scan result
+    /// Tracking: Future integration for accessing scan history (PHASE 3.5)
+    #[allow(dead_code)]
     pub fn last_scan(&self) -> Option<&CCScanResult> {
         self.last_scan.as_ref()
     }

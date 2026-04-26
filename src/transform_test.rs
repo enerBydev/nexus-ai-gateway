@@ -5,7 +5,7 @@ mod tests {
         AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt,
     };
     use crate::prompt_cache::CacheLocation;
-    use crate::transform::{anthropic_to_openai, sanitize_reasoning, CacheMarker, TransformResult};
+    use crate::transform::{anthropic_to_openai, sanitize_reasoning};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -134,10 +134,7 @@ mod tests {
         let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
 
         // Debug output
-        eprintln!(
-            "DEBUG: cache_markers.len() = {}",
-            result.cache_markers.len()
-        );
+        eprintln!("DEBUG: cache_markers.len() = {}", result.cache_markers.len());
         eprintln!("DEBUG: cache_markers = {:?}", result.cache_markers);
 
         // Verify cache_markers has at least 1 marker with MessageContent location
@@ -147,10 +144,8 @@ mod tests {
             result.cache_markers.len()
         );
 
-        let has_message_content_marker = result
-            .cache_markers
-            .iter()
-            .any(|m| m.location == CacheLocation::MessageContent);
+        let has_message_content_marker =
+            result.cache_markers.iter().any(|m| m.location == CacheLocation::MessageContent);
         assert!(
             has_message_content_marker,
             "Expected at least one marker with MessageContent location"
@@ -158,10 +153,7 @@ mod tests {
 
         // Verify the marker has non-empty content_hash
         for marker in &result.cache_markers {
-            assert!(
-                !marker.content_hash.is_empty(),
-                "content_hash should not be empty"
-            );
+            assert!(!marker.content_hash.is_empty(), "content_hash should not be empty");
         }
     }
 
@@ -325,29 +317,11 @@ mod tests {
         let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
 
         // Verify the request field is a properly constructed OpenAIRequest
-        assert!(
-            !result.request.model.is_empty(),
-            "Request model should not be empty"
-        );
-        assert!(
-            !result.request.messages.is_empty(),
-            "Request messages should not be empty"
-        );
-        assert_eq!(
-            result.request.max_tokens,
-            Some(4096),
-            "max_tokens should be preserved"
-        );
-        assert_eq!(
-            result.request.temperature,
-            Some(0.7),
-            "temperature should be preserved"
-        );
-        assert_eq!(
-            result.request.stream,
-            Some(true),
-            "stream should be preserved"
-        );
+        assert!(!result.request.model.is_empty(), "Request model should not be empty");
+        assert!(!result.request.messages.is_empty(), "Request messages should not be empty");
+        assert_eq!(result.request.max_tokens, Some(4096), "max_tokens should be preserved");
+        assert_eq!(result.request.temperature, Some(0.7), "temperature should be preserved");
+        assert_eq!(result.request.stream, Some(true), "stream should be preserved");
     }
 
     // =========================================================================

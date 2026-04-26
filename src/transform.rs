@@ -46,12 +46,9 @@ fn resolve_model_and_upstream(
         return (route.target_model.clone(), route.upstream_name.clone());
     }
     // 2. Fallback to configured model overrides
-    let model = if has_thinking {
-        config.reasoning_model.clone()
-    } else {
-        config.completion_model.clone()
-    }
-    .unwrap_or_else(|| req_model.to_string());
+    let model =
+        if has_thinking { config.reasoning_model.clone() } else { config.completion_model.clone() }
+            .unwrap_or_else(|| req_model.to_string());
 
     tracing::info!("📍 Model fallback: {} → default:{}", req_model, model);
     (model, "default".to_string())
@@ -129,11 +126,7 @@ pub fn anthropic_to_openai(
     for msg in &req.messages {
         if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
             for block in blocks {
-                if let anthropic::ContentBlock::Text {
-                    ref text,
-                    ref cache_control,
-                } = block
-                {
+                if let anthropic::ContentBlock::Text { ref text, ref cache_control } = block {
                     if let Some(ref cc) = cache_control {
                         cache_markers.push(CacheMarker {
                             content_hash: PromptCache::hash_content(text),
@@ -183,10 +176,8 @@ pub fn anthropic_to_openai(
 
     // Convert tools
     let tools = req.tools.and_then(|tools| {
-        let filtered: Vec<_> = tools
-            .into_iter()
-            .filter(|t| t.tool_type.as_deref() != Some("BatchTool"))
-            .collect();
+        let filtered: Vec<_> =
+            tools.into_iter().filter(|t| t.tool_type.as_deref() != Some("BatchTool")).collect();
 
         if filtered.is_empty() {
             None
@@ -269,10 +260,7 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
 
             for block in blocks {
                 match block {
-                    anthropic::ContentBlock::Text {
-                        text,
-                        cache_control,
-                    } => {
+                    anthropic::ContentBlock::Text { text, cache_control } => {
                         if let Some(ref cc) = cache_control {
                             tracing::debug!(
                                 target: "nexus::cache",
@@ -300,11 +288,7 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             },
                         });
                     }
-                    anthropic::ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } => {
+                    anthropic::ContentBlock::ToolResult { tool_use_id, content, .. } => {
                         let text_content = match content {
                             anthropic::ToolResultContent::Text(s) => s,
                             anthropic::ToolResultContent::Blocks(blocks) => blocks
@@ -370,11 +354,7 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                 result.push(openai::Message {
                     role: msg.role,
                     content,
-                    tool_calls: if tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(tool_calls)
-                    },
+                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
                     tool_call_id: None,
                     name: None,
                 });
@@ -481,11 +461,8 @@ pub fn openai_to_anthropic(
 
     // Phase 10: Check for reasoning/thinking content from NIM
     // Universal: check reasoning_content first, fall back to reasoning (Kimi K2.5)
-    let reasoning_val = choice
-        .message
-        .reasoning_content
-        .as_ref()
-        .or(choice.message.reasoning.as_ref());
+    let reasoning_val =
+        choice.message.reasoning_content.as_ref().or(choice.message.reasoning.as_ref());
     if let Some(reasoning) = reasoning_val {
         let clean = sanitize_reasoning(reasoning);
         if !clean.is_empty() {
@@ -522,12 +499,8 @@ pub fn openai_to_anthropic(
     }
 
     // Phase 4: Detect tool_calls to set stop_reason correctly
-    let has_tool_calls = choice
-        .message
-        .tool_calls
-        .as_ref()
-        .map(|tc| !tc.is_empty())
-        .unwrap_or(false);
+    let has_tool_calls =
+        choice.message.tool_calls.as_ref().map(|tc| !tc.is_empty()).unwrap_or(false);
 
     let stop_reason = if has_tool_calls {
         Some("tool_use".to_string())
