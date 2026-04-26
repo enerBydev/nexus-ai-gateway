@@ -60,7 +60,7 @@ pin-project = "1.1"
 regex = "1.11"
 
 # v5.0 Hardening
-rand = "0.8"
+rand = "0.9"
 notify = "7"
 notify-debouncer-mini = "0.5"
 
