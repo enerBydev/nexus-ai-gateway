@@ -88,11 +88,7 @@ pub enum ContentBlock {
     #[serde(rename = "image")]
     Image { source: ImageSource },
     #[serde(rename = "tool_use")]
-    ToolUse {
-        id: String,
-        name: String,
-        input: Value,
-    },
+    ToolUse { id: String, name: String, input: Value },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
@@ -218,10 +214,7 @@ pub enum StreamEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: MessageStartData },
     #[serde(rename = "content_block_start")]
-    ContentBlockStart {
-        index: usize,
-        content_block: ContentBlockStart,
-    },
+    ContentBlockStart { index: usize, content_block: ContentBlockStart },
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { index: usize, delta: Delta },
     #[serde(rename = "content_block_stop")]

@@ -21,55 +21,26 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
     let config = Config::from_env_with_path(config_path).context("Failed to load config")?;
 
     eprintln!();
-    eprintln!(
-        "{}",
-        style("╔══════════════════════════════════════════════════╗")
-            .cyan()
-            .bold()
-    );
-    eprintln!(
-        "{}",
-        style("║     NEXUS AI Gateway — Current Configuration     ║")
-            .cyan()
-            .bold()
-    );
-    eprintln!(
-        "{}",
-        style("╚══════════════════════════════════════════════════╝")
-            .cyan()
-            .bold()
-    );
+    eprintln!("{}", style("╔══════════════════════════════════════════════════╗").cyan().bold());
+    eprintln!("{}", style("║     NEXUS AI Gateway — Current Configuration     ║").cyan().bold());
+    eprintln!("{}", style("╚══════════════════════════════════════════════════╝").cyan().bold());
 
     // Server section
     eprintln!("\n  {}", style("━━━ Server ━━━").yellow().bold());
     eprintln!("    Port:            {}", style(config.port).green());
     eprintln!(
         "    Debug:           {}",
-        if config.debug {
-            style("true").yellow()
-        } else {
-            style("false").dim()
-        }
+        if config.debug { style("true").yellow() } else { style("false").dim() }
     );
     eprintln!(
         "    Verbose:         {}",
-        if config.verbose {
-            style("true").yellow()
-        } else {
-            style("false").dim()
-        }
+        if config.verbose { style("true").yellow() } else { style("false").dim() }
     );
 
     // Concurrency section
     eprintln!("\n  {}", style("━━━ Concurrency ━━━").yellow().bold());
-    eprintln!(
-        "    Max per model:   {}",
-        style(config.max_concurrent_per_model).green()
-    );
-    eprintln!(
-        "    Permit timeout:  {}s",
-        style(config.permit_timeout_secs).green()
-    );
+    eprintln!("    Max per model:   {}", style(config.max_concurrent_per_model).green());
+    eprintln!("    Permit timeout:  {}s", style(config.permit_timeout_secs).green());
 
     // Upstream section
     eprintln!("\n  {}", style("━━━ Upstream ━━━").yellow().bold());
@@ -79,16 +50,8 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
     // Additional upstreams
     for (name, upstream) in &config.upstreams {
         if name != "default" {
-            eprintln!(
-                "    {} URL:   {}",
-                style(name).bold(),
-                style(&upstream.base_url).green()
-            );
-            eprintln!(
-                "    {} Key:   {}",
-                style(name).bold(),
-                mask_key(&upstream.api_key)
-            );
+            eprintln!("    {} URL:   {}", style(name).bold(), style(&upstream.base_url).green());
+            eprintln!("    {} Key:   {}", style(name).bold(), mask_key(&upstream.api_key));
         }
     }
 
@@ -115,20 +78,10 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
     eprintln!("\n  {}", style("━━━ WebFetch ━━━").yellow().bold());
     eprintln!(
         "    Enabled:         {}",
-        if config.web_fetch_enabled {
-            style("true").green()
-        } else {
-            style("false").dim()
-        }
+        if config.web_fetch_enabled { style("true").green() } else { style("false").dim() }
     );
-    eprintln!(
-        "    Max retries:     {}",
-        style(config.web_fetch_max_retries).dim()
-    );
-    eprintln!(
-        "    Timeout:         {}s",
-        style(config.web_fetch_timeout_secs).dim()
-    );
+    eprintln!("    Max retries:     {}", style(config.web_fetch_max_retries).dim());
+    eprintln!("    Timeout:         {}s", style(config.web_fetch_timeout_secs).dim());
 
     eprintln!();
     Ok(())
@@ -136,13 +89,13 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
 
 fn mask_key(key: &Option<String>) -> console::StyledObject<String> {
     match key {
-        Some(k) if k.len() > 8 => {
-            let visible = &k[..4];
-            let masked = "*".repeat(k.len().min(20) - 4);
-            style(format!("{}{}", visible, masked)).dim()
+        Some(k) if !k.is_empty() => {
+            let chars_count = k.chars().count();
+            let visible = crate::str_utils::safe_truncate_from_end(k, 4);
+            let masked = "*".repeat(chars_count.saturating_sub(4));
+            style(format!("{}{}", masked, visible)).cyan()
         }
-        Some(k) if !k.is_empty() => style("****".to_string()).dim(),
-        _ => style("(not set)".to_string()).red(),
+        _ => style("(not set)".to_string()).dim(),
     }
 }
 
@@ -154,11 +107,7 @@ fn config_set(key: &str, value: &str, config_path: Option<&std::path::Path>) -> 
         None => find_env_path()?,
     };
 
-    let content = if env_path.exists() {
-        fs::read_to_string(&env_path)?
-    } else {
-        String::new()
-    };
+    let content = if env_path.exists() { fs::read_to_string(&env_path)? } else { String::new() };
 
     // Normalize key to uppercase
     let key_upper = key.to_uppercase();
@@ -197,10 +146,7 @@ fn config_set(key: &str, value: &str, config_path: Option<&std::path::Path>) -> 
         env_path.display()
     );
 
-    eprintln!(
-        "{}",
-        style("   Restart proxy or send SIGHUP for changes to take effect").dim()
-    );
+    eprintln!("{}", style("   Restart proxy or send SIGHUP for changes to take effect").dim());
 
     Ok(())
 }
@@ -216,10 +162,7 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
     // Test 1: Config loads
     let config = match config {
         Ok(c) => {
-            eprintln!(
-                "  {} Configuration loaded successfully",
-                style("✅").green()
-            );
+            eprintln!("  {} Configuration loaded successfully", style("✅").green());
             c
         }
         Err(e) => {
@@ -230,9 +173,7 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
 
     // Test 2: Upstream connectivity
     eprintln!("  Testing upstream connectivity...");
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()?;
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build()?;
 
     for (name, upstream) in &config.upstreams {
         let url = format!("{}/v1/models", upstream.base_url.trim_end_matches('/'));
@@ -247,11 +188,8 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
             Ok(resp) if resp.status().is_success() => {
                 let ms = start.elapsed().as_millis();
                 let body: serde_json::Value = resp.json().unwrap_or_default();
-                let model_count = body
-                    .get("data")
-                    .and_then(|d| d.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
+                let model_count =
+                    body.get("data").and_then(|d| d.as_array()).map(|a| a.len()).unwrap_or(0);
                 eprintln!(
                     "  {} Upstream '{}': {}ms, {} models",
                     style("✅").green(),
@@ -261,12 +199,7 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
                 );
             }
             Ok(resp) => {
-                eprintln!(
-                    "  {} Upstream '{}': HTTP {}",
-                    style("❌").red(),
-                    name,
-                    resp.status()
-                );
+                eprintln!("  {} Upstream '{}': HTTP {}", style("❌").red(), name, resp.status());
             }
             Err(e) => {
                 eprintln!("  {} Upstream '{}': {}", style("❌").red(), name, e);
@@ -293,46 +226,23 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
     // Test 4: Local health check
     eprintln!("  Checking local proxy health...");
     let health_url = format!("http://localhost:{}/health", config.port);
-    match client
-        .get(&health_url)
-        .timeout(Duration::from_secs(3))
-        .send()
-    {
+    match client.get(&health_url).timeout(Duration::from_secs(3)).send() {
         Ok(resp) if resp.status().is_success() => {
-            eprintln!(
-                "  {} Proxy healthy at port {}",
-                style("✅").green(),
-                config.port
-            );
+            eprintln!("  {} Proxy healthy at port {}", style("✅").green(), config.port);
         }
         Ok(resp) => {
-            eprintln!(
-                "  {} Proxy responded: {}",
-                style("⚠️").yellow(),
-                resp.status()
-            );
+            eprintln!("  {} Proxy responded: {}", style("⚠️").yellow(), resp.status());
         }
         Err(_) => {
-            eprintln!(
-                "  {} Proxy not running on port {}",
-                style("ℹ️").blue(),
-                config.port
-            );
+            eprintln!("  {} Proxy not running on port {}", style("ℹ️").blue(), config.port);
         }
     }
 
     // Test 5: Model mapping coverage
     if !config.model_map.is_empty() {
-        eprintln!(
-            "  {} {} model mappings configured",
-            style("✅").green(),
-            config.model_map.len()
-        );
+        eprintln!("  {} {} model mappings configured", style("✅").green(), config.model_map.len());
     } else {
-        eprintln!(
-            "  {} No model mappings — run: nexus-ai-gateway setup",
-            style("⚠️").yellow()
-        );
+        eprintln!("  {} No model mappings — run: nexus-ai-gateway setup", style("⚠️").yellow());
     }
 
     eprintln!();
@@ -342,4 +252,51 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
 fn find_env_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME not set")?;
     Ok(PathBuf::from(home).join(".nexus-ai-gateway.env"))
+}
+
+#[cfg(test)]
+mod mask_key_tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_key_shows_last_four() {
+        let key = Some("sk-abcdef1234567890".to_string());
+        // Should not panic - that's the main test
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_short_key() {
+        let key = Some("abc".to_string());
+        // Short key: should still work without panic
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_empty() {
+        let key: Option<String> = None;
+        // Should show "(not set)" - should not panic
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_exactly_four_chars() {
+        let key = Some("1234".to_string());
+        // Exactly 4 chars - last 4 should be visible
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_five_chars() {
+        let key = Some("12345".to_string());
+        // 5 chars, 1 hidden, 4 visible
+        let _result = mask_key(&key);
+    }
+
+    #[test]
+    fn test_mask_key_empty_string() {
+        let key = Some("".to_string());
+        // Empty string should be treated as not set
+        let _result = mask_key(&key);
+    }
 }

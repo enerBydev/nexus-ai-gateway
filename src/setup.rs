@@ -62,53 +62,20 @@ pub fn run_setup(quick: bool, config_path: Option<PathBuf>) -> Result<()> {
 
 fn print_banner() {
     eprintln!();
-    eprintln!(
-        "{}",
-        style("╔══════════════════════════════════════════════════╗")
-            .cyan()
-            .bold()
-    );
-    eprintln!(
-        "{}",
-        style("║     NEXUS AI Gateway — Setup Wizard              ║")
-            .cyan()
-            .bold()
-    );
-    eprintln!(
-        "{}",
-        style("╚══════════════════════════════════════════════════╝")
-            .cyan()
-            .bold()
-    );
+    eprintln!("{}", style("╔══════════════════════════════════════════════════╗").cyan().bold());
+    eprintln!("{}", style("║     NEXUS AI Gateway — Setup Wizard              ║").cyan().bold());
+    eprintln!("{}", style("╚══════════════════════════════════════════════════╝").cyan().bold());
     eprintln!();
 }
 
 fn print_success_banner(port: u16) {
     eprintln!();
-    eprintln!(
-        "{}",
-        style("╔══════════════════════════════════════════════════╗")
-            .green()
-            .bold()
-    );
-    eprintln!(
-        "{}",
-        style("║     ✅ Setup Complete!                            ║")
-            .green()
-            .bold()
-    );
-    eprintln!(
-        "{}",
-        style("╚══════════════════════════════════════════════════╝")
-            .green()
-            .bold()
-    );
+    eprintln!("{}", style("╔══════════════════════════════════════════════════╗").green().bold());
+    eprintln!("{}", style("║     ✅ Setup Complete!                            ║").green().bold());
+    eprintln!("{}", style("╚══════════════════════════════════════════════════╝").green().bold());
     eprintln!();
     eprintln!("  {} http://localhost:{}", style("Proxy:").bold(), port);
-    eprintln!(
-        "  {} nexus-ai-gateway config show",
-        style("Check config:").bold()
-    );
+    eprintln!("  {} nexus-ai-gateway config show", style("Check config:").bold());
     eprintln!("  {} nexus-ai-gateway config test", style("Test:").bold());
     eprintln!();
 }
@@ -116,12 +83,7 @@ fn print_success_banner(port: u16) {
 // ─── Phase 1: Upstream Connection ─────────────────────────────────────
 
 fn phase1_upstream(quick: bool) -> Result<UpstreamSetup> {
-    eprintln!(
-        "\n{}",
-        style("━━━ Phase 1/6: Upstream Connection ━━━")
-            .yellow()
-            .bold()
-    );
+    eprintln!("\n{}", style("━━━ Phase 1/6: Upstream Connection ━━━").yellow().bold());
 
     let base_url: String = if quick {
         "https://integrate.api.nvidia.com".to_string()
@@ -132,9 +94,7 @@ fn phase1_upstream(quick: bool) -> Result<UpstreamSetup> {
             .interact_text()?
     };
 
-    let api_key: String = Password::new()
-        .with_prompt("NVIDIA NIM API Key")
-        .interact()?;
+    let api_key: String = Password::new().with_prompt("NVIDIA NIM API Key").interact()?;
 
     if api_key.is_empty() {
         anyhow::bail!("API key cannot be empty");
@@ -144,16 +104,14 @@ fn phase1_upstream(quick: bool) -> Result<UpstreamSetup> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Failed to create progress style: {}", e))?
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
     );
     spinner.set_message("Validating API key...");
     spinner.enable_steady_tick(Duration::from_millis(80));
 
     let start = Instant::now();
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).build()?;
 
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let resp = client
@@ -192,27 +150,19 @@ fn phase1_upstream(quick: bool) -> Result<UpstreamSetup> {
         models.len()
     ));
 
-    Ok(UpstreamSetup {
-        api_key,
-        base_url,
-        latency_ms,
-        available_models: models,
-    })
+    Ok(UpstreamSetup { api_key, base_url, latency_ms, available_models: models })
 }
 
 // ─── Phase 2: Model Selection ─────────────────────────────────────────
 
 fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMapping>> {
-    eprintln!(
-        "\n{}",
-        style("━━━ Phase 2/6: Model Selection ━━━").yellow().bold()
-    );
+    eprintln!("\n{}", style("━━━ Phase 2/6: Model Selection ━━━").yellow().bold());
 
     // Scan CC binary for ClaudeModelIDs
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Failed to create progress style: {}", e))?
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
     );
     spinner.set_message("Scanning Claude Code binary...");
@@ -227,21 +177,12 @@ fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMappi
         .map(|s| s.models.iter().map(|m| m.id.clone()).collect())
         .unwrap_or_default();
 
-    let opus_ids: Vec<&str> = claude_ids
-        .iter()
-        .filter(|id| id.contains("opus"))
-        .map(|s| s.as_str())
-        .collect();
-    let sonnet_ids: Vec<&str> = claude_ids
-        .iter()
-        .filter(|id| id.contains("sonnet"))
-        .map(|s| s.as_str())
-        .collect();
-    let haiku_ids: Vec<&str> = claude_ids
-        .iter()
-        .filter(|id| id.contains("haiku"))
-        .map(|s| s.as_str())
-        .collect();
+    let opus_ids: Vec<&str> =
+        claude_ids.iter().filter(|id| id.contains("opus")).map(|s| s.as_str()).collect();
+    let sonnet_ids: Vec<&str> =
+        claude_ids.iter().filter(|id| id.contains("sonnet")).map(|s| s.as_str()).collect();
+    let haiku_ids: Vec<&str> =
+        claude_ids.iter().filter(|id| id.contains("haiku")).map(|s| s.as_str()).collect();
 
     eprintln!(
         "  Found {} ClaudeModelIDs: {} opus, {} sonnet, {} haiku",
@@ -275,10 +216,7 @@ fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMappi
         find_recommended(&model_names, &["glm5", "kimi-k2", "qwen3.5"])
             .unwrap_or_else(|| model_names[0].to_string())
     } else {
-        eprintln!(
-            "\n  {} (for Opus — reasoning, boss agent)",
-            style("Select BOSS model").bold()
-        );
+        eprintln!("\n  {} (for Opus — reasoning, boss agent)", style("Select BOSS model").bold());
         let idx = Select::new()
             .items(&model_names)
             .default(find_index(&model_names, "glm5").unwrap_or(0))
@@ -290,10 +228,7 @@ fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMappi
         find_recommended(&model_names, &["kimi-k2", "glm4", "nemotron-ultra"])
             .unwrap_or_else(|| boss_model.clone())
     } else {
-        eprintln!(
-            "\n  {} (for Sonnet — workhorse, subagents)",
-            style("Select AGENT model").bold()
-        );
+        eprintln!("\n  {} (for Sonnet — workhorse, subagents)", style("Select AGENT model").bold());
         let idx = Select::new()
             .items(&model_names)
             .default(find_index(&model_names, "kimi-k2").unwrap_or(0))
@@ -302,16 +237,10 @@ fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMappi
     };
 
     let fast_model = if quick {
-        find_recommended(
-            &model_names,
-            &["kimi-k2", "deepseek-v3", "nemotron-3-super"],
-        )
-        .unwrap_or_else(|| agent_model.clone())
+        find_recommended(&model_names, &["kimi-k2", "deepseek-v3", "nemotron-3-super"])
+            .unwrap_or_else(|| agent_model.clone())
     } else {
-        eprintln!(
-            "\n  {} (for Haiku — fast, simple tasks)",
-            style("Select FAST model").bold()
-        );
+        eprintln!("\n  {} (for Haiku — fast, simple tasks)", style("Select FAST model").bold());
         let idx = Select::new()
             .items(&model_names)
             .default(find_index(&model_names, "kimi-k2").unwrap_or(0))
@@ -348,10 +277,7 @@ fn phase2_models(upstream: &UpstreamSetup, quick: bool) -> Result<Vec<ModelMappi
         });
     }
 
-    eprintln!(
-        "  Generated {} MODEL_MAP entries",
-        style(mappings.len()).cyan()
-    );
+    eprintln!("  Generated {} MODEL_MAP entries", style(mappings.len()).cyan());
     Ok(mappings)
 }
 
@@ -371,12 +297,7 @@ fn find_index(models: &[&str], pattern: &str) -> Option<usize> {
 // ─── Phase 3: Server Configuration ───────────────────────────────────
 
 fn phase3_server(quick: bool) -> Result<ServerConfig> {
-    eprintln!(
-        "\n{}",
-        style("━━━ Phase 3/6: Server Configuration ━━━")
-            .yellow()
-            .bold()
-    );
+    eprintln!("\n{}", style("━━━ Phase 3/6: Server Configuration ━━━").yellow().bold());
 
     if quick {
         eprintln!("  Using defaults: port=8315, concurrent=5, timeout=180s");
@@ -388,43 +309,23 @@ fn phase3_server(quick: bool) -> Result<ServerConfig> {
         });
     }
 
-    let port: u16 = Input::new()
-        .with_prompt("Proxy port")
-        .default(8315)
-        .interact_text()?;
+    let port: u16 = Input::new().with_prompt("Proxy port").default(8315).interact_text()?;
 
-    let max_concurrent: usize = Input::new()
-        .with_prompt("Max concurrent requests per model")
-        .default(5)
-        .interact_text()?;
+    let max_concurrent: usize =
+        Input::new().with_prompt("Max concurrent requests per model").default(5).interact_text()?;
 
-    let permit_timeout: u64 = Input::new()
-        .with_prompt("Concurrency timeout (seconds)")
-        .default(180)
-        .interact_text()?;
+    let permit_timeout: u64 =
+        Input::new().with_prompt("Concurrency timeout (seconds)").default(180).interact_text()?;
 
-    let debug = Confirm::new()
-        .with_prompt("Enable debug logging?")
-        .default(false)
-        .interact()?;
+    let debug = Confirm::new().with_prompt("Enable debug logging?").default(false).interact()?;
 
-    Ok(ServerConfig {
-        port,
-        max_concurrent,
-        permit_timeout,
-        debug,
-    })
+    Ok(ServerConfig { port, max_concurrent, permit_timeout, debug })
 }
 
 // ─── Phase 4: CC Integration ─────────────────────────────────────────
 
 fn phase4_cc_integration(port: u16) -> Result<()> {
-    eprintln!(
-        "\n{}",
-        style("━━━ Phase 4/6: Claude Code Integration ━━━")
-            .yellow()
-            .bold()
-    );
+    eprintln!("\n{}", style("━━━ Phase 4/6: Claude Code Integration ━━━").yellow().bold());
 
     // 4a: ~/.claude/settings.json
     configure_claude_settings(port)?;
@@ -464,10 +365,7 @@ fn configure_claude_settings(port: u16) -> Result<()> {
             "ANTHROPIC_BASE_URL".to_string(),
             serde_json::json!(format!("http://localhost:{}", port)),
         );
-        env_map.insert(
-            "ANTHROPIC_API_KEY".to_string(),
-            serde_json::json!("proxy-key"),
-        );
+        env_map.insert("ANTHROPIC_API_KEY".to_string(), serde_json::json!("proxy-key"));
         env_map.insert(
             "CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP".to_string(),
             serde_json::json!("true"),
@@ -490,10 +388,7 @@ fn configure_bashrc_wrapper() -> Result<()> {
     if bashrc_path.exists() {
         let content = fs::read_to_string(&bashrc_path)?;
         if content.contains(marker) {
-            eprintln!(
-                "  {} ~/.bashrc (wrapper already installed)",
-                style("✅").green()
-            );
+            eprintln!("  {} ~/.bashrc (wrapper already installed)", style("✅").green());
             return Ok(());
         }
     }
@@ -510,16 +405,10 @@ claude() {
 }
 "#;
 
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&bashrc_path)?;
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(&bashrc_path)?;
 
     file.write_all(wrapper.as_bytes())?;
-    eprintln!(
-        "  {} ~/.bashrc (claude --effort max wrapper added)",
-        style("✅").green()
-    );
+    eprintln!("  {} ~/.bashrc (claude --effort max wrapper added)", style("✅").green());
 
     Ok(())
 }
@@ -532,12 +421,7 @@ fn phase5_generate_env(
     server: &ServerConfig,
     config_path: Option<PathBuf>,
 ) -> Result<PathBuf> {
-    eprintln!(
-        "\n{}",
-        style("━━━ Phase 5/6: Generate Configuration ━━━")
-            .yellow()
-            .bold()
-    );
+    eprintln!("\n{}", style("━━━ Phase 5/6: Generate Configuration ━━━").yellow().bold());
 
     let env_path = match config_path {
         Some(p) => p,
@@ -551,10 +435,7 @@ fn phase5_generate_env(
     if env_path.exists() {
         let backup_path = env_path.with_extension("env.bak");
         fs::copy(&env_path, &backup_path)?;
-        eprintln!(
-            "  {} Backed up existing .env to .env.bak",
-            style("📋").dim()
-        );
+        eprintln!("  {} Backed up existing .env to .env.bak", style("📋").dim());
     }
 
     let mut env_content = String::new();
@@ -582,10 +463,7 @@ fn phase5_generate_env(
 
     // Concurrency section
     env_content.push_str("# ─── Concurrency Configuration ──────────────────\n");
-    env_content.push_str(&format!(
-        "MAX_CONCURRENT_PER_MODEL={}\n",
-        server.max_concurrent
-    ));
+    env_content.push_str(&format!("MAX_CONCURRENT_PER_MODEL={}\n", server.max_concurrent));
     env_content.push_str(&format!("PERMIT_TIMEOUT_SECS={}\n", server.permit_timeout));
     env_content.push('\n');
 
@@ -607,11 +485,19 @@ fn phase5_generate_env(
     env_content.push_str("WEB_FETCH_TIMEOUT_SECS=15\n");
 
     fs::write(&env_path, &env_content)?;
-    eprintln!(
-        "  {} {}",
-        style("✅").green(),
-        style(env_path.display()).bold()
-    );
+
+    // FASE 3.4: Set .env file permissions to 600 (owner-only read/write) on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::warn!("Failed to set .env permissions to 600: {}", e);
+        } else {
+            tracing::info!("Set .env permissions to 600 (owner-only read/write)");
+        }
+    }
+    eprintln!("  {} {}", style("✅").green(), style(env_path.display()).bold());
     eprintln!(
         "  {} entries: {} model mappings, {}ms upstream latency",
         style("📊").dim(),
@@ -624,11 +510,8 @@ fn phase5_generate_env(
 
 // ─── Phase 6: Install & Verify ───────────────────────────────────────
 
-fn phase6_install_verify(port: u16, _env_path: &PathBuf) -> Result<()> {
-    eprintln!(
-        "\n{}",
-        style("━━━ Phase 6/6: Install & Verify ━━━").yellow().bold()
-    );
+fn phase6_install_verify(port: u16, _env_path: &std::path::Path) -> Result<()> {
+    eprintln!("\n{}", style("━━━ Phase 6/6: Install & Verify ━━━").yellow().bold());
 
     // Check if systemd service exists
     let home = std::env::var("HOME").context("HOME not set")?;
@@ -664,9 +547,7 @@ fn phase6_install_verify(port: u16, _env_path: &PathBuf) -> Result<()> {
     let health_url = format!("http://localhost:{}/health", port);
     eprintln!("  Checking health at {}...", &health_url);
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).build()?;
 
     match client.get(&health_url).send() {
         Ok(resp) if resp.status().is_success() => {

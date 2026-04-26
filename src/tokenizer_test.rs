@@ -8,11 +8,7 @@ fn estimate_simple_message() {
     });
     let tokens = estimate_input_tokens(&req);
     assert!(tokens > 0, "Simple message should produce > 0 tokens");
-    assert!(
-        tokens < 20,
-        "Simple message should produce < 20 tokens, got {}",
-        tokens
-    );
+    assert!(tokens < 20, "Simple message should produce < 20 tokens, got {}", tokens);
 }
 
 #[test]
@@ -113,16 +109,8 @@ fn estimate_large_context() {
         "messages": [{"role": "user", "content": large_text}]
     });
     let tokens = estimate_input_tokens(&req);
-    assert!(
-        tokens > 20_000,
-        "100K chars should produce > 20K tokens, got {}",
-        tokens
-    );
-    assert!(
-        tokens < 60_000,
-        "100K chars should produce < 60K tokens, got {}",
-        tokens
-    );
+    assert!(tokens > 20_000, "100K chars should produce > 20K tokens, got {}", tokens);
+    assert!(tokens < 60_000, "100K chars should produce < 60K tokens, got {}", tokens);
 }
 
 #[test]
@@ -167,9 +155,7 @@ fn typed_variant_matches_json_variant() {
         model: "test-model".to_string(),
         messages: vec![Message {
             role: "user".to_string(),
-            content: Some(MessageContent::Text(
-                "What is the capital of France?".to_string(),
-            )),
+            content: Some(MessageContent::Text("What is the capital of France?".to_string())),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -207,11 +193,7 @@ fn estimate_system_prompt_array() {
         "messages": [{"role": "user", "content": "Hello"}]
     });
     let tokens = estimate_input_tokens(&req);
-    assert!(
-        tokens > 5,
-        "System array should produce meaningful tokens, got {}",
-        tokens
-    );
+    assert!(tokens > 5, "System array should produce meaningful tokens, got {}", tokens);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -225,11 +207,7 @@ fn calibration_starts_at_1() {
         (cal.get("unknown-model") - 1.0).abs() < f64::EPSILON,
         "New model should start with factor 1.0"
     );
-    assert_eq!(
-        cal.observation_count("unknown-model"),
-        0,
-        "New model should have 0 observations"
-    );
+    assert_eq!(cal.observation_count("unknown-model"), 0, "New model should have 0 observations");
 }
 
 #[test]
@@ -249,10 +227,7 @@ fn calibration_adjusts_with_feedback() {
 
     // Apply should use the updated factor
     let calibrated = cal.apply("test-model", 1000);
-    assert_eq!(
-        calibrated, 1010,
-        "apply(1000) with factor 1.01 should = 1010"
-    );
+    assert_eq!(calibrated, 1010, "apply(1000) with factor 1.01 should = 1010");
 }
 
 #[test]
@@ -315,15 +290,9 @@ fn calibration_thread_safe() {
 fn calibration_ignores_zero_values() {
     let cal = CalibrationFactors::new();
     cal.update("test", 0, 1000);
-    assert!(
-        (cal.get("test") - 1.0).abs() < f64::EPSILON,
-        "Zero tiktoken should not update factor"
-    );
+    assert!((cal.get("test") - 1.0).abs() < f64::EPSILON, "Zero tiktoken should not update factor");
     cal.update("test", 1000, 0);
-    assert!(
-        (cal.get("test") - 1.0).abs() < f64::EPSILON,
-        "Zero NIM should not update factor"
-    );
+    assert!((cal.get("test") - 1.0).abs() < f64::EPSILON, "Zero NIM should not update factor");
     assert_eq!(cal.observation_count("test"), 0, "No valid observations");
 }
 

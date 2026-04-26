@@ -8,19 +8,23 @@ mod prompt_cache;
 mod proxy;
 mod scan;
 mod setup;
+mod str_utils;
 mod tokenizer;
 mod transform;
 mod watcher;
 mod web_fetch;
 
+use axum::http::HeaderValue;
+use axum::response::Response;
 use axum::{routing::post, Extension, Router};
 use clap::Parser;
 use cli::{Cli, Command};
 use config::{Config, SharedConfig};
 use daemonize::Daemonize;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
-use std::sync::atomic::{AtomicBool, Ordering}; // v0.11.0 (HI-06): config reload mutex
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -41,11 +45,7 @@ fn main() -> anyhow::Result<()> {
                 check_status(&pid_file)?;
                 return Ok(());
             }
-            Command::Scan {
-                env,
-                launcher,
-                check,
-            } => {
+            Command::Scan { env, launcher, check } => {
                 handle_scan(env, launcher, check)?;
                 return Ok(());
             }
@@ -63,15 +63,11 @@ fn main() -> anyhow::Result<()> {
     if cli.daemon {
         use std::fs::OpenOptions;
 
-        let stdout = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/nexus-ai-gateway.log")?;
+        let stdout =
+            OpenOptions::new().create(true).append(true).open("/tmp/nexus-ai-gateway.log")?;
 
-        let stderr = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/nexus-ai-gateway.log")?;
+        let stderr =
+            OpenOptions::new().create(true).append(true).open("/tmp/nexus-ai-gateway.log")?;
 
         let daemonize = Daemonize::new()
             .pid_file(&cli.pid_file)
@@ -124,6 +120,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Phase 4.5: Install Prometheus metrics recorder
+    let prometheus_handle =
+        PrometheusBuilder::new().install_recorder().expect("Failed to install Prometheus recorder");
+
     tracing::info!("Starting NEXUS-AI-Gateway v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Port: {}", config.port);
     tracing::info!("Upstream URL: {}", config.base_url);
@@ -150,11 +150,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     }
     tracing::info!(
         "WebFetch Interceptor: {}",
-        if config.web_fetch_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        if config.web_fetch_enabled { "enabled" } else { "disabled" }
     );
     if config.api_key.is_some() {
         tracing::info!("API Key: configured");
@@ -186,46 +182,63 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     // v8.0: Per-model token calibration factors (EMA-based, converges to ~98% accuracy)
     let calibration_factors = tokenizer::CalibrationFactors::new();
     // v0.12.0: Circuit breaker for upstream protection
-    let circuit_breaker: proxy::CircuitBreaker = Arc::new(circuit_breaker::CircuitBreaker::new(
-        3,
-        std::time::Duration::from_secs(30),
-    ));
+    let circuit_breaker: proxy::CircuitBreaker =
+        Arc::new(circuit_breaker::CircuitBreaker::new(3, std::time::Duration::from_secs(30)));
 
     // Save CLI flags for hot-reload
     let cli_debug = config.debug;
     let cli_verbose = config.verbose;
     let cli_port = Some(config.port);
 
-    let config: SharedConfig = Arc::new(RwLock::new(config));
+    let config: SharedConfig = Arc::new(arc_swap::ArcSwap::from(Arc::new(config)));
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = match std::env::var("CORS_ALLOWED_ORIGINS") {
+        Ok(origins) if !origins.is_empty() => {
+            let list: Vec<HeaderValue> = origins
+                .split(',')
+                .map(|o| o.trim())
+                .filter(|o| !o.is_empty())
+                .map(|o| o.parse().expect("Invalid CORS origin"))
+                .collect();
+            tracing::info!("CORS: allowing {} origin(s)", list.len());
+            CorsLayer::new().allow_origin(list).allow_methods(Any).allow_headers(Any)
+        }
+        _ => {
+            // Default: localhost only for security
+            tracing::info!(
+                "CORS: default — localhost:8315 only (set CORS_ALLOWED_ORIGINS to customize)"
+            );
+            CorsLayer::new()
+                .allow_origin(
+                    "http://localhost:8315".parse::<HeaderValue>().expect("Valid localhost origin"),
+                )
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+    };
 
     let app = Router::new()
         .route("/v1/messages", post(proxy::proxy_handler))
         .route("/v1/messages/count_tokens", post(count_tokens_handler))
         .route("/health", axum::routing::get(health_handler))
+        .route("/metrics", axum::routing::get(metrics_handler))
         .layer(Extension(config.clone()))
         .layer(Extension(client))
         .layer(Extension(model_cache))
         .layer(Extension(model_semaphores))
         .layer(Extension(calibration_factors))
         .layer(Extension(circuit_breaker))
+        .layer(Extension(prometheus_handle.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
-    let addr = format!(
-        "0.0.0.0:{}",
-        config.read().unwrap_or_else(|e| e.into_inner()).port
-    ); // v0.11.0 (CR-04)
+    let addr = format!("0.0.0.0:{}", config.load().port); // v0.11.0 (CR-04)
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Proxy ready to accept requests");
     {
-        let cfg = config.read().unwrap_or_else(|e| e.into_inner()); // v0.11.0 (CR-04)
+        let cfg = config.load();
         tracing::info!(
             "Concurrency: {} per model, {}s permit timeout",
             cfg.max_concurrent_per_model,
@@ -254,12 +267,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
             match Config::reload(cli_debug, cli_verbose, cli_port) {
                 Ok(new_config) => {
-                    let mut cfg = reload_config.write().unwrap_or_else(|e| e.into_inner()); // v0.11.0 (CR-04)
-                    let old_maps = cfg.model_map.len();
-                    *cfg = new_config;
+                    let old_maps = reload_config.load().model_map.len();
+                    reload_config.store(Arc::new(new_config));
+                    let new_maps = reload_config.load().model_map.len();
                     tracing::info!(
                         "✅ Config reloaded: {} model mappings (was {})",
-                        cfg.model_map.len(),
+                        new_maps,
                         old_maps
                     );
                 }
@@ -310,15 +323,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
         };
 
-        if let Err(e) = debouncer
-            .watcher()
-            .watch(&env_path, notify::RecursiveMode::NonRecursive)
-        {
-            tracing::warn!(
-                "👁 Cannot watch {}: {} (SIGHUP still works)",
-                env_path.display(),
-                e
-            );
+        if let Err(e) = debouncer.watcher().watch(&env_path, notify::RecursiveMode::NonRecursive) {
+            tracing::warn!("👁 Cannot watch {}: {} (SIGHUP still works)", env_path.display(), e);
             return;
         }
 
@@ -347,12 +353,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
             match Config::reload(cli_debug, cli_verbose, cli_port) {
                 Ok(new_config) => {
-                    let mut cfg = watch_config.write().unwrap_or_else(|e| e.into_inner()); // v0.11.0 (CR-04)
-                    let old_maps = cfg.model_map.len();
-                    *cfg = new_config;
+                    let old_maps = watch_config.load().model_map.len();
+                    watch_config.store(Arc::new(new_config));
+                    let new_maps = watch_config.load().model_map.len();
                     tracing::info!(
                         "✅ Config auto-reloaded: {} model mappings (was {})",
-                        cfg.model_map.len(),
+                        new_maps,
                         old_maps
                     );
                 }
@@ -364,13 +370,65 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
     });
 
-    axum::serve(listener, app).await?;
+    // v0.13.0: Graceful shutdown with configurable drain timeout
+    let drain_timeout_secs: u64 =
+        std::env::var("DRAIN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+    tracing::info!("Drain timeout: {}s", drain_timeout_secs);
+
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+
+    if let Err(e) = server.await {
+        tracing::error!("Server error: {}", e);
+    }
+
+    tracing::info!("✅ Server shut down gracefully");
 
     Ok(())
 }
 
 async fn health_handler() -> &'static str {
     "OK"
+}
+
+/// Phase 4.5: Prometheus metrics endpoint
+async fn metrics_handler(Extension(prometheus_handle): Extension<PrometheusHandle>) -> Response {
+    let response_body = prometheus_handle.render();
+    Response::builder()
+        .status(200)
+        .header("content-type", "text/plain; charset=utf-8")
+        .body(response_body.into())
+        .unwrap()
+}
+
+/// Shutdown signal handler for graceful shutdown
+/// Handles SIGINT (Ctrl+C) and SIGTERM
+async fn shutdown_signal() {
+    // Handle SIGINT (Ctrl+C)
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("Failed to install CTRL+C handler");
+    };
+
+    // Handle SIGTERM (Unix only)
+    #[cfg(unix)]
+    let sigterm = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    // On non-Unix, only wait for Ctrl+C
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("🛑 CTRL+C received, draining connections...");
+        },
+        _ = sigterm => {
+            tracing::info!("🛑 SIGTERM received, draining connections...");
+        },
+    }
 }
 
 /// Phase 12.2: Token count estimation endpoint
@@ -402,8 +460,8 @@ fn handle_scan(env: bool, launcher: bool, check: bool) -> anyhow::Result<()> {
                 );
             } else {
                 println!("⚠️ CC binary UPDATED!");
-                println!("   Old: {}", old_scan.binary_sha256);
-                println!("   New: {}", scan_result.binary_sha256);
+                println!(" Old: {}", old_scan.binary_sha256);
+                println!(" New: {}", scan_result.binary_sha256);
                 let new_models: Vec<&str> = scan_result
                     .models
                     .iter()
@@ -411,7 +469,7 @@ fn handle_scan(env: bool, launcher: bool, check: bool) -> anyhow::Result<()> {
                     .map(|m| m.id.as_str())
                     .collect();
                 if !new_models.is_empty() {
-                    println!("   New models: {:?}", new_models);
+                    println!(" New models: {:?}", new_models);
                 }
             }
         } else {
@@ -449,15 +507,13 @@ fn handle_scan(env: bool, launcher: bool, check: bool) -> anyhow::Result<()> {
 fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
     if !pid_file.exists() {
         eprintln!("✗ PID file not found: {}", pid_file.display());
-        eprintln!("  Daemon is not running or PID file was removed");
+        eprintln!(" Daemon is not running or PID file was removed");
         std::process::exit(1);
     }
 
     let pid_str = std::fs::read_to_string(pid_file)?;
-    let pid: i32 = pid_str
-        .trim()
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid PID in file: {}", pid_str))?;
+    let pid: i32 =
+        pid_str.trim().parse().map_err(|_| anyhow::anyhow!("Invalid PID in file: {}", pid_str))?;
 
     #[cfg(unix)]
     {
@@ -469,7 +525,7 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
             eprintln!("✓ Daemon stopped (PID: {})", pid);
         } else {
             eprintln!("✗ Failed to stop daemon (PID: {})", pid);
-            eprintln!("  Process may have already exited");
+            eprintln!(" Process may have already exited");
             std::fs::remove_file(pid_file)?;
             std::process::exit(1);
         }
@@ -487,15 +543,13 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
 fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
     if !pid_file.exists() {
         eprintln!("✗ Daemon is not running");
-        eprintln!("  PID file not found: {}", pid_file.display());
+        eprintln!(" PID file not found: {}", pid_file.display());
         std::process::exit(1);
     }
 
     let pid_str = std::fs::read_to_string(pid_file)?;
-    let pid: i32 = pid_str
-        .trim()
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid PID in file: {}", pid_str))?;
+    let pid: i32 =
+        pid_str.trim().parse().map_err(|_| anyhow::anyhow!("Invalid PID in file: {}", pid_str))?;
 
     #[cfg(unix)]
     {
@@ -504,14 +558,10 @@ fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
 
         if output.status.success() {
             eprintln!("✓ Daemon is running (PID: {})", pid);
-            eprintln!("  PID file: {}", pid_file.display());
+            eprintln!(" PID file: {}", pid_file.display());
         } else {
             eprintln!("✗ Daemon is not running");
-            eprintln!(
-                "  Stale PID file found: {} (PID: {})",
-                pid_file.display(),
-                pid
-            );
+            eprintln!(" Stale PID file found: {} (PID: {})", pid_file.display(), pid);
             std::process::exit(1);
         }
     }
