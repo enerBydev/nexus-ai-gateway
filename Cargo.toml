@@ -85,7 +85,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 
 [dev-dependencies]
-wiremock = "0.5"
+wiremock = "0.6"
 
 [profile.release]
 opt-level = "z"        # Optimize for size
