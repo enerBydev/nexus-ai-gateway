@@ -25,6 +25,8 @@ pub enum CircuitState {
 /// Uses CAS-based probe admission to guarantee only one probe at a time.
 /// Uses generation counter to prevent stale in-flight completions from changing state.
 pub struct CircuitBreaker {
+    /// When false, the circuit breaker is a no-op (always allows, never records).
+    enabled: bool,
     state: RwLock<CircuitState>,
     failure_count: AtomicU32,
     failure_threshold: u32,
@@ -42,6 +44,7 @@ pub struct CircuitBreaker {
 impl CircuitBreaker {
     pub fn new(failure_threshold: u32, recovery_timeout: Duration) -> Self {
         Self {
+            enabled: true,
             state: RwLock::new(CircuitState::Closed),
             failure_count: AtomicU32::new(0),
             failure_threshold,
@@ -52,10 +55,27 @@ impl CircuitBreaker {
         }
     }
 
+    /// Create a disabled circuit breaker (no-op: always allows, never records).
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            state: RwLock::new(CircuitState::Closed),
+            failure_count: AtomicU32::new(0),
+            failure_threshold: 0,
+            recovery_timeout: Duration::from_secs(0),
+            last_failure: RwLock::new(None),
+            half_open_probes: AtomicU32::new(0),
+            generation: AtomicU32::new(0),
+        }
+    }
+
     /// Check if requests should be allowed.
     /// Returns (allowed, generation) where generation must be passed
     /// to record_success/record_failure to prevent stale completions.
     pub async fn is_allowed(&self) -> (bool, u32) {
+        if !self.enabled {
+            return (true, 0);
+        }
         let state = *self.state.read().await;
         match state {
             CircuitState::Closed => {
@@ -122,6 +142,9 @@ impl CircuitBreaker {
     /// The generation parameter must match the current generation to prevent
     /// stale in-flight completions from closing the circuit.
     pub async fn record_success(&self, generation: u32) {
+        if !self.enabled {
+            return;
+        }
         let current_state = *self.state.read().await;
         let current_gen = self.generation.load(Ordering::SeqCst);
 
@@ -162,6 +185,9 @@ impl CircuitBreaker {
     /// The generation parameter must match the current generation to prevent
     /// stale in-flight completions from re-opening the circuit.
     pub async fn record_failure(&self, generation: u32) {
+        if !self.enabled {
+            return;
+        }
         let current_gen = self.generation.load(Ordering::SeqCst);
         let current_state = *self.state.read().await;
 

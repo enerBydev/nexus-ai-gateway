@@ -30,6 +30,9 @@ mod tests {
             prompt_cache_enabled: false,
             prompt_cache_max_entries: 1000,
             prompt_cache_ttl_secs: 300,
+            cb_enabled: false,
+            cb_threshold: 10,
+            cb_recovery_secs: 60,
         }
     }
 
