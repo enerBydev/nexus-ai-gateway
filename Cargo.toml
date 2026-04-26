@@ -82,7 +82,7 @@ arc-swap = "1"
 
 # Metrics and observability
 metrics = "0.24"
-metrics-exporter-prometheus = "0.16"
+metrics-exporter-prometheus = "0.18"
 
 [dev-dependencies]
 wiremock = "0.5"
