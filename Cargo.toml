@@ -17,7 +17,7 @@ path = "src/main.rs"
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"] }
 
 # Web framework
-axum = { version = "0.7", features = ["http2"] }
+axum = { version = "0.8", features = ["http2"] }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking", "http2"], default-features = false }
