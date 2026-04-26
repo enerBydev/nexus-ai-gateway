@@ -70,7 +70,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tiktoken-rs = "0.11.0"
 
 # Interactive CLI (Setup Wizard)
-dialoguer = "0.11"
+dialoguer = "0.12"
 console = "0.15"
 indicatif = "0.17"
 
