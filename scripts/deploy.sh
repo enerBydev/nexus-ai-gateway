@@ -260,6 +260,34 @@ if ! cargo install --path .; then
 fi
 ok "Binary installed to ~/.cargo/bin/${BINARY_NAME}"
 
+# --- Post-install sanity check ---
+info "Running sanity checks..."
+CARGO_MD5=$(md5sum "${HOME}/.cargo/bin/${BINARY_NAME}" | awk '{print $1}')
+SOURCE_MD5=$(md5sum "${BUILT_BINARY}" | awk '{print $1}')
+
+if [[ "${CARGO_MD5}" != "${SOURCE_MD5}" ]]; then
+  err "CRITICAL: Binary at ~/.cargo/bin/${BINARY_NAME} does NOT match the just-built binary!"
+  warn "This should never happen with cargo install. The systemd service may run an OLD version."
+  warn "cargo install md5: ${CARGO_MD5}"
+  warn "build output md5: ${SOURCE_MD5}"
+  err "DO NOT RESTART SERVICE until this is resolved!"
+  exit 1
+fi
+ok "Sanity check passed: ~/.cargo/bin/${BINARY_NAME} matches build output"
+
+# Also sync to ~/.local/bin as a safeguard for users with that in PATH
+mkdir -p "${HOME}/.local/bin"
+LOCAL_BIN="${HOME}/.local/bin/${BINARY_NAME}"
+cp "${BUILT_BINARY}" "${LOCAL_BIN}"
+chmod +x "${LOCAL_BIN}"
+LOCAL_MD5=$(md5sum "${LOCAL_BIN}" | awk '{print $1}')
+
+if [[ "${LOCAL_MD5}" != "${SOURCE_MD5}" ]]; then
+  warn  "~/.local/bin/${BINARY_NAME} copy has different md5sum"
+else
+  ok "Synced to ~/.local/bin/${BINARY_NAME} (md5 verified)"
+fi
+
 # Verify installed binary version matches source
 INSTALLED_VERSION=$(get_binary_version "${HOME}/.cargo/bin/${BINARY_NAME}")
 if [[ "${INSTALLED_VERSION}" != "${NEW_VERSION}" ]]; then

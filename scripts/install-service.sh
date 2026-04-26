@@ -56,6 +56,24 @@ if [[ ! -x "${BINARY_PATH}" ]]; then
 fi
 ok "Binary found: ${BINARY_PATH}"
 
+# 1b. Binary freshness check — detect stale binary vs target/release
+# (Prevents the "CB death spiral" bug where systemd ran an old binary)
+BUILD_BINARY="${PWD}/target/release/${SERVICE_NAME}"
+if [[ -x "${BUILD_BINARY}" ]]; then
+	SERVICE_HASH=$(md5sum "${BINARY_PATH}" | cut -d' ' -f1)
+	BUILD_HASH=$(md5sum "${BUILD_BINARY}" | cut -d' ' -f1)
+	if [[ "${SERVICE_HASH}" != "${BUILD_HASH}" ]]; then
+		warn "Binary STALE: ${BINARY_PATH} differs from ${BUILD_BINARY}"
+		info "The service would run an OLD binary — this caused the CB death spiral bug (v0.14.1)"
+		info "Updating binary before installing service..."
+		cp "${BUILD_BINARY}" "${BINARY_PATH}"
+		chmod +x "${BINARY_PATH}"
+		ok "Binary updated: ${BINARY_PATH} now matches build output"
+	else
+		ok "Binary freshness: matches target/release (md5=${SERVICE_HASH:0:8}...)"
+	fi
+fi
+
 # 2. Config exists?
 if [[ ! -f "${ENV_FILE}" ]]; then
     warn "Config not found at ${ENV_FILE}"
