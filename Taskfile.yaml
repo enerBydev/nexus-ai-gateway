@@ -29,40 +29,40 @@ tasks:
 
   install:
     desc: Build and install to ~/.cargo/bin
-# NOTE: ~/.cargo/bin/{{.BINARY_NAME}} is the CANONICAL path.
-# The systemd service uses this path (ExecStart=%h/.cargo/bin/...).
-# Use 'task sync-binary' after any manual build to keep both paths up to date.
+    # NOTE: ~/.cargo/bin/{{.BINARY_NAME}} is the CANONICAL path.
+    # The systemd service uses this path (ExecStart=%h/.cargo/bin/...).
+    # Use 'task sync-binary' after any manual build to keep both paths up to date.
     deps: [build]
     cmds:
       - cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.INSTALL_DIR}}/{{.BINARY_NAME}}
       - chmod +x {{.INSTALL_DIR}}/{{.BINARY_NAME}}
       - echo "✅ Installed to {{.INSTALL_DIR}}/{{.BINARY_NAME}}"
 
-sync-binary:
-  desc: Sync built binary to both ~/.cargo/bin and ~/.local/bin with md5 verification
-  deps: [build]
-  cmds:
-    - mkdir -p {{.HOME}}/.local/bin
-    - |
-      SOURCE_MD5=$(md5sum {{.BUILD_DIR}}/{{.BINARY_NAME}} | awk '{print $1}')
-      cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.INSTALL_DIR}}/{{.BINARY_NAME}}
-      chmod +x {{.INSTALL_DIR}}/{{.BINARY_NAME}}
-      cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.HOME}}/.local/bin/{{.BINARY_NAME}}
-      chmod +x {{.HOME}}/.local/bin/{{.BINARY_NAME}}
-      CARGO_MD5=$(md5sum {{.INSTALL_DIR}}/{{.BINARY_NAME}} | awk '{print $1}')
-      LOCAL_MD5=$(md5sum {{.HOME}}/.local/bin/{{.BINARY_NAME}} | awk '{print $1}')
-      echo ""
-      echo "md5sum verification:"
-      echo "  target/release/{{.BINARY_NAME}}  ${SOURCE_MD5}"
-      echo "  ~/.cargo/bin/{{.BINARY_NAME}}    ${CARGO_MD5}"
-      echo "  ~/.local/bin/{{.BINARY_NAME}}    ${LOCAL_MD5}"
-      echo ""
-      if [ "${SOURCE_MD5}" = "${CARGO_MD5}" ] && [ "${SOURCE_MD5}" = "${LOCAL_MD5}" ]; then
-        echo "✅ All 3 locations match — stale binary bug prevented"
-      else
-        echo "❌ CHECKSUM MISMATCH — DO NOT USE"
-        exit 1
-      fi
+  sync-binary:
+    desc: Sync built binary to both ~/.cargo/bin and ~/.local/bin with md5 verification
+    deps: [build]
+    cmds:
+      - mkdir -p {{.HOME}}/.local/bin
+      - |
+        SOURCE_MD5=$(md5sum {{.BUILD_DIR}}/{{.BINARY_NAME}} | awk '{print $1}')
+        cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.INSTALL_DIR}}/{{.BINARY_NAME}}
+        chmod +x {{.INSTALL_DIR}}/{{.BINARY_NAME}}
+        cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.HOME}}/.local/bin/{{.BINARY_NAME}}
+        chmod +x {{.HOME}}/.local/bin/{{.BINARY_NAME}}
+        CARGO_MD5=$(md5sum {{.INSTALL_DIR}}/{{.BINARY_NAME}} | awk '{print $1}')
+        LOCAL_MD5=$(md5sum {{.HOME}}/.local/bin/{{.BINARY_NAME}} | awk '{print $1}')
+        echo ""
+        echo "md5sum verification:"
+        echo "  target/release/{{.BINARY_NAME}}  ${SOURCE_MD5}"
+        echo "  ~/.cargo/bin/{{.BINARY_NAME}}    ${CARGO_MD5}"
+        echo "  ~/.local/bin/{{.BINARY_NAME}}    ${LOCAL_MD5}"
+        echo ""
+        if [ "${SOURCE_MD5}" = "${CARGO_MD5}" ] && [ "${SOURCE_MD5}" = "${LOCAL_MD5}" ]; then
+          echo "✅ All 3 locations match — stale binary bug prevented"
+        else
+          echo "❌ CHECKSUM MISMATCH — DO NOT USE"
+          exit 1
+        fi
 
   local-install:
     desc: Build and install to ~/.cargo/bin (alias for install)

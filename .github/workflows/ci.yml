@@ -91,7 +91,7 @@ jobs:
       - name: Verify binary version
         run: |
           BUILT_VERSION=$(./target/release/nexus-ai-gateway --version | awk '{print $2}')
-          EXPECTED_VERSION=$(cat VERSION)
+          EXPECTED_VERSION=$(tr -d '[:space:]' < VERSION)
           if [ "$BUILT_VERSION" != "$EXPECTED_VERSION" ]; then
             echo "::error::Binary version ($BUILT_VERSION) != VERSION file ($EXPECTED_VERSION)"
             exit 1

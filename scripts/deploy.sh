@@ -253,8 +253,8 @@ ok "Built binary: ${BUILT_BINARY}"
 
 # --- Install binary ---
 echo ""
-info "Installing binary (cargo install --path .)..."
-if ! cargo install --path .; then
+info "Installing binary (cargo install --locked --path .)..."
+if ! cargo install --locked --path .; then
     err "Installation failed"
     exit 1
 fi
