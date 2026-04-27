@@ -1,21 +1,17 @@
 # CLAUDE.md
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
-
-NEXUS-AI-Gateway is a high-performance API proxy that translates Anthropic Messages API requests to OpenAI-compatible format. It enables Claude Code to work with any OpenAI-compatible model provider (NVIDIA NIM, OpenRouter, Ollama, etc.).
-
 ## Development Commands
 
 ```bash
 # Build
-cargo build --release          # Production build (~7.2 MB binary)
+cargo build --release          # Production build (~7 MB binary)
 cargo build                    # Debug build
 
 # Testing
-cargo test                     # Run all 32 tests
-cargo test -- --nocapture      # Show println output
-cargo test tokenizer           # Run specific test module
+cargo test                     # Run all tests (95 unit + 4 integration + 3 version sync)
+cargo test tokenizer_test      # Run specific test module by path
+cargo test -- --nocapture      # Show println! output
 
 # Linting & Formatting
 cargo fmt --check              # Check formatting
@@ -24,50 +20,107 @@ cargo clippy -- -D warnings    # Lint (warnings as errors)
 # Security Audit
 cargo audit                    # Check for CVEs in dependencies
 
-# Task Runner (alternative)
-task test                      # Run tests
+# Task Runner (via Taskfile.yaml)
+task test                      # Run all tests
 task version-check             # Verify VERSION/Cargo.toml/lib.rs sync
-task setup                     # Full setup (build + hooks)
+task check                     # Run fmt-check + lint + test
+task install                   # Build and install to ~/.cargo/bin
 ```
 
 ## Architecture
 
-### Core Request Flow
+### Request Flow
+
 ```
-Claude Code → POST /v1/messages → Proxy → Transform to OpenAI format → Upstream API
-                    ↑                                              ↓
-              SSE Stream ← Transform back to Anthropic ← SSE Stream
+Claude Code → POST /v1/messages
+                    ↓
+              proxy::proxy_handler (src/proxy/mod.rs)
+                    ↓
+              ├─ validate_request (pre-flight checks)
+              ├─ transform::anthropic_to_openai (bidirectional conversion)
+              ├─ discovery::get_context_limit (caches model capabilities)
+              ├─ tokenizer::estimate_from_openai_request (tiktoken pre-check)
+              └─ concurrency::ModelSemaphores (per-model rate limiting)
+                    ↓
+         streaming::handle_streaming OR non_streaming::handle_non_streaming
+                    ↓
+              ├─ retry::execute_with_retry (3-layer classification)
+              ├─ classify::classify_error (L1/L2/L3 error detection)
+              └─ circuit_breaker::CircuitBreaker (optional)
+                    ↓
+              Upstream OpenAI-compatible API
+                    ↓
+              SSE Stream → transform back to Anthropic format
 ```
 
-### Key Modules (by size/complexity)
+### Module Organization
+
+The `src/proxy/` directory contains 10 modules (~2382 LOC total) decomposed from the original monolithic proxy.rs:
 
 | Module | Purpose |
 |--------|---------|
-| `proxy.rs` | Core proxy: 3-layer retry system, concurrency shield (per-model semaphores), auto-discovery, SSE streaming |
-| `setup.rs` | 6-phase interactive setup wizard |
-| `scan.rs` | Claude Code binary scanner (model IDs, tools, capabilities) |
-| `transform.rs` | Bidirectional Anthropic ↔ OpenAI protocol conversion |
-| `config.rs` | Config loading, multi-upstream routing, model mapping |
-| `config_cmd.rs` | `config show/set/test` CLI commands |
-| `tokenizer.rs` | Token estimation using tiktoken cl100k_base |
-| `web_fetch.rs` | Intercepts `web_fetch` tool calls, fetches locally, strips HTML |
-| `models/anthropic.rs` | Anthropic API types (request/response/streaming) |
-| `models/openai.rs` | OpenAI API types |
-| `prompt_cache.rs` | Proxy-side SHA-256 cache for NIM KV_REUSE (TTL+LRU, 7 unit tests) |
+| `mod.rs` | Request handler, validation, metrics capture |
+| `streaming.rs` | SSE streaming with anthropic.keep-alive |
+| `non_streaming.rs` | Synchronous response handling |
+| `retry.rs` | 3-layer retry with exponential backoff |
+| `classify.rs` | Error classification (L1=status, L2=pattern, L3=structural) |
+| `rate_limit.rs` | Rate limit detection (L1/L2/L3) |
+| `concurrency.rs` | Per-model semaphores, circuit breaker |
+| `discovery.rs` | Model capability probing with caching |
+| `overflow_tracker.rs` | Context window overflow tracking |
+| `error_types.rs` | Upstream error structures |
 
-### Critical Design Decisions
+### Key Dependencies
 
-1. **No Anthropic API key validation** — Any non-empty key is accepted; the gateway validates upstream credentials only.
+- `axum 0.7` — HTTP server + middleware
+- `tokio 1.42` — Async runtime
+- `reqwest 0.12` — HTTP client (pool_max_idle_per_host: 50, tcp_keepalive: 60s)
+- `arc-swap 1.x` — Lock-free config reads via SharedConfig = Arc<ArcSwap<Config>>
+- `tiktoken-rs 0.11` — Token estimation using cl100k_base
+- `metrics-exporter-prometheus 0.18` — Prometheus metrics endpoint
 
-2. **Thinking forced globally** — All requests include `enable_thinking=true` via `chat_template_kwargs` for better NIM model output.
+## Critical Design Conventions
 
-3. **Model identity preserved** — Responses always return the original Claude model ID (e.g., `claude-sonnet-4-6`) even when routed to different upstream models.
+These behaviors are intentional and should not be changed:
 
-4. **Anthropic-native errors** — All error responses use Anthropic's error format with proper `type` fields for correct Claude Code handling.
+### Transform Layer (src/transform.rs)
 
-5. **Auto-fix on overflow** — `max_tokens` overflow triggers automatic halving (minimum 4096) with retry.
+1. **`has_thinking = true` BY DESIGN** — All requests force `enable_thinking=true` via `chat_template_kwargs`. NIM models produce better output with thinking enabled globally, not just for Opus.
 
-6. **Prompt caching bridge** — `cache_control` markers are extracted and logged; `anthropic-beta` header sent only to Anthropic upstream; honest zero cache tokens for NIM (no fake cache hits).
+2. **Model identity preservation BY DESIGN** — Responses return the original Claude model ID (e.g., `claude-sonnet-4-6`) even when routed to different upstream models. This is done via `original_model` parameter in streaming responses.
+
+3. **`anthropic-beta` header conditional BY DESIGN** — Only sent to Anthropic upstream (when `NEXUS_UPSTREAM_TYPE=anthropic`). Never sent to NIM/OpenAI/OpenRouter.
+
+### Proxy Layer (src/proxy/)
+
+4. **Context overflow threshold BY DESIGN** — Default 80% (configurable via `CC_OVERFLOW_THRESHOLD_PCT`, clamped to 50-95). Requests exceeding context window are pre-checked and clamped before upstream calls.
+
+5. **`probe_model_limit` capability discovery BY DESIGN** — Models without known limits are probed at runtime with a test request. Results cached in `ModelCache` (TTL from `PROBE_CACHE_TTL_SECS`).
+
+6. **`anthropic.keep-alive` SSE event BY DESIGN** — Streaming sends periodic `anthropic.keep-alive` events (30s interval) to prevent Claude Code timeout on slow upstreams.
+
+### Config (src/config.rs)
+
+7. **SharedConfig = Arc<ArcSwap<Config>> BY DESIGN** — Lock-free reads via `arc_swap`. Hot-reload works by storing new Arc in ArcSwap; no RwLock poisoning possible.
+
+8. **Config reload serialization BY DESIGN** — SIGHUP and file watcher reloads are serialized via `AtomicBool` compare_exchange to prevent race conditions.
+
+9. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
+
+## Testing Strategy
+
+- **Unit tests**: In `#[cfg(test)]` modules within source files (95 tests)
+- **Integration tests**: `tests/integration_test.rs` using wiremock (4 tests)
+- **Version sync tests**: `tests/version_sync.rs` validates 3-file sync (3 tests)
+
+Run specific module tests:
+```bash
+cargo test tokenizer_test      # src/tokenizer_test.rs
+cargo test validation_tests    # src/proxy/mod.rs::validation_tests
+cargo test threshold_tests     # src/proxy/mod.rs::threshold_tests
+cargo test error_test          # src/error_test.rs
+cargo test --test integration  # tests/integration_test.rs only
+```
 
 ## Version Management
 
@@ -76,42 +129,7 @@ Three files must stay synchronized:
 - `Cargo.toml` — `version = "X.Y.Z"`
 - `src/lib.rs` — `pub const VERSION: &str = "X.Y.Z"`
 
-Run `task version-check` to verify sync. CI enforces this on every push.
-
-## Model Mapping Configuration
-
-Environment variables route Claude models to upstream providers:
-
-```bash
-# Format: MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>
-MODEL_MAP_claude_opus_4_6=default:z-ai/glm5
-MODEL_MAP_claude_sonnet_4_6=bigmodel:glm-4-plus
-MODEL_MAP_claude_haiku_4_5=default:moonshotai/kimi-k2.5
-```
-
-Hyphens in Claude model IDs become underscores in env var names.
-
-## Git Workflow
-
-- **Main branch is protected** — No direct pushes, PRs required
-- **Conventional commits** — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `ci:`, `perf:`
-- **Pre-commit hooks** — Format check, clippy, secrets scan
-- **Pre-push hooks** — Tests, clippy, `cargo audit`, version sync check
-
-## Testing Strategy
-
-- Unit tests in `#[cfg(test)]` modules within source files
-- Integration tests in `tests/` directory
-- Coverage target: 80%+
-- Test modules: `tokenizer_test.rs`, `transform_test.rs`, `error_test.rs`
-
-## Configuration Files
-
-Config search order:
-1. `-c, --config <FILE>` (CLI flag)
-2. `./.env` (current directory)
-3. `~/.nexus-ai-gateway.env` (home directory)
-4. `/etc/nexus-ai-gateway/.env` (system-wide)
+Run `task version-check` to verify. CI enforces this on every push.
 
 ## API Endpoints
 
@@ -120,6 +138,7 @@ Config search order:
 | `/v1/messages` | POST | Main proxy endpoint (Anthropic Messages API) |
 | `/v1/messages/count_tokens` | POST | Token count estimation |
 | `/health` | GET | Health check (returns `OK`) |
+| `/metrics` | GET | Prometheus metrics |
 
 ## Port Convention
 
