@@ -1,0 +1,90 @@
+# NEXUS-AI-Gateway
+> API proxy translating Anthropic Messages API to OpenAI-compatible format
+
+## Key Information
+- Category: API Gateway / Protocol Translator
+- Language: Rust (2021 edition)
+- Framework: Axum 0.7 + Tokio 1.42
+- Entry Point: src/main.rs
+- Config: ~/.nexus-ai-gateway.env
+- Default Port: 8315
+
+## Quick Commands
+- Build: cargo build --release
+- Test: cargo test
+- Lint: cargo clippy -- -D warnings
+- Run: ./target/release/nexus-ai-gateway
+- Setup: ./target/release/nexus-ai-gateway setup --quick
+
+## Architecture
+Claude Code → POST /v1/messages → proxy_handler → anthropic_to_openai transform → 3-layer retry → upstream → transform back to Anthropic SSE
+
+The src/proxy/ module contains 10 submodules: mod.rs (handler), streaming.rs (SSE), non_streaming.rs (sync responses), retry.rs (3-layer retry), classify.rs (error classification), rate_limit.rs (throttling), concurrency.rs (per-model semaphores), discovery.rs (model limit probing), overflow_tracker.rs (context window tracking), error_types.rs (upstream errors)
+
+Key dependencies: axum 0.7, tokio 1.42, reqwest 0.12, arc-swap 1.x (lock-free config), tiktoken-rs 0.11
+
+## Environment Variables
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| UPSTREAM_BASE_URL | Yes | — | OpenAI-compatible endpoint |
+| UPSTREAM_API_KEY | Yes | — | Auth key (or OPENROUTER_API_KEY) |
+| PORT | No | 8315 | Server port |
+| NEXUS_UPSTREAM_TYPE | No | nim | Protocol variant: nim, anthropic, openai, openrouter |
+| MODEL_MAP_* | No | — | See Model Routing below |
+| MAX_CONCURRENT_PER_MODEL | No | 5 | Per-model concurrency limit |
+| PERMIT_TIMEOUT_SECS | No | 180 | Semaphore wait timeout |
+| WEB_FETCH_ENABLED | No | true | Intercept web_fetch tool calls |
+| CB_ENABLED | No | false | Circuit breaker |
+| CB_THRESHOLD | No | 10 | Failures before opening circuit |
+| CB_RECOVERY_SECS | No | 60 | Recovery interval |
+| CC_OVERFLOW_THRESHOLD_PCT | No | 80 | Context overflow threshold (clamped 50-95) |
+| DISABLE_PROBING | No | false | Disable model capability probing |
+
+Config search order: -c/--config flag → ./.env → ~/.nexus-ai-gateway.env → /etc/nexus-ai-gateway/.env
+
+## Model Routing
+Format: MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>
+
+Hyphens in Claude model IDs become underscores in env var names.
+
+Examples:
+- MODEL_MAP_claude_opus_4_6=default:z-ai/glm5
+- MODEL_MAP_claude_sonnet_4_6=bigmodel:glm-4-plus
+- MODEL_MAP_claude_haiku_4_5=default:moonshotai/kimi-k2.5
+
+Additional upstreams use UPSTREAM_<NAME>_BASE_URL and UPSTREAM_<NAME>_API_KEY.
+
+## Design Decisions (BY DESIGN — Do Not Change)
+1. has_thinking = true — All requests force enable_thinking=true via chat_template_kwargs for better NIM output
+2. Model identity preservation — Responses return original Claude model ID even when routed to different upstream models
+3. anthropic-beta header — Only sent to Anthropic upstream; never to NIM/OpenAI/OpenRouter
+4. No Anthropic API key validation — Any non-empty key accepted; upstream credentials validated only
+5. probe_model_limit — Sends max_tokens=999999 to discover real model limits for unknown models
+6. CC_OVERFLOW_THRESHOLD_PCT — Default 80%, clamped to 50-95 range
+
+## Endpoints
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| /v1/messages | POST | Main proxy (Anthropic API) |
+| /v1/messages/count_tokens | POST | Token estimation |
+| /health | GET | Health check (returns "OK") |
+| /metrics | GET | Prometheus metrics |
+
+## File Structure
+- src/main.rs — Entry point, CLI, daemon management
+- src/lib.rs — Version constant (must sync with Cargo.toml and VERSION file)
+- src/proxy/mod.rs — Main request handler, validation, metrics
+- src/proxy/streaming.rs — SSE streaming with anthropic.keep-alive events
+- src/proxy/non_streaming.rs — Synchronous response handling
+- src/proxy/retry.rs — 3-layer retry with exponential backoff
+- src/proxy/classify.rs — Error classification (L1/L2/L3)
+- src/proxy/rate_limit.rs — Rate limit detection
+- src/proxy/concurrency.rs — Per-model semaphores, circuit breaker
+- src/proxy/discovery.rs — Model capability probing with caching
+- src/transform.rs — Bidirectional Anthropic ↔ OpenAI conversion
+- src/config.rs — Config loading, multi-upstream routing
+- src/tokenizer.rs — Token estimation using tiktoken cl100k_base
+- src/web_fetch.rs — WebFetch interception with HTML-to-text
+- src/models/ — Anthropic and Open API types
+- src/prompt_cache.rs — NIM KV_REUSE proxy-side cache
+- tests/ — Integration tests with wiremock
