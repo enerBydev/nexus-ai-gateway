@@ -82,6 +82,11 @@ pub struct Config {
     pub cb_enabled: bool,
     pub cb_threshold: u32,
     pub cb_recovery_secs: u64,
+    // Dynamic context window mapping (Issue #28)
+    /// Per-model CC context window overrides. Key: claude model ID, Value: token count.
+    /// Populated from CC_MODEL_CONTEXT_WINDOWS env var.
+    /// Format: "claude-opus-4-6:200000,claude-sonnet-4-6:200000,claude-haiku-4-5:200000"
+    pub cc_model_context_windows: HashMap<String, u32>,
 }
 
 impl Config {
@@ -125,6 +130,41 @@ impl Config {
     /// Helper to get a value from the env map
     fn get_from_map(map: &HashMap<String, String>, key: &str) -> Option<String> {
         map.get(key).cloned()
+    }
+
+    /// Parse CC_MODEL_CONTEXT_WINDOWS env var into a HashMap.
+    /// Format: "claude-opus-4-6:200000,claude-sonnet-4-6:200000"
+    fn parse_model_context_windows(value: &str) -> HashMap<String, u32> {
+        let mut map = HashMap::new();
+        for entry in value.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if let Some((model, limit_str)) = entry.split_once(':') {
+                match limit_str.trim().parse::<u32>() {
+                    Ok(limit) if limit > 0 => {
+                        map.insert(model.trim().to_string(), limit);
+                    }
+                    Ok(_) => tracing::warn!(
+                        "CC_MODEL_CONTEXT_WINDOWS: ignoring non-positive limit for '{}'",
+                        model.trim()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "CC_MODEL_CONTEXT_WINDOWS: invalid number '{}' for '{}': {}",
+                        limit_str.trim(),
+                        model.trim(),
+                        e
+                    ),
+                }
+            } else {
+                tracing::warn!(
+                    "CC_MODEL_CONTEXT_WINDOWS: malformed entry '{}' (expected 'model:tokens')",
+                    entry
+                );
+            }
+        }
+        map
     }
 
     /// Create Config from a HashMap (used for thread-safe reload)
@@ -272,6 +312,11 @@ impl Config {
             .unwrap_or(60)
             .max(1);
 
+        // Dynamic context window mapping (Issue #28)
+        let cc_model_context_windows = Self::get_from_map(data, "CC_MODEL_CONTEXT_WINDOWS")
+            .map(|v| Self::parse_model_context_windows(&v))
+            .unwrap_or_default();
+
         Ok(Config {
             port,
             base_url,
@@ -294,6 +339,7 @@ impl Config {
             cb_enabled,
             cb_threshold,
             cb_recovery_secs,
+            cc_model_context_windows,
         })
     }
 
@@ -467,6 +513,11 @@ impl Config {
         let cb_recovery_secs =
             env::var("CB_RECOVERY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60).max(1);
 
+        // Dynamic context window mapping (Issue #28)
+        let cc_model_context_windows = env::var("CC_MODEL_CONTEXT_WINDOWS")
+            .map(|v| Self::parse_model_context_windows(&v))
+            .unwrap_or_default();
+
         Ok(Config {
             port,
             base_url,
@@ -489,6 +540,7 @@ impl Config {
             cb_enabled,
             cb_threshold,
             cb_recovery_secs,
+            cc_model_context_windows,
         })
     }
 

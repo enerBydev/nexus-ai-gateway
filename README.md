@@ -217,6 +217,20 @@ flowchart TB
 | `PROBE_CACHE_TTL_SECS` | `3600` | Probe result cache TTL |
 | `PROBE_TIMEOUT_SECS` | `15` | Timeout for probe requests |
 
+#### Context Window Sync
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CC_CONTEXT_WINDOW` | `200000` | Manual override for CC's context window (tokens) |
+| `CC_MODEL_CONTEXT_WINDOWS` | — | Per-model mapping: `model-id:tokens,model-id:tokens` |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | — | Auto-detected from Claude Code runtime (priority over `CC_CONTEXT_WINDOW`) |
+
+Resolution priority (highest → lowest):
+1. `CC_MODEL_CONTEXT_WINDOWS` per-model entry for the requested model
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (set automatically by Claude Code)
+3. `CC_CONTEXT_WINDOW` (manual global override)
+4. `200_000` default
+
 #### Prompt Cache (NIM KV_REUSE)
 
 | Variable | Default | Description |
@@ -234,7 +248,6 @@ flowchart TB
 | `NEXUS_UPSTREAM_TYPE` | `nim` | Protocol variant (nim, anthropic, openai, openrouter) |
 | `DEBUG` | `false` | Enable debug mode |
 | `VERBOSE` | `false` | Enable verbose (trace) logging |
-| `CC_CONTEXT_WINDOW` | `200000` | Claude Code context window for token scaling |
 | `CC_OVERFLOW_THRESHOLD_PCT` | `80` | Context overflow threshold (range: 50-95) |
 
 #### Additional Upstreams

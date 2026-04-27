@@ -38,6 +38,9 @@ Key dependencies: axum 0.7, tokio 1.42, reqwest 0.12, arc-swap 1.x (lock-free co
 | CB_THRESHOLD | No | 10 | Failures before opening circuit |
 | CB_RECOVERY_SECS | No | 60 | Recovery interval |
 | CC_OVERFLOW_THRESHOLD_PCT | No | 80 | Context overflow threshold (clamped 50-95) |
+| CC_CONTEXT_WINDOW | No | 200000 | Manual override for CC's context window (tokens) |
+| CC_MODEL_CONTEXT_WINDOWS | No | — | Per-model mapping `model-id:tokens,...` (highest priority) |
+| CLAUDE_CODE_AUTO_COMPACT_WINDOW | No | — | Auto-detected from CC runtime (overrides CC_CONTEXT_WINDOW; below per-model) |
 | DISABLE_PROBING | No | false | Disable model capability probing |
 
 Config search order: -c/--config flag → ./.env → ~/.nexus-ai-gateway.env → /etc/nexus-ai-gateway/.env

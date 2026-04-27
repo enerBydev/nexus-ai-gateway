@@ -33,6 +33,7 @@ mod tests {
             cb_enabled: false,
             cb_threshold: 10,
             cb_recovery_secs: 60,
+            cc_model_context_windows: HashMap::new(),
         }
     }
 
