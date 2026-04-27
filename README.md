@@ -225,6 +225,12 @@ flowchart TB
 | `CC_MODEL_CONTEXT_WINDOWS` | — | Per-model mapping: `model-id:tokens,model-id:tokens` |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | — | Auto-detected from Claude Code runtime (priority over `CC_CONTEXT_WINDOW`) |
 
+Resolution priority (highest → lowest):
+1. `CC_MODEL_CONTEXT_WINDOWS` per-model entry for the requested model
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (set automatically by Claude Code)
+3. `CC_CONTEXT_WINDOW` (manual global override)
+4. `200_000` default
+
 #### Prompt Cache (NIM KV_REUSE)
 
 | Variable | Default | Description |

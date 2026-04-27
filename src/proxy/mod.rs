@@ -94,7 +94,7 @@ pub(crate) fn get_overflow_threshold_pct() -> u32 {
 /// 4. 200_000 fallback (default for standard Claude models)
 pub(crate) fn resolve_cc_context_window(model_id: &str, config: &Config) -> u32 {
     // 1. Per-model mapping (CC_MODEL_CONTEXT_WINDOWS env var)
-    if let Some(&window) = config.cc_model_context_windows.get(model_id) {
+    if let Some(&window) = config.cc_model_context_windows.get(model_id).filter(|&&w| w > 0) {
         tracing::debug!(
             "📐 CC context window from per-model mapping: {} → {}K",
             model_id,

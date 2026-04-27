@@ -138,12 +138,30 @@ impl Config {
         let mut map = HashMap::new();
         for entry in value.split(',') {
             let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
             if let Some((model, limit_str)) = entry.split_once(':') {
-                if let Ok(limit) = limit_str.trim().parse::<u32>() {
-                    if limit > 0 {
+                match limit_str.trim().parse::<u32>() {
+                    Ok(limit) if limit > 0 => {
                         map.insert(model.trim().to_string(), limit);
                     }
+                    Ok(_) => tracing::warn!(
+                        "CC_MODEL_CONTEXT_WINDOWS: ignoring non-positive limit for '{}'",
+                        model.trim()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "CC_MODEL_CONTEXT_WINDOWS: invalid number '{}' for '{}': {}",
+                        limit_str.trim(),
+                        model.trim(),
+                        e
+                    ),
                 }
+            } else {
+                tracing::warn!(
+                    "CC_MODEL_CONTEXT_WINDOWS: malformed entry '{}' (expected 'model:tokens')",
+                    entry
+                );
             }
         }
         map
