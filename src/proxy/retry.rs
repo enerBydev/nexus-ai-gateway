@@ -68,9 +68,6 @@ pub(crate) async fn resilient_send(
 
         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
 
-        // Record circuit breaker failure
-        circuit_breaker.record_failure(generation).await;
-
         // === Smart Retry: 3-Layer Error Classification ===
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
         tracing::debug!(
@@ -87,6 +84,10 @@ pub(crate) async fn resilient_send(
         match class {
             ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
                 if attempt >= max_retries {
+                    // Only record ONE CB failure when ALL retries are exhausted.
+                    // Internal retries are self-healing — they must not individually
+                    // trip the breaker (3 retries of 1 request ≠ 3 separate failures).
+                    circuit_breaker.record_failure(generation).await;
                     tracing::error!(
                         "⛔ {} [{}]: exhausted {} retries — giving up",
                         status.as_u16(),
@@ -239,9 +240,6 @@ pub(crate) async fn resilient_send_raw(
 
         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
 
-        // Record circuit breaker failure
-        circuit_breaker.record_failure(generation).await;
-
         // === Smart Retry: 3-Layer Error Classification [stream] ===
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
         tracing::debug!(
@@ -258,6 +256,10 @@ pub(crate) async fn resilient_send_raw(
         match class {
             ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
                 if attempt >= max_retries {
+                    // Only record ONE CB failure when ALL retries are exhausted.
+                    // Internal retries are self-healing — they must not individually
+                    // trip the breaker (3 retries of 1 request ≠ 3 separate failures).
+                    circuit_breaker.record_failure(generation).await;
                     tracing::error!(
                         "⛔ [stream] {} [{}]: exhausted {} retries — giving up",
                         status.as_u16(),

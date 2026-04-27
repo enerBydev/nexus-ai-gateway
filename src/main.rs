@@ -182,8 +182,21 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     // v8.0: Per-model token calibration factors (EMA-based, converges to ~98% accuracy)
     let calibration_factors = tokenizer::CalibrationFactors::new();
     // v0.12.0: Circuit breaker for upstream protection
-    let circuit_breaker: proxy::CircuitBreaker =
-        Arc::new(circuit_breaker::CircuitBreaker::new(3, std::time::Duration::from_secs(30)));
+    // v0.14.1: Configurable CB via CB_ENABLED, CB_THRESHOLD, CB_RECOVERY_SECS
+    let circuit_breaker: proxy::CircuitBreaker = if config.cb_enabled {
+        Arc::new(circuit_breaker::CircuitBreaker::new(
+            config.cb_threshold,
+            std::time::Duration::from_secs(config.cb_recovery_secs),
+        ))
+    } else {
+        Arc::new(circuit_breaker::CircuitBreaker::disabled())
+    };
+    tracing::info!(
+        "Circuit breaker: {} (threshold={}, recovery={}s)",
+        if config.cb_enabled { "ENABLED" } else { "disabled" },
+        config.cb_threshold,
+        config.cb_recovery_secs,
+    );
 
     // Save CLI flags for hot-reload
     let cli_debug = config.debug;

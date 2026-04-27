@@ -78,6 +78,10 @@ pub struct Config {
     /// Tracking: Future integration for prompt caching (PHASE 3.5)
     #[allow(dead_code)]
     pub prompt_cache_ttl_secs: u64,
+    // Circuit breaker configuration (v0.14.1)
+    pub cb_enabled: bool,
+    pub cb_threshold: u32,
+    pub cb_recovery_secs: u64,
 }
 
 impl Config {
@@ -255,6 +259,19 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
 
+        // Circuit breaker configuration (v0.14.1)
+        let cb_enabled = Self::get_from_map(data, "CB_ENABLED")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+        let cb_threshold = Self::get_from_map(data, "CB_THRESHOLD")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+            .max(1);
+        let cb_recovery_secs = Self::get_from_map(data, "CB_RECOVERY_SECS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60)
+            .max(1);
+
         Ok(Config {
             port,
             base_url,
@@ -274,6 +291,9 @@ impl Config {
             prompt_cache_enabled,
             prompt_cache_max_entries,
             prompt_cache_ttl_secs,
+            cb_enabled,
+            cb_threshold,
+            cb_recovery_secs,
         })
     }
 
@@ -439,6 +459,13 @@ impl Config {
             .unwrap_or(1000);
         let prompt_cache_ttl_secs =
             env::var("NIM_PROMPT_CACHE_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+        // Circuit breaker configuration (v0.14.1)
+        let cb_enabled =
+            env::var("CB_ENABLED").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
+        let cb_threshold =
+            env::var("CB_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(10).max(1);
+        let cb_recovery_secs =
+            env::var("CB_RECOVERY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60).max(1);
 
         Ok(Config {
             port,
@@ -459,6 +486,9 @@ impl Config {
             prompt_cache_enabled,
             prompt_cache_max_entries,
             prompt_cache_ttl_secs,
+            cb_enabled,
+            cb_threshold,
+            cb_recovery_secs,
         })
     }
 

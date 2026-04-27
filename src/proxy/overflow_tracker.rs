@@ -111,8 +111,15 @@ impl OverflowLoopTracker {
 mod tests {
     use super::*;
 
+    // Global test mutex to prevent race conditions between tests
+    // that share the OVERFLOW_LOOP_TRACKER global state.
+    // Each test acquires this lock for its entire duration to ensure
+    // no other test interleaves between reset_all() and check_overflow_loop() calls.
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_overflow_loop_detection() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
         let model = "test-model-loop";
 
@@ -127,6 +134,7 @@ mod tests {
 
     #[test]
     fn test_different_models_tracked_separately() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
         let model_a = "test-model-sep-a";
         let model_b = "test-model-sep-b";
@@ -145,6 +153,7 @@ mod tests {
 
     #[test]
     fn test_token_level_change_resets() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
         let model = "test-model-tok";
 
@@ -164,6 +173,7 @@ mod tests {
 
     #[test]
     fn test_reset_tracker() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
         let model = "test-model-manual";
 
@@ -184,6 +194,7 @@ mod tests {
 
     #[test]
     fn test_within_5_percent_variance() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
         let model = "test-model-var";
 
@@ -199,6 +210,7 @@ mod tests {
 
     #[test]
     fn test_zero_input_tokens_no_panic() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
 
         // Zero input tokens should not trigger and not panic
@@ -209,6 +221,7 @@ mod tests {
 
     #[test]
     fn test_triggers_then_resets_cleanly() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         OverflowLoopTracker::reset_all();
         let model = "test-model-trig";
 
