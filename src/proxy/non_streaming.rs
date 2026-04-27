@@ -35,7 +35,8 @@ pub(crate) async fn handle_non_streaming(
     upstream_name: &str,
     model_semaphores: ModelSemaphores,
     circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
-    context_limit: u32, // FIX 6: for token scaling
+    context_limit: u32,     // FIX 6: for token scaling
+    cc_context_window: u32, // Issue #28: resolved dynamically
 ) -> ProxyResult<axum::response::Response> {
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
@@ -81,8 +82,6 @@ pub(crate) async fn handle_non_streaming(
         let anthropic_resp = transform::openai_to_anthropic(openai_resp, &original_req.model)?;
 
         // FIX 2: Check if context is nearly full after successful retry
-        let cc_context_window: u32 =
-            std::env::var("CC_CONTEXT_WINDOW").ok().and_then(|v| v.parse().ok()).unwrap_or(200_000);
 
         // FIX 6: Token scaling for non-streaming path (parity with streaming)
         let scale_tokens = |real_tokens: u32| -> u32 {

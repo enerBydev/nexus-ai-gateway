@@ -31,6 +31,7 @@ pub(crate) async fn handle_streaming(
     calibration: tokenizer::CalibrationFactors,
     precomputed_estimate: u32,
     context_limit: u32,
+    cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> ProxyResult<Response> {
     let permit = acquire_model_permit(
@@ -72,6 +73,7 @@ pub(crate) async fn handle_streaming(
         nim_model_name,
         calibration,
         context_limit,
+        cc_context_window, // Issue #28: resolved dynamically
         _circuit_breaker,
     );
 
@@ -93,13 +95,10 @@ pub(crate) fn create_sse_stream(
     nim_model_name: String,
     calibration: tokenizer::CalibrationFactors,
     context_limit: u32,
+    cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
-        let cc_context_window: u32 = std::env::var("CC_CONTEXT_WINDOW")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(200_000);
         tracing::debug!(
             "📐 Auto-compact scaling: cc_context_window={}K, model_context={}K",
             cc_context_window / 1000,
