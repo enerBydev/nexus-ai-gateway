@@ -45,10 +45,8 @@ tasks:
       - mkdir -p {{.HOME}}/.local/bin
       - |
         SOURCE_MD5=$(md5sum {{.BUILD_DIR}}/{{.BINARY_NAME}} | awk '{print $1}')
-        cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.INSTALL_DIR}}/{{.BINARY_NAME}}
-        chmod +x {{.INSTALL_DIR}}/{{.BINARY_NAME}}
-        cp {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.HOME}}/.local/bin/{{.BINARY_NAME}}
-        chmod +x {{.HOME}}/.local/bin/{{.BINARY_NAME}}
+        install -m 0755 {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.INSTALL_DIR}}/{{.BINARY_NAME}}
+        install -m 0755 {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.HOME}}/.local/bin/{{.BINARY_NAME}}
         CARGO_MD5=$(md5sum {{.INSTALL_DIR}}/{{.BINARY_NAME}} | awk '{print $1}')
         LOCAL_MD5=$(md5sum {{.HOME}}/.local/bin/{{.BINARY_NAME}} | awk '{print $1}')
         echo ""

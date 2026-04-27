@@ -66,8 +66,7 @@ if [[ -x "${BUILD_BINARY}" ]]; then
         warn "Binary STALE: ${BINARY_PATH} differs from ${BUILD_BINARY}"
         info "The service would run an OLD binary — this caused the CB death spiral bug (v0.14.1)"
         info "Updating binary before installing service..."
-        cp "${BUILD_BINARY}" "${BINARY_PATH}"
-        chmod +x "${BINARY_PATH}"
+        install -m 0755 "${BUILD_BINARY}" "${BINARY_PATH}"
         ok "Binary updated: ${BINARY_PATH} now matches build output"
     else
         ok "Binary freshness: matches target/release (md5=${SERVICE_HASH:0:8}...)"

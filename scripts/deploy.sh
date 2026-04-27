@@ -278,14 +278,13 @@ ok "Sanity check passed: ~/.cargo/bin/${BINARY_NAME} matches build output"
 # Also sync to ~/.local/bin as a safeguard for users with that in PATH
 mkdir -p "${HOME}/.local/bin"
 LOCAL_BIN="${HOME}/.local/bin/${BINARY_NAME}"
-cp "${BUILT_BINARY}" "${LOCAL_BIN}"
-chmod +x "${LOCAL_BIN}"
+install -m 0755 "${BUILT_BINARY}" "${LOCAL_BIN}"
 LOCAL_MD5=$(md5sum "${LOCAL_BIN}" | awk '{print $1}')
 
 if [[ "${LOCAL_MD5}" != "${SOURCE_MD5}" ]]; then
-  warn  "~/.local/bin/${BINARY_NAME} copy has different md5sum"
+  warn  "${HOME}/.local/bin/${BINARY_NAME} copy has different md5sum"
 else
-  ok "Synced to ~/.local/bin/${BINARY_NAME} (md5 verified)"
+  ok "Synced to ${HOME}/.local/bin/${BINARY_NAME} (md5 verified)"
 fi
 
 # Verify installed binary version matches source
