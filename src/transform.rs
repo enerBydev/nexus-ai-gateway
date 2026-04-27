@@ -121,13 +121,13 @@ pub fn anthropic_to_openai(
         });
     }
 
-    #[allow(clippy::collapsible_match)]
-    // PHASE 15: Extract cache markers from message content blocks
+    // PHASE 15: Extract cache markers from message content blocks (single pass)
     for msg in &req.messages {
         if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
             for block in blocks {
-                if let anthropic::ContentBlock::Text { ref text, ref cache_control } = block {
-                    if let Some(ref cc) = cache_control {
+                match block {
+                    // Direct Text blocks with cache_control
+                    anthropic::ContentBlock::Text { ref text, cache_control: Some(ref cc) } => {
                         cache_markers.push(CacheMarker {
                             content_hash: PromptCache::hash_content(text),
                             token_count: PromptCache::estimate_tokens(text),
@@ -135,34 +135,28 @@ pub fn anthropic_to_openai(
                             cache_control_value: cc.clone(),
                         });
                     }
-                }
-            }
-        }
-    }
-
-    // Issue 2: Also extract cache markers from nested ToolResult content blocks
-    for msg in &req.messages {
-        if let anthropic::MessageContent::Blocks(ref blocks) = msg.content {
-            for block in blocks {
-                if let anthropic::ContentBlock::ToolResult {
-                    content: anthropic::ToolResultContent::Blocks(tool_blocks),
-                    ..
-                } = block
-                {
-                    for tool_block in tool_blocks {
-                        if let anthropic::ContentBlock::Text {
-                            ref text,
-                            cache_control: Some(ref cc),
-                        } = tool_block
-                        {
-                            cache_markers.push(CacheMarker {
-                                content_hash: PromptCache::hash_content(text),
-                                token_count: PromptCache::estimate_tokens(text),
-                                location: CacheLocation::MessageContent,
-                                cache_control_value: cc.clone(),
-                            });
+                    // Nested Text blocks inside ToolResult → ToolResultContent::Blocks
+                    anthropic::ContentBlock::ToolResult {
+                        content: anthropic::ToolResultContent::Blocks(tool_blocks),
+                        ..
+                    } => {
+                        for tool_block in tool_blocks {
+                            if let anthropic::ContentBlock::Text {
+                                ref text,
+                                cache_control: Some(ref cc),
+                            } = tool_block
+                            {
+                                cache_markers.push(CacheMarker {
+                                    content_hash: PromptCache::hash_content(text),
+                                    token_count: PromptCache::estimate_tokens(text),
+                                    location: CacheLocation::MessageContent,
+                                    cache_control_value: cc.clone(),
+                                });
+                            }
                         }
                     }
+                    // Other block types don't contain cache_control markers to extract
+                    _ => {}
                 }
             }
         }
