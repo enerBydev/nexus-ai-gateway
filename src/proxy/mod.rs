@@ -261,6 +261,37 @@ pub async fn proxy_handler(
 }
 
 #[cfg(test)]
+/// Crate-level mutex for synchronizing tests that modify process environment variables.
+/// All env-mutating tests MUST acquire this lock to prevent cross-test interference.
+static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+/// RAII guard that clears specified env vars on creation and on drop.
+/// Ensures test env vars never leak to other tests.
+struct EnvGuard {
+    keys: Vec<&'static str>,
+}
+
+#[cfg(test)]
+impl EnvGuard {
+    fn new(keys: Vec<&'static str>) -> Self {
+        for k in &keys {
+            std::env::remove_var(k);
+        }
+        Self { keys }
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for k in &self.keys {
+            std::env::remove_var(k);
+        }
+    }
+}
+
+#[cfg(test)]
 mod validation_tests {
     use super::*;
     use crate::models::anthropic;
@@ -350,39 +381,39 @@ mod threshold_tests {
 
     #[test]
     fn test_default_threshold_is_80() {
-        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
         assert_eq!(get_overflow_threshold_pct(), 80);
     }
 
     #[test]
     fn test_custom_threshold_valid() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
         std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "75");
         assert_eq!(get_overflow_threshold_pct(), 75);
-        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
     }
 
     #[test]
     fn test_threshold_below_minimum_rejected() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
         std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "40");
         assert_eq!(get_overflow_threshold_pct(), 80);
-        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
     }
 
     #[test]
     fn test_threshold_above_maximum_rejected() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
         std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "99");
         assert_eq!(get_overflow_threshold_pct(), 80);
-        std::env::remove_var("CC_OVERFLOW_THRESHOLD_PCT");
     }
 }
 
 #[cfg(test)]
 mod context_window_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Static mutex to synchronize env var tests (they modify global state)
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     fn make_minimal_config() -> Config {
         Config {
@@ -411,23 +442,18 @@ mod context_window_tests {
         }
     }
 
-    fn clear_env_vars() {
-        std::env::remove_var("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
-        std::env::remove_var("CC_CONTEXT_WINDOW");
-    }
-
     #[test]
     fn test_default_fallback_200k() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         let config = make_minimal_config();
         assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 200_000);
     }
 
     #[test]
     fn test_cc_context_window_override() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         std::env::set_var("CC_CONTEXT_WINDOW", "150000");
         let config = make_minimal_config();
         assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 150_000);
@@ -435,8 +461,8 @@ mod context_window_tests {
 
     #[test]
     fn test_claude_auto_compact_takes_priority() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         std::env::set_var("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "100000");
         std::env::set_var("CC_CONTEXT_WINDOW", "150000");
         let config = make_minimal_config();
@@ -446,8 +472,8 @@ mod context_window_tests {
 
     #[test]
     fn test_per_model_mapping_highest_priority() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         std::env::set_var("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "100000");
         std::env::set_var("CC_CONTEXT_WINDOW", "150000");
         let mut config = make_minimal_config();
@@ -460,8 +486,8 @@ mod context_window_tests {
 
     #[test]
     fn test_zero_values_rejected() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         std::env::set_var("CC_CONTEXT_WINDOW", "0");
         let config = make_minimal_config();
         // Zero should be filtered out, falling back to 200K
