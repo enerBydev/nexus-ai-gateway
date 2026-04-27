@@ -85,7 +85,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 
 [dev-dependencies]
-wiremock = "=0.6.4" # Pinned: 0.6.5 uses unstable let_chains (nightly-only)
+wiremock = "=0.6.5" # Pinned: 0.6.5 uses unstable let_chains (nightly-only)
 
 [profile.release]
 opt-level = "z"        # Optimize for size
