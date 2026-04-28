@@ -1,0 +1,153 @@
+#!/bin/sh
+# post-merge hook — Auto-sync after git pull that brings merge commits
+#
+# This hook fires AFTER "git pull" completes a merge (fast-forward or merge commit).
+# It solves the gap where:
+#   - gh pr merge (GitHub API) bypasses local pre-push hooks
+#   - git pull after a remote merge has no local validation
+#   - systemd service keeps running the old binary indefinitely
+#
+# What it does (only on main branch):
+#   1. Detect version change (before vs after pull)
+#   2. If version changed: rebuild + install + restart service
+#   3. Verify health check
+#   4. If version unchanged but Rust files changed: rebuild + install (no restart)
+#
+# This hook is NON-BLOCKING — it runs in background so git pull returns immediately.
+
+# Only act on main branch
+CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+if [ "$CURRENT_BRANCH" != "main" ]; then
+  exit 0
+fi
+
+# Skip if this is a version bump commit being pulled (avoid rebuild loop)
+# The auto-version CI creates "chore: bump version to X.Y.Z [skip ci]" commits
+# When we pull those, we DO want to rebuild — that's the whole point.
+# But if WE just pushed a version bump locally, skip.
+HEAD_MSG=$(git log -1 --format=%s)
+if echo "$HEAD_MSG" | grep -qE "^chore: bump version to.*\[skip-deploy\]"; then
+  exit 0
+fi
+
+# Get the new version from source
+NEW_VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]')
+if [ -z "$NEW_VERSION" ]; then
+  exit 0
+fi
+
+# Get the installed binary version
+BINARY_PATH="$HOME/.cargo/bin/nexus-ai-gateway"
+OLD_VERSION=""
+if [ -x "$BINARY_PATH" ]; then
+  OLD_VERSION=$("$BINARY_PATH" --version 2>/dev/null | awk '{print $2}')
+fi
+
+# Detect if any Rust source files changed in this pull
+RUST_CHANGED=$(git diff ORIG_HEAD..HEAD --name-only -- '*.rs' 'Cargo.toml' 'Cargo.lock' 2>/dev/null | head -1)
+
+# ═══════════════════════════════════════════════════════
+# Decision logic: rebuild, install, restart?
+# ═══════════════════════════════════════════════════════
+
+NEED_REBUILD=false
+NEED_RESTART=false
+
+if [ "$NEW_VERSION" != "$OLD_VERSION" ] && [ -n "$OLD_VERSION" ]; then
+  # Version changed → full rebuild + restart
+  NEED_REBUILD=true
+  NEED_RESTART=true
+  echo ""
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║ 🔄 post-merge: Version changed              ║"
+  printf "║ %-45s║\n" "Binary: v${OLD_VERSION} → Source: v${NEW_VERSION}"
+  echo "╚══════════════════════════════════════════════╝"
+elif [ -n "$RUST_CHANGED" ]; then
+  # Rust files changed but version same → rebuild only (no service restart)
+  NEED_REBUILD=true
+  NEED_RESTART=false
+  echo ""
+  echo "╔══════════════════════════════════════════════╗"
+  echo "║ 🔧 post-merge: Rust sources changed          ║"
+  printf "║ %-45s║\n" "Version unchanged: v${NEW_VERSION}"
+  echo "╚══════════════════════════════════════════════╝"
+else
+  # No Rust changes (docs, config, etc.) → nothing to do
+  exit 0
+fi
+
+# Run rebuild in background so git pull returns immediately
+(
+  if [ "$NEED_REBUILD" = true ]; then
+    echo ""
+    echo "🔨 Building release binary..."
+    if cargo build --release 2>&1 | tail -3; then
+      BUILT_BIN="./target/release/nexus-ai-gateway"
+      if [ ! -x "$BUILT_BIN" ]; then
+        echo "❌ Built binary not found: $BUILT_BIN"
+        exit 1
+      fi
+
+      # Install to ~/.cargo/bin (systemd ExecStart path)
+      install -m 0755 "$BUILT_BIN" "$BINARY_PATH"
+
+      # Sync to ~/.local/bin (secondary path)
+      mkdir -p "$HOME/.local/bin"
+      install -m 0755 "$BUILT_BIN" "$HOME/.local/bin/nexus-ai-gateway"
+
+      # MD5 verification
+      BUILD_MD5=$(md5sum "$BUILT_BIN" | awk '{print $1}')
+      CARGO_MD5=$(md5sum "$BINARY_PATH" | awk '{print $1}')
+
+      if [ "$BUILD_MD5" != "$CARGO_MD5" ]; then
+        echo "❌ CRITICAL: md5 mismatch after install!"
+        echo "   target/release: $BUILD_MD5"
+        echo "   ~/.cargo/bin:   $CARGO_MD5"
+        echo "   DO NOT RESTART — binary is corrupt"
+        exit 1
+      fi
+
+      INSTALLED_VER=$("$BINARY_PATH" --version 2>/dev/null | awk '{print $2}')
+      echo "✅ Binary installed: v${INSTALLED_VER} (md5: ${CARGO_MD5:0:8}...)"
+    else
+      echo "❌ Build failed — service NOT updated (previous binary still running)"
+      exit 1
+    fi
+  fi
+
+  if [ "$NEED_RESTART" = true ]; then
+    echo ""
+    echo "🔄 Restarting systemd service..."
+    systemctl --user restart nexus-ai-gateway
+    sleep 3
+
+    if systemctl --user is-active --quiet nexus-ai-gateway; then
+      echo "✅ Service restarted and active"
+    else
+      echo "❌ Service failed to start!"
+      journalctl --user -u nexus-ai-gateway --no-pager -n 10 2>/dev/null
+      exit 1
+    fi
+
+    # Health check
+    PORT=$(grep "^PORT=" "$HOME/.nexus-ai-gateway.env" 2>/dev/null | cut -d= -f2 || echo "8315")
+    HEALTH=$(curl -s --max-time 5 "http://localhost:${PORT}/health" 2>/dev/null || echo "")
+    if [ "$HEALTH" = "OK" ]; then
+      echo "✅ Health check: OK (port ${PORT})"
+    else
+      echo "⚠️ Health check: FAILED (port ${PORT}) — service may still be starting"
+    fi
+
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║ 🚀 post-merge: Deploy complete               ║"
+    printf "║ %-45s║\n" "v${OLD_VERSION} → v${INSTALLED_VER:-$NEW_VERSION}"
+    echo "╚══════════════════════════════════════════════╝"
+  else
+    echo ""
+    echo "✅ Binary rebuilt (v${NEW_VERSION}) — service NOT restarted (no version change)"
+    echo "   Run: systemctl --user restart nexus-ai-gateway"
+  fi
+) &
+
+exit 0
