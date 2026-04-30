@@ -13,17 +13,24 @@ RestartSec=3
 # Prevent restart loops: 5 failures in 60s = stop trying
 StartLimitIntervalSec=60
 StartLimitBurst=5
+# Graceful shutdown: only kill main process, let it drain connections
+KillMode=process
+# Aligned with DRAIN_TIMEOUT_SECS=30 + 15s margin
+TimeoutStopSec=45
+# No SIGKILL — let the process exit cleanly after draining
+SendSIGKILL=no
 
 # Environment: load from .env file
 EnvironmentFile=-%h/.nexus-ai-gateway.env
 
-# Logging — dual: journald (rotated) + file (truncated on restart)
+# Logging — dual: journald (rotated) + file (use logrotate for rotation)
 SyslogIdentifier=nexus-ai-gateway
 StandardOutput=append:/tmp/nexus-ai-gateway.log
 StandardError=append:/tmp/nexus-ai-gateway.log
 
-# Truncate log file on restart to prevent unbounded growth
-ExecStartPre=/usr/bin/truncate -s 0 /tmp/nexus-ai-gateway.log
+# Log rotation: install with
+#   sudo cp scripts/logrotate-nexus.conf /etc/logrotate.d/nexus-ai-gateway
+# For user-level: add to personal crontab or use logrotate --state
 
 # Hardening
 NoNewPrivileges=true

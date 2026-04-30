@@ -30,6 +30,14 @@ pub(crate) async fn resilient_send(
     loop {
         attempt += 1;
 
+        // S8: Fail-fast when server is draining — don't waste retry budget
+        if crate::IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("🛑 Server is draining — skipping retry (attempt {})", attempt);
+            return Err(crate::error::ProxyError::Upstream(
+                "Server is shutting down — request not retried".to_string(),
+            ));
+        }
+
         // Circuit breaker check
         let (allowed, generation) = circuit_breaker.is_allowed().await;
         if !allowed {
@@ -203,6 +211,14 @@ pub(crate) async fn resilient_send_raw(
 
     loop {
         attempt += 1;
+
+        // S8: Fail-fast when server is draining — don't waste retry budget
+        if crate::IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("🛑 Server is draining — skipping retry (attempt {})", attempt);
+            return Err(crate::error::ProxyError::Upstream(
+                "Server is shutting down — request not retried".to_string(),
+            ));
+        }
 
         // Circuit breaker check
         let (allowed, generation) = circuit_breaker.is_allowed().await;

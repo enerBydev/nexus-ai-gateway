@@ -31,8 +31,11 @@ Thumbs.db
 /.coverage/
 
 # Documentation build
+AUDIT_REPORT_NIM_V4.md
 /docs/
-
+.*
+!.gitignore
+!.env.example
 
 # Temporary files
 /tmp/

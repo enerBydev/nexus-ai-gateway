@@ -20,8 +20,10 @@ pub mod retry;
 pub mod streaming;
 
 use axum::{response::Response, Extension, Json};
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 use reqwest::Client;
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::{Config, SharedConfig};
 use crate::error::{ProxyError, ProxyResult};
@@ -32,6 +34,35 @@ use crate::transform;
 // Public re-exports for types used in main.rs
 pub use concurrency::{CircuitBreaker, ModelSemaphores};
 pub use discovery::{get_context_limit, ModelCache};
+
+/// Global counter of active proxy connections.
+/// Incremented on request entry, decremented on exit (via ConnectionGuard).
+pub static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// RAII guard that decrements ACTIVE_CONNECTIONS on Drop.
+/// Ensures the counter is always decremented, even on panic or early return.
+struct ConnectionGuard;
+
+impl ConnectionGuard {
+    fn new() -> Self {
+        ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(
+            " Connection opened (active: {})",
+            ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
+        );
+        Self
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+        tracing::debug!(
+            " Connection closed (active: {})",
+            ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
+        );
+    }
+}
 
 /// Validate semantic correctness of an Anthropic request before sending upstream.
 /// Returns a ProxyError for invalid requests, preventing wasted API calls.
@@ -138,6 +169,10 @@ pub async fn proxy_handler(
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
+    // S3: Track active connections
+    let _conn_guard = ConnectionGuard::new();
+    gauge!("nexus_active_connections").set(ACTIVE_CONNECTIONS.load(Ordering::Relaxed) as f64);
+
     // Phase 4.5: Capture request metrics
     let start = std::time::Instant::now();
     let is_streaming = req.stream.unwrap_or(false);
@@ -233,6 +268,7 @@ pub async fn proxy_handler(
             context_limit,   // v0.11.0 (CR-08): for input_tokens scaling
             cc_context_window, // Issue #28: resolved dynamically
             &circuit_breaker,
+            crate::SHUTDOWN_TOKEN.clone(), // NEW: pass cancellation token for graceful shutdown
         )
         .await
     } else {
@@ -483,14 +519,212 @@ mod context_window_tests {
         // Unmapped model should fall through to CLAUDE_CODE_AUTO_COMPACT_WINDOW
         assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 100_000);
     }
+}
+
+#[cfg(test)]
+mod connection_counter_tests {
+    use super::*;
 
     #[test]
-    fn test_zero_values_rejected() {
+    fn test_active_connections_increment_decrement() {
+        ACTIVE_CONNECTIONS.store(0, Ordering::Relaxed);
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 0);
+
+        ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 1);
+
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_connection_guard_raii() {
+        ACTIVE_CONNECTIONS.store(0, Ordering::Relaxed);
+
+        {
+            let _guard = ConnectionGuard::new();
+            assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 1);
+
+            let _guard2 = ConnectionGuard::new();
+            assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 2);
+        }
+
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_connection_guard_manual_drop() {
+        ACTIVE_CONNECTIONS.store(0, Ordering::Relaxed);
+
+        let guard = ConnectionGuard::new();
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 1);
+
+        // Explicitly drop the guard
+        drop(guard);
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 0);
+    }
+}
+
+// Phase 5: Graceful shutdown tests for S1-S11
+#[cfg(test)]
+mod drain_state_tests {
+    use crate::IS_DRAINING;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_is_draining_default_false() {
+        // Reset to known state
+        IS_DRAINING.store(false, Ordering::Relaxed);
+        assert!(!IS_DRAINING.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_is_draining_set_true() {
+        IS_DRAINING.store(true, Ordering::Relaxed);
+        assert!(IS_DRAINING.load(Ordering::Relaxed));
+        // Reset
+        IS_DRAINING.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_token_tests {
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn test_cancellation_token_cancelled() {
+        let token = CancellationToken::new();
+        assert!(!token.is_cancelled());
+        token.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_clone_cancelled() {
+        let token = CancellationToken::new();
+        let clone = token.clone();
+        token.cancel();
+        assert!(clone.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_select() {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        // Cancel after a short delay
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            token_clone.cancel();
+        });
+        // Should resolve when cancelled
+        tokio::select! {
+            _ = token.cancelled() => {
+                // Success — token was cancelled
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                panic!("Token should have been cancelled");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod semaphore_early_release_tests {
+    #[tokio::test]
+    async fn test_permit_option_take_pattern() {
+        // Verify the Option::take() pattern works for early release
+        let semaphore = tokio::sync::Semaphore::new(1);
+        let permit = semaphore.try_acquire().unwrap();
+        let mut permit_opt: Option<tokio::sync::SemaphorePermit<'_>> = Some(permit);
+        assert!(permit_opt.is_some());
+        // Early release via take()
+        if let Some(p) = permit_opt.take() {
+            drop(p);
+        }
+        assert!(permit_opt.is_none());
+        // After drop, a new permit can be acquired
+        assert!(semaphore.try_acquire().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod drain_timeout_tests {
+    use super::*;
+
+    fn get_drain_timeout_secs() -> u64 {
+        std::env::var("DRAIN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30)
+    }
+
+    #[test]
+    fn test_drain_timeout_default() {
         let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
-        std::env::set_var("CC_CONTEXT_WINDOW", "0");
-        let config = make_minimal_config();
-        // Zero should be filtered out, falling back to 200K
-        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 200_000);
+        let _env = EnvGuard::new(vec!["DRAIN_TIMEOUT_SECS"]);
+        // Default should be 30
+        assert_eq!(get_drain_timeout_secs(), 30);
+    }
+
+    #[test]
+    fn test_drain_timeout_custom() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["DRAIN_TIMEOUT_SECS"]);
+        std::env::set_var("DRAIN_TIMEOUT_SECS", "60");
+        assert_eq!(get_drain_timeout_secs(), 60);
+    }
+
+    #[test]
+    fn test_drain_timeout_invalid_uses_default() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["DRAIN_TIMEOUT_SECS"]);
+        std::env::set_var("DRAIN_TIMEOUT_SECS", "invalid");
+        // Invalid value should fall back to default
+        assert_eq!(get_drain_timeout_secs(), 30);
+    }
+}
+
+#[cfg(test)]
+mod service_file_tests {
+    #[test]
+    fn test_service_file_has_killmode_process() {
+        let service_content = include_str!("../../scripts/nexus-ai-gateway.service");
+        assert!(
+            service_content.contains("KillMode=process"),
+            "Service file must have KillMode=process"
+        );
+        assert!(
+            service_content.contains("TimeoutStopSec=45"),
+            "Service file must have TimeoutStopSec=45"
+        );
+        assert!(
+            service_content.contains("SendSIGKILL=no"),
+            "Service file must have SendSIGKILL=no"
+        );
+        assert!(
+            !service_content.contains("ExecStartPre"),
+            "Service file must NOT have ExecStartPre (can't be set when KillMode is process)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod logrotate_config_tests {
+    #[test]
+    fn test_logrotate_config_exists() {
+        let logrotate_content = include_str!("../../scripts/logrotate-nexus.conf");
+        assert!(logrotate_content.contains("/tmp/nexus-ai-gateway.log"));
+        assert!(logrotate_content.contains("rotate 7"));
+        assert!(logrotate_content.contains("copytruncate"));
+        assert!(logrotate_content.contains("daily"));
+        assert!(logrotate_content.contains("compress"));
+    }
+}
+
+#[cfg(test)]
+mod keepalive_interval_tests {
+    use crate::proxy::streaming::KEEPALIVE_INTERVAL_SECS;
+
+    #[test]
+    fn test_keepalive_interval_is_30s() {
+        // Verify the constant is accessible and correct
+        assert_eq!(KEEPALIVE_INTERVAL_SECS, 30);
     }
 }

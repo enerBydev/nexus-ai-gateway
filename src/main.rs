@@ -32,6 +32,18 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Global flag — true when server is draining for shutdown.
+/// /health endpoint returns 503 when this is true.
+/// Retry logic (S8) and config reload (S11) also check this flag.
+pub static IS_DRAINING: AtomicBool = AtomicBool::new(false);
+
+use tokio_util::sync::CancellationToken;
+
+/// Global cancellation token — cancelled on shutdown signal.
+/// All SSE streams monitor this token via tokio::select! to terminate gracefully.
+pub static SHUTDOWN_TOKEN: std::sync::LazyLock<CancellationToken> =
+    std::sync::LazyLock::new(CancellationToken::new);
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -269,6 +281,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
         loop {
             sighup.recv().await;
+            // S11: Skip config reload if server is draining for shutdown
+            if IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!("🛑 Server is draining — skipping SIGHUP config reload");
+                continue;
+            }
             tracing::info!("🔄 SIGHUP received — reloading config...");
             // v0.11.0 (HI-06): Skip if another reload is already in progress
             if reload_flag_sighup
@@ -355,6 +372,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 continue;
             }
             last_reload = std::time::Instant::now();
+            // S11: Skip config reload if server is draining for shutdown
+            if IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::debug!("🛑 Server is draining — skipping file watcher config reload");
+                reload_flag_watcher.store(false, std::sync::atomic::Ordering::SeqCst);
+                continue;
+            }
             tracing::info!("🔄 .env changed — auto-reloading config...");
             // v0.11.0 (HI-06): Skip if another reload is already in progress
             if reload_flag_watcher
@@ -389,18 +412,35 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     tracing::info!("Drain timeout: {}s", drain_timeout_secs);
 
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
-
-    if let Err(e) = server.await {
-        tracing::error!("Server error: {}", e);
+    let drain_timeout = tokio::time::Duration::from_secs(drain_timeout_secs);
+    tokio::select! {
+        result = server => {
+            if let Err(e) = result {
+                tracing::error!("Server error: {}", e);
+            }
+            tracing::info!("✅ Shutdown complete: all connections drained before timeout");
+        }
+        _ = tokio::time::sleep(drain_timeout) => {
+            tracing::warn!(
+                "⏱️ Drain timeout ({}s) exceeded — forcing shutdown ({} active connections)",
+                drain_timeout_secs,
+                proxy::ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
+            );
+        }
     }
-
-    tracing::info!("✅ Server shut down gracefully");
 
     Ok(())
 }
 
-async fn health_handler() -> &'static str {
-    "OK"
+async fn health_handler() -> Response {
+    if IS_DRAINING.load(Ordering::Relaxed) {
+        return Response::builder()
+            .status(503)
+            .header("content-type", "text/plain")
+            .body("Service Unavailable: draining for shutdown".into())
+            .unwrap();
+    }
+    Response::builder().status(200).header("content-type", "text/plain").body("OK".into()).unwrap()
 }
 
 /// Phase 4.5: Prometheus metrics endpoint
@@ -442,6 +482,12 @@ async fn shutdown_signal() {
             tracing::info!("🛑 SIGTERM received, draining connections...");
         },
     }
+
+    // Signal that server is draining — /health returns 503, retries fail-fast
+    IS_DRAINING.store(true, Ordering::Relaxed);
+    SHUTDOWN_TOKEN.cancel();
+    let active = proxy::ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+    tracing::info!("🔄 Draining {} active connections...", active);
 }
 
 /// Phase 12.2: Token count estimation endpoint
@@ -533,15 +579,36 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
         use std::process::Command;
         let output = Command::new("kill").arg(pid.to_string()).output()?;
 
-        if output.status.success() {
-            std::fs::remove_file(pid_file)?;
-            eprintln!("✓ Daemon stopped (PID: {})", pid);
-        } else {
+        if !output.status.success() {
             eprintln!("✗ Failed to stop daemon (PID: {})", pid);
             eprintln!(" Process may have already exited");
             std::fs::remove_file(pid_file)?;
             std::process::exit(1);
         }
+
+        // S10: Wait for the daemon to exit gracefully (up to 30s)
+        // This allows the daemon to drain active connections before we clean up
+        eprintln!("⏳ Waiting for daemon (PID: {}) to drain...", pid);
+        let start = std::time::Instant::now();
+        let max_wait = std::time::Duration::from_secs(30);
+        loop {
+            let still_running = std::path::Path::new(&format!("/proc/{}", pid)).exists();
+            if !still_running {
+                eprintln!(
+                    "✓ Daemon stopped gracefully (PID: {}, elapsed: {:.1}s)",
+                    pid,
+                    start.elapsed().as_secs_f64()
+                );
+                break;
+            }
+            if start.elapsed() > max_wait {
+                eprintln!("⚠️ Daemon did not exit after 30s — sending SIGKILL...");
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        std::fs::remove_file(pid_file)?;
     }
 
     #[cfg(not(unix))]
