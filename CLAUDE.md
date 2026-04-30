@@ -204,7 +204,7 @@ CI: `.github/workflows/ci.yml` → `.github/workflows/auto-version.yml` (auto-bu
 |----------|--------|-------------|
 | `/v1/messages` | POST | Main proxy endpoint (Anthropic Messages API) |
 | `/v1/messages/count_tokens` | POST | Token count estimation |
-| `/health` | GET | Health check (returns `OK`) |
+| `/health` | GET | Health check (`200 OK` normal, `503` during drain) |
 | `/metrics` | GET | Prometheus metrics |
 
 ## Port Convention

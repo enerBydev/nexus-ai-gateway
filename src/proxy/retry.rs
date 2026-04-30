@@ -119,7 +119,15 @@ pub(crate) async fn resilient_send(
                     max_retries,
                     delay
                 );
-                tokio::time::sleep(Duration::from_millis(delay)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = crate::SHUTDOWN_TOKEN.cancelled() => {
+                        tracing::warn!("Server is draining — aborting retry backoff");
+                        return Err(ProxyError::Upstream(
+                            "Server is shutting down — request not retried".to_string(),
+                        ));
+                    }
+                }
                 continue;
             }
             ErrorClass::Fixable { reason } => {
@@ -299,7 +307,15 @@ pub(crate) async fn resilient_send_raw(
                     max_retries,
                     delay
                 );
-                tokio::time::sleep(Duration::from_millis(delay)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = crate::SHUTDOWN_TOKEN.cancelled() => {
+                        tracing::warn!("Server is draining — aborting retry backoff");
+                        return Err(ProxyError::Upstream(
+                            "Server is shutting down — request not retried".to_string(),
+                        ));
+                    }
+                }
                 continue;
             }
             ErrorClass::Fixable { reason } => {

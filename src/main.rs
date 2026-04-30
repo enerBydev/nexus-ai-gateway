@@ -411,18 +411,22 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         std::env::var("DRAIN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
     tracing::info!("Drain timeout: {}s", drain_timeout_secs);
 
-    // CR4 fix: Drain timeout must only start AFTER the shutdown signal,
-    // not at boot time. We use a dedicated CancellationToken for the
-    // server's graceful shutdown, separate from SHUTDOWN_TOKEN (which
-    // cancels SSE streams). The flow is:
-    //   1. Server runs with graceful_shutdown triggered by server_shutdown_token
-    //   2. shutdown_signal() fires → sets IS_DRAINING, cancels SHUTDOWN_TOKEN
-    //   3. We then cancel server_shutdown_token → server stops accepting
-    //   4. Drain timeout starts → races against server completing
+    // CR4/CR8 fix: Server must be spawned immediately so it starts accepting
+    // connections. Drain timeout starts only AFTER the shutdown signal.
+    // We use a dedicated CancellationToken for the server's graceful shutdown,
+    // separate from SHUTDOWN_TOKEN (which cancels SSE streams). The flow is:
+    // 1. Server is spawned — begins serving immediately
+    // 2. shutdown_signal() fires → sets IS_DRAINING, cancels SHUTDOWN_TOKEN
+    // 3. We then cancel server_shutdown_token → server stops accepting
+    // 4. Drain timeout starts → races against server task completing
     let server_shutdown_token = tokio_util::sync::CancellationToken::new();
     let server_ct_for_graceful = server_shutdown_token.clone();
-    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-        server_ct_for_graceful.cancelled().await;
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                server_ct_for_graceful.cancelled().await;
+            })
+            .await
     });
 
     // Phase 1: Normal serving — wait for shutdown signal
@@ -432,14 +436,21 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     // Phase 2: Signal server to stop accepting new connections
     server_shutdown_token.cancel();
 
-    // Phase 3: Drain — race server completion against drain timeout
+    // Phase 3: Drain — race server task completion against drain timeout
     let drain_timeout = tokio::time::Duration::from_secs(drain_timeout_secs);
     tokio::select! {
-        result = server => {
-            if let Err(e) = result {
-                tracing::error!("Server error: {}", e);
+        result = server_handle => {
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!("✅ Shutdown complete: all connections drained before timeout");
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Server error: {}", e);
+                }
+                Err(e) => {
+                    tracing::error!("Server task failed: {}", e);
+                }
             }
-            tracing::info!("✅ Shutdown complete: all connections drained before timeout");
         }
         _ = tokio::time::sleep(drain_timeout) => {
             tracing::warn!(
@@ -612,7 +623,11 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
         let start = std::time::Instant::now();
         let max_wait = std::time::Duration::from_secs(30);
         loop {
-            let still_running = std::path::Path::new(&format!("/proc/{}", pid)).exists();
+            let still_running = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
             if !still_running {
                 eprintln!(
                     "✓ Daemon stopped gracefully (PID: {}, elapsed: {:.1}s)",
