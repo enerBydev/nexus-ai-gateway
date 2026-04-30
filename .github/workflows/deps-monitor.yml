@@ -1,0 +1,79 @@
+---
+name: Dependencies Monitor
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-wiremock-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check wiremock version
+        run: |
+          response=$(curl -s -H "User-Agent: NEXUS-AI-Gateway deps monitor" https://crates.io/api/v1/crates/wiremock)
+          latest_version=$(echo "$response" | jq -r '.max_version')
+          echo "Latest stable wiremock version: $latest_version"
+          echo "latest_version=$latest_version" >> $GITHUB_ENV
+
+      - name: Check for existing issue
+        run: |
+          existing_issue=$(gh issue list --search "chore\\(deps\\): wiremock.*available for re-evaluation" --state open --json title,number --jq '.[] | .number' | head -n 1)
+          if [ -n "$existing_issue" ]; then
+            echo "issue_exists=true" >> $GITHUB_ENV
+          else
+            echo "issue_exists=false" >> $GITHUB_ENV
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Create issue if new version is greater than 0.6.5
+        if: env.issue_exists != 'true'
+        run: |
+          IFS='.' read -ra LATEST <<< "$latest_version"
+          LATEST_MAJOR=${LATEST[0]:-0}
+          LATEST_MINOR=${LATEST[1]:-0}
+          LATEST_PATCH=${LATEST[2]:-0}
+
+          TARGET_MAJOR=0
+          TARGET_MINOR=6
+          TARGET_PATCH=5
+
+          VERSION_GREATER=false
+          if [[ $LATEST_MAJOR -gt $TARGET_MAJOR ]]; then
+            VERSION_GREATER=true
+          elif [[ $LATEST_MAJOR -eq $TARGET_MAJOR && $LATEST_MINOR -gt $TARGET_MINOR ]]; then
+            VERSION_GREATER=true
+          elif [[ $LATEST_MAJOR -eq $TARGET_MAJOR && $LATEST_MINOR -eq $TARGET_MINOR && $LATEST_PATCH -gt $TARGET_PATCH ]]; then
+            VERSION_GREATER=true
+          fi
+
+          if [[ "$VERSION_GREATER" == "true" ]]; then
+            gh issue create \
+              --title "chore(deps): wiremock $latest_version available for re-evaluation (pinned at 0.6.4)" \
+              --body "A new version of wiremock ($latest_version) is available on crates.io.
+
+              Our project is currently pinned to version 0.6.4 due to the let_chains feature requirement in 0.6.5 that requires unstable Rust features.
+
+              This issue is to track that we should re-evaluate if we can now upgrade to this new version.
+
+              Related to:
+              - PR #32 (closed - required unstable let_chains)
+              - Commit 4df48f1 (pin to 0.6.4)
+
+              Please check if this new version:
+              - Compiles on stable Rust
+              - No longer requires the unstable let_chains feature
+              - Can be integrated without issues" \
+              --label "dependencies,automated"
+          else
+            echo "No new version to report or version is not greater than 0.6.5"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
