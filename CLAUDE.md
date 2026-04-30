@@ -158,6 +158,7 @@ These behaviors are intentional and should not be changed:
 | `MODEL_LIMIT_OVERRIDES` | (none) | Override model context limits: `model_id:tokens` |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed CORS origins |
 | `NIM_PROMPT_CACHE_ENABLED` | `false` | Enable proxy-side prompt cache for NIM |
+| `DRAIN_TIMEOUT_SECS` | `30` | Max graceful drain duration before forced shutdown |
 
 Model mapping: `MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>` (hyphens → underscores in model IDs)
 

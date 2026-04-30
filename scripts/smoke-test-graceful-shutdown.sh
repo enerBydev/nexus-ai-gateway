@@ -38,15 +38,21 @@ NC='\033[0m' # No Color
 
 # ─── State ───────────────────────────────────────────────────────────────────
 PID=""
+CARGO_PID=""
 PASSED=0
 FAILED=0
 
-# ─── Cleanup ─────────────────────────────────────────────────────────────────
 cleanup() {
     if [[ -n "${PID}" ]] && kill -0 "${PID}" 2>/dev/null; then
-        echo -e "${YELLOW}[CLEANUP]${NC} Killing leftover process ${PID}"
+        echo -e "${YELLOW}[CLEANUP]${NC} Killing leftover gateway process ${PID}"
         kill -9 "${PID}" 2>/dev/null || true
         wait "${PID}" 2>/dev/null || true
+    fi
+    # CR3: Also clean up the cargo launcher process if it is still running
+    if [[ -n "${CARGO_PID:-}" ]] && kill -0 "${CARGO_PID}" 2>/dev/null; then
+        echo -e "${YELLOW}[CLEANUP]${NC} Killing leftover cargo launcher ${CARGO_PID}"
+        kill -9 "${CARGO_PID}" 2>/dev/null || true
+        wait "${CARGO_PID}" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -92,12 +98,16 @@ echo ""
 echo -e "${YELLOW}[TEST 1]${NC} Starting NEXUS-AI-Gateway..."
 
 if [[ "${BINARY}" == "cargo-run" ]]; then
+    # CR3: cargo run spawns a child process — $! gives cargo PID, not gateway PID.
+    # We launch cargo in background, then resolve the real gateway PID after startup.
     PORT="${PORT}" cargo run 2>/dev/null &
+    CARGO_PID=$!
+    info "Cargo launcher PID: ${CARGO_PID}"
 else
     PORT="${PORT}" "${BINARY}" 2>/dev/null &
+    PID=$!
+    info "Started with PID ${PID}"
 fi
-PID=$!
-info "Started with PID ${PID}"
 
 # Wait for server to become healthy
 elapsed=0
@@ -115,6 +125,21 @@ if [[ "${status}" == "200" ]]; then
 else
     fail "Server did not become healthy within ${STARTUP_TIMEOUT}s (last status: ${status})"
     exit 1
+fi
+# CR3: When using cargo-run, resolve the actual gateway PID from the listening port.
+# $! gives cargo's PID, not the gateway process. We find the real PID via ss/lsof.
+if [[ "${BINARY}" == "cargo-run" ]]; then
+    GATEWAY_PID=$(ss -tlnp "sport = :${PORT}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1)
+    if [[ -z "${GATEWAY_PID}" ]]; then
+        GATEWAY_PID=$(lsof -ti :${PORT} 2>/dev/null | head -1)
+    fi
+    if [[ -n "${GATEWAY_PID}" ]]; then
+        PID="${GATEWAY_PID}"
+        info "Resolved gateway PID: ${PID} (cargo launcher: ${CARGO_PID})"
+    else
+        warn "Could not resolve gateway PID — SIGTERM will target cargo launcher ${CARGO_PID}"
+        PID="${CARGO_PID}"
+    fi
 fi
 
 # ─── Test 2: Verify /health returns 200 during normal operation ─────────────

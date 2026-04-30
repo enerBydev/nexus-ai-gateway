@@ -411,7 +411,28 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         std::env::var("DRAIN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
     tracing::info!("Drain timeout: {}s", drain_timeout_secs);
 
-    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    // CR4 fix: Drain timeout must only start AFTER the shutdown signal,
+    // not at boot time. We use a dedicated CancellationToken for the
+    // server's graceful shutdown, separate from SHUTDOWN_TOKEN (which
+    // cancels SSE streams). The flow is:
+    //   1. Server runs with graceful_shutdown triggered by server_shutdown_token
+    //   2. shutdown_signal() fires → sets IS_DRAINING, cancels SHUTDOWN_TOKEN
+    //   3. We then cancel server_shutdown_token → server stops accepting
+    //   4. Drain timeout starts → races against server completing
+    let server_shutdown_token = tokio_util::sync::CancellationToken::new();
+    let server_ct_for_graceful = server_shutdown_token.clone();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        server_ct_for_graceful.cancelled().await;
+    });
+
+    // Phase 1: Normal serving — wait for shutdown signal
+    // (sets IS_DRAINING=true, cancels SHUTDOWN_TOKEN for SSE streams)
+    shutdown_signal().await;
+
+    // Phase 2: Signal server to stop accepting new connections
+    server_shutdown_token.cancel();
+
+    // Phase 3: Drain — race server completion against drain timeout
     let drain_timeout = tokio::time::Duration::from_secs(drain_timeout_secs);
     tokio::select! {
         result = server => {
@@ -431,7 +452,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     Ok(())
 }
-
 async fn health_handler() -> Response {
     if IS_DRAINING.load(Ordering::Relaxed) {
         return Response::builder()

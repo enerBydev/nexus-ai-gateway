@@ -198,24 +198,24 @@ pub(crate) fn create_sse_stream(
                             let max_consecutive = (CHUNK_TIMEOUT_SECS / KEEPALIVE_INTERVAL_SECS).max(1);
                             if consecutive_keepalives >= max_consecutive as u32 {
                                 tracing::error!("⏰ Stream chunk timeout after {}s — emitting error event", CHUNK_TIMEOUT_SECS);
+                                // CR7: Emit error event unconditionally — client needs it even before message_start
+                                let error_event = json!({
+                                    "type": "error",
+                                    "error": {
+                                        "type": "api_error",
+                                        "message": format!(
+                                            "Stream timeout: upstream stopped responding after {}s. The response may be incomplete.",
+                                            CHUNK_TIMEOUT_SECS
+                                        )
+                                    }
+                                });
+                                yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
                                 if has_sent_message_start {
                                     // Close any open content blocks
                                     if current_block_type.is_some() {
                                         let stop_block = json!({"type": "content_block_stop", "index": content_index});
                                         yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&stop_block).unwrap_or_default())));
                                     }
-                                    // Emit error event — CC treats api_error as retryable
-                                    let error_event = json!({
-                                        "type": "error",
-                                        "error": {
-                                            "type": "api_error",
-                                            "message": format!(
-                                                "Stream timeout: upstream stopped responding after {}s. The response may be incomplete.",
-                                                CHUNK_TIMEOUT_SECS
-                                            )
-                                        }
-                                    });
-                                    yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
                                     // Emit message_stop to cleanly terminate the stream
                                     let stop_event = json!({"type": "message_stop"});
                                     yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n", serde_json::to_string(&stop_event).unwrap_or_default())));
@@ -232,21 +232,21 @@ pub(crate) fn create_sse_stream(
             _ = shutdown_token.cancelled() => {
                 // Shutdown signal — emit graceful error event before closing
                 tracing::info!("🛑 SSE stream: shutdown signal received — emitting graceful error");
+                // CR7: Emit error event unconditionally — client needs it even before message_start
+                let error_event = json!({
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "Server is shutting down for restart. Please retry — your request will be processed by the new instance."
+                    }
+                });
+                yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
                 if has_sent_message_start {
                     // Close any open content block
                     if current_block_type.is_some() {
                         let stop_block = json!({"type": "content_block_stop", "index": content_index});
                         yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&stop_block).unwrap_or_default())));
                     }
-                    // Emit api_error — CC SDK recognizes this as retryable
-                    let error_event = json!({
-                        "type": "error",
-                        "error": {
-                            "type": "api_error",
-                            "message": "Server is shutting down for restart. Please retry — your request will be processed by the new instance."
-                        }
-                    });
-                    yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
                     // Emit message_stop for clean stream termination
                     let stop_event = json!({"type": "message_stop"});
                     yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n", serde_json::to_string(&stop_event).unwrap_or_default())));

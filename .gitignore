@@ -17,10 +17,6 @@
 .DS_Store
 Thumbs.db
 
-# Environment files (contain secrets)
-.env
-.env.*
-*.env.local
 
 # Logs
 *.log
@@ -33,9 +29,11 @@ Thumbs.db
 # Documentation build
 AUDIT_REPORT_NIM_V4.md
 /docs/
-.*
-!.gitignore
-!.env.example
+# Dotfiles (specific — avoid blanket .* which blocks .github/, .cargo/, etc.)
+.env
+.env.*
+*.env.local
+.nexus-ai-gateway.env
 
 # Temporary files
 /tmp/

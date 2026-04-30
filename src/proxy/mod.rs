@@ -46,10 +46,9 @@ struct ConnectionGuard;
 impl ConnectionGuard {
     fn new() -> Self {
         ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
-        tracing::debug!(
-            " Connection opened (active: {})",
-            ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
-        );
+        let count = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+        tracing::debug!(" Connection opened (active: {})", count);
+        gauge!("nexus_active_connections").set(count as f64);
         Self
     }
 }
@@ -57,10 +56,9 @@ impl ConnectionGuard {
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
-        tracing::debug!(
-            " Connection closed (active: {})",
-            ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
-        );
+        let count = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+        tracing::debug!(" Connection closed (active: {})", count);
+        gauge!("nexus_active_connections").set(count as f64);
     }
 }
 
@@ -171,7 +169,6 @@ pub async fn proxy_handler(
 ) -> ProxyResult<Response> {
     // S3: Track active connections
     let _conn_guard = ConnectionGuard::new();
-    gauge!("nexus_active_connections").set(ACTIVE_CONNECTIONS.load(Ordering::Relaxed) as f64);
 
     // Phase 4.5: Capture request metrics
     let start = std::time::Instant::now();
