@@ -1,5 +1,4 @@
-# CLAUDE.md
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# CLAUDE.md This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Development Commands
 
@@ -9,22 +8,31 @@ cargo build --release          # Production build (~7 MB binary)
 cargo build                    # Debug build
 
 # Testing
-cargo test                     # Run all tests (95 unit + 4 integration + 3 version sync)
+cargo test                     # Run all tests
 cargo test tokenizer_test      # Run specific test module by path
 cargo test -- --nocapture      # Show println! output
+cargo test --test integration  # Integration tests only (wiremock)
 
 # Linting & Formatting
 cargo fmt --check              # Check formatting
-cargo clippy -- -D warnings    # Lint (warnings as errors)
+cargo clippy -- -D warnings   # Lint (warnings as errors)
 
 # Security Audit
 cargo audit                    # Check for CVEs in dependencies
 
-# Task Runner (via Taskfile.yaml)
+# Task Runner (via Taskfile.yaml — preferred)
+task check                     # Full check: fmt + lint + test
 task test                      # Run all tests
 task version-check             # Verify VERSION/Cargo.toml/lib.rs sync
-task check                     # Run fmt-check + lint + test
-task install                   # Build and install to ~/.cargo/bin
+task install                   # Build + install to ~/.cargo/bin
+task sync-binary               # Install to ~/.cargo/bin AND ~/.local/bin with md5 verify
+task setup                     # Full project setup (build, hooks, service)
+task service-status            # Check systemd service status
+task service-logs              # Follow service logs
+task bump-patch                # Bump PATCH version
+task bump-minor                # Bump MINOR version
+task auto-version              # Auto-detect bump from conventional commits
+task full-release              # One-command release (auto-bump + commit + tag + push)
 ```
 
 ## Architecture
@@ -33,29 +41,29 @@ task install                   # Build and install to ~/.cargo/bin
 
 ```
 Claude Code → POST /v1/messages
-                    ↓
-              proxy::proxy_handler (src/proxy/mod.rs)
-                    ↓
-              ├─ validate_request (pre-flight checks)
-              ├─ transform::anthropic_to_openai (bidirectional conversion)
-              ├─ discovery::get_context_limit (caches model capabilities)
-              ├─ tokenizer::estimate_from_openai_request (tiktoken pre-check)
-              └─ concurrency::ModelSemaphores (per-model rate limiting)
-                    ↓
-         streaming::handle_streaming OR non_streaming::handle_non_streaming
-                    ↓
-              ├─ retry::execute_with_retry (3-layer classification)
-              ├─ classify::classify_error (L1/L2/L3 error detection)
-              └─ circuit_breaker::CircuitBreaker (optional)
-                    ↓
-              Upstream OpenAI-compatible API
-                    ↓
-              SSE Stream → transform back to Anthropic format
+↓
+proxy::proxy_handler (src/proxy/mod.rs)
+↓
+├─ validate_request (pre-flight checks)
+├─ transform::anthropic_to_openai (bidirectional conversion)
+├─ discovery::get_context_limit (caches model capabilities)
+├─ tokenizer::estimate_from_openai_request (tiktoken pre-check)
+└─ concurrency::ModelSemaphores (per-model rate limiting)
+↓
+streaming::handle_streaming OR non_streaming::handle_non_streaming
+↓
+├─ retry::execute_with_retry (3-layer classification)
+├─ classify::classify_error (L1=status, L2=pattern, L3=structural)
+└─ circuit_breaker::CircuitBreaker (optional)
+↓
+Upstream OpenAI-compatible API
+↓
+SSE Stream → transform back to Anthropic format
 ```
 
 ### Module Organization
 
-The `src/proxy/` directory contains 10 modules (~2382 LOC total) decomposed from the original monolithic proxy.rs:
+**Proxy layer** — `src/proxy/` (~2382 LOC total, decomposed from monolithic proxy.rs):
 
 | Module | Purpose |
 |--------|---------|
@@ -63,21 +71,47 @@ The `src/proxy/` directory contains 10 modules (~2382 LOC total) decomposed from
 | `streaming.rs` | SSE streaming with anthropic.keep-alive |
 | `non_streaming.rs` | Synchronous response handling |
 | `retry.rs` | 3-layer retry with exponential backoff |
-| `classify.rs` | Error classification (L1=status, L2=pattern, L3=structural) |
-| `rate_limit.rs` | Rate limit detection (L1/L2/L3) |
+| `classify.rs` | Error classification (L1/L2/L3) |
+| `rate_limit.rs` | Rate limit detection |
 | `concurrency.rs` | Per-model semaphores, circuit breaker |
 | `discovery.rs` | Model capability probing with caching |
 | `overflow_tracker.rs` | Context window overflow tracking |
 | `error_types.rs` | Upstream error structures |
+
+**Models layer** — `src/models/` (API type definitions):
+
+| Module | Purpose |
+|--------|---------|
+| `anthropic.rs` | Anthropic request/response types, SSE events, Usage with cache token fields |
+| `openai.rs` | OpenAI-compatible request/response types |
+| `mod.rs` | Re-exports |
+
+**Other modules** — `src/` root:
+
+| Module | Purpose |
+|--------|---------|
+| `transform.rs` | Bidirectional Anthropic↔OpenAI conversion, `clean_schema`, thinking sanitization |
+| `config.rs` | Config loading from env/.env, hot-reload, `SharedConfig = Arc<ArcSwap<Config>>` |
+| `circuit_breaker.rs` | Circuit breaker (Closed/Open/HalfOpen states) — currently default-off |
+| `prompt_cache.rs` | SHA-256 content hashing, TTL+LRU proxy-side cache (for NIM KV-cache reuse) |
+| `tokenizer.rs` | Token estimation via tiktoken cl100k_base |
+| `web_fetch.rs` | WebFetch tool interception — fetches URLs locally, strips HTML |
+| `scan.rs` | NIM model discovery via `/v1/models` endpoint |
+| `setup.rs` | First-time setup wizard |
+| `str_utils.rs` | UTF-8 safe string truncation (prevents panic on multi-byte chars) |
+| `watcher.rs` | File watcher for .env hot-reload |
+| `cli.rs` | CLI argument parsing (clap) |
 
 ### Key Dependencies
 
 - `axum 0.7` — HTTP server + middleware
 - `tokio 1.42` — Async runtime
 - `reqwest 0.12` — HTTP client (pool_max_idle_per_host: 50, tcp_keepalive: 60s)
-- `arc-swap 1.x` — Lock-free config reads via SharedConfig = Arc<ArcSwap<Config>>
+- `arc-swap 1.x` — Lock-free config reads via `SharedConfig = Arc<ArcSwap<Config>>`
 - `tiktoken-rs 0.11` — Token estimation using cl100k_base
 - `metrics-exporter-prometheus 0.18` — Prometheus metrics endpoint
+- `clap 4` — CLI argument parsing
+- `dotenvy` — .env file loading
 
 ## Critical Design Conventions
 
@@ -107,19 +141,40 @@ These behaviors are intentional and should not be changed:
 
 9. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
 
+## Key Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `UPSTREAM_BASE_URL` | (required) | Upstream API endpoint URL |
+| `UPSTREAM_API_KEY` | (required) | API key for upstream service |
+| `NEXUS_UPSTREAM_TYPE` | `nim` | Upstream type: `anthropic`, `nim`, `openai`, `openrouter` |
+| `PORT` | `8315` | Server port |
+| `DEBUG` | `false` | Enable debug logging |
+| `VERBOSE` | `false` | Full request/response logging |
+| `CC_CONTEXT_WINDOW` | `200000` | Context window size for auto-compact calibration |
+| `CC_OVERFLOW_THRESHOLD_PCT` | `80` | Context overflow threshold (50-95%) |
+| `PROBE_CACHE_TTL_SECS` | `3600` | Model capability probe cache TTL |
+| `DISABLE_PROBING` | `false` | Disable runtime model probing |
+| `MODEL_LIMIT_OVERRIDES` | (none) | Override model context limits: `model_id:tokens` |
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed CORS origins |
+| `NIM_PROMPT_CACHE_ENABLED` | `false` | Enable proxy-side prompt cache for NIM |
+| `DRAIN_TIMEOUT_SECS` | `30` | Max graceful drain duration before forced shutdown |
+
+Model mapping: `MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>` (hyphens → underscores in model IDs)
+
 ## Testing Strategy
 
-- **Unit tests**: In `#[cfg(test)]` modules within source files (95 tests)
-- **Integration tests**: `tests/integration_test.rs` using wiremock (4 tests)
-- **Version sync tests**: `tests/version_sync.rs` validates 3-file sync (3 tests)
+- **Unit tests**: In `#[cfg(test)]` modules within source files
+- **Integration tests**: `tests/integration_test.rs` using wiremock
+- **Version sync tests**: `tests/version_sync.rs` validates 3-file sync
 
 Run specific module tests:
 ```bash
-cargo test tokenizer_test      # src/tokenizer_test.rs
-cargo test validation_tests    # src/proxy/mod.rs::validation_tests
-cargo test threshold_tests     # src/proxy/mod.rs::threshold_tests
-cargo test error_test          # src/error_test.rs
-cargo test --test integration  # tests/integration_test.rs only
+cargo test tokenizer_test        # src/tokenizer_test.rs
+cargo test validation_tests      # src/proxy/mod.rs::validation_tests
+cargo test threshold_tests       # src/proxy/mod.rs::threshold_tests
+cargo test error_test            # src/error_test.rs
+cargo test --test integration    # tests/integration_test.rs only
 ```
 
 ## Version Management
@@ -131,15 +186,31 @@ Three files must stay synchronized:
 
 Run `task version-check` to verify. CI enforces this on every push.
 
+## Git Hooks & CI
+
+Hooks are in `scripts/hooks/` (portable, not in `.git/hooks/`):
+- **pre-commit**: `cargo fmt --check`
+- **commit-msg**: Conventional commits format validation
+- **pre-push**: Version sync + `cargo test` + `cargo clippy` + `cargo audit` (main branch only)
+- **post-merge**: Auto-rebuild + install + restart systemd service (main branch only, version change detected)
+
+Setup: `task setup-hooks` or `bash scripts/setup-hooks.sh`
+
+CI: `.github/workflows/ci.yml` → `.github/workflows/auto-version.yml` (auto-bumps version on conventional commits, creates GitHub Release with binary)
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/messages` | POST | Main proxy endpoint (Anthropic Messages API) |
 | `/v1/messages/count_tokens` | POST | Token count estimation |
-| `/health` | GET | Health check (returns `OK`) |
+| `/health` | GET | Health check (`200 OK` normal, `503` during drain) |
 | `/metrics` | GET | Prometheus metrics |
 
 ## Port Convention
 
 Default port **8315**: N(78) + E(69) + U(85) + S(83) = 315 → 8315
+
+## Documentation Repo
+
+Documentation, audit reports, and issue tracking are in a **separate private repo**: `enerBydev/nexus-ai-gateway_docs` (auto-synced via `nexus-docs-sync.sh` — auto-commit on changes, daily push at 00:00).

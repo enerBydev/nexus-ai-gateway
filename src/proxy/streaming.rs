@@ -10,6 +10,7 @@ use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::error::ProxyResult;
@@ -19,6 +20,9 @@ use crate::proxy::retry::{resilient_send_raw, CHUNK_TIMEOUT_SECS, MAX_SSE_BUFFER
 use crate::tokenizer;
 use crate::transform;
 use crate::web_fetch;
+
+/// Interval for anthropic.keep-alive SSE events (prevents CC timeout on slow upstreams)
+pub(crate) const KEEPALIVE_INTERVAL_SECS: u64 = 30;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_streaming(
@@ -33,6 +37,7 @@ pub(crate) async fn handle_streaming(
     context_limit: u32,
     cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
+    shutdown_token: CancellationToken,
 ) -> ProxyResult<Response> {
     let permit = acquire_model_permit(
         &model_semaphores,
@@ -75,6 +80,7 @@ pub(crate) async fn handle_streaming(
         context_limit,
         cc_context_window, // Issue #28: resolved dynamically
         _circuit_breaker,
+        shutdown_token,
     );
 
     let mut headers = HeaderMap::new();
@@ -86,6 +92,7 @@ pub(crate) async fn handle_streaming(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(unused_assignments)]
 pub(crate) fn create_sse_stream(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     original_model: String,
@@ -97,6 +104,7 @@ pub(crate) fn create_sse_stream(
     context_limit: u32,
     cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
+    shutdown_token: CancellationToken,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         tracing::debug!(
@@ -138,7 +146,7 @@ pub(crate) fn create_sse_stream(
             }
         };
 
-        let _ = &_permit;
+        let mut permit_opt: Option<tokio::sync::OwnedSemaphorePermit> = Some(_permit);
 
         let mut buffer = String::with_capacity(8192);
         let mut message_id = None;
@@ -163,42 +171,93 @@ pub(crate) fn create_sse_stream(
 
         tokio::pin!(stream);
 
-        let chunk_timeout = Duration::from_secs(CHUNK_TIMEOUT_SECS);
-        loop {
-            let chunk = match tokio::time::timeout(chunk_timeout, stream.next()).await {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break,
-                Err(_) => {
-                    tracing::error!("⏰ Stream chunk timeout after {}s — emitting error event", CHUNK_TIMEOUT_SECS);
-                    if has_sent_message_start {
-                        // Close any open content blocks
-                        if current_block_type.is_some() {
-                            let stop_block = json!({"type": "content_block_stop", "index": content_index});
-                            yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n",
-                                serde_json::to_string(&stop_block).unwrap_or_default())));
-                        }
-                        // Emit error event instead of synthetic success
-                        // CC treats api_error as retryable — will retry the request
-                        let error_event = json!({
-                            "type": "error",
-                            "error": {
-                                "type": "api_error",
-                                "message": format!(
-                                    "Stream timeout: upstream stopped responding after {}s. The response may be incomplete.",
-                                    CHUNK_TIMEOUT_SECS
-                                )
-                            }
-                        });
-                        yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n",
-                            serde_json::to_string(&error_event).unwrap_or_default())));
-                        // Emit message_stop to cleanly terminate the stream
-                        let stop_event = json!({"type": "message_stop"});
-                        yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n",
-                            serde_json::to_string(&stop_event).unwrap_or_default())));
+    let mut last_keepalive = std::time::Instant::now();
+    // Use min of KEEPALIVE_INTERVAL and CHUNK_TIMEOUT for the select timeout
+    // This allows us to emit keep-alive even when CHUNK_TIMEOUT is 120s
+    let keepalive_check_interval = Duration::from_secs(KEEPALIVE_INTERVAL_SECS.min(CHUNK_TIMEOUT_SECS));
+    let mut consecutive_keepalives: u32 = 0;
+
+    loop {
+        let chunk = tokio::select! {
+            chunk = tokio::time::timeout(keepalive_check_interval, stream.next()) => {
+                match chunk {
+                    Ok(Some(c)) => {
+                        consecutive_keepalives = 0;
+                        c
                     }
-                    break;
+                    Ok(None) => break,
+                    Err(_) => {
+                        // Timeout — check if we need keep-alive or if it's a real timeout
+                        if last_keepalive.elapsed().as_secs() >= KEEPALIVE_INTERVAL_SECS {
+                            // Emit keep-alive event to prevent CC timeout
+                            tracing::trace!("📡 Sending anthropic.keep-alive SSE event");
+                            yield Ok(Bytes::from("event: anthropic.keep-alive\ndata: {}\n\n"));
+                            last_keepalive = std::time::Instant::now();
+                            consecutive_keepalives += 1;
+                            // If too many consecutive keepalives, the upstream is truly dead
+                            let max_consecutive = (CHUNK_TIMEOUT_SECS / KEEPALIVE_INTERVAL_SECS).max(1);
+                            if consecutive_keepalives >= max_consecutive as u32 {
+                                tracing::error!("⏰ Stream chunk timeout after {}s — emitting error event", CHUNK_TIMEOUT_SECS);
+                                // CR7: Emit error event unconditionally — client needs it even before message_start
+                                let error_event = json!({
+                                    "type": "error",
+                                    "error": {
+                                        "type": "api_error",
+                                        "message": format!(
+                                            "Stream timeout: upstream stopped responding after {}s. The response may be incomplete.",
+                                            CHUNK_TIMEOUT_SECS
+                                        )
+                                    }
+                                });
+                                yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
+                                if has_sent_message_start {
+                                    // Close any open content blocks
+                                    if current_block_type.is_some() {
+                                        let stop_block = json!({"type": "content_block_stop", "index": content_index});
+                                        yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&stop_block).unwrap_or_default())));
+                                    }
+                                    // Emit message_stop to cleanly terminate the stream
+                                    let stop_event = json!({"type": "message_stop"});
+                                    yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n", serde_json::to_string(&stop_event).unwrap_or_default())));
+                                }
+                                break;
+                            }
+                            continue; // ← Keep listening, don't break
+                        }
+                        // Short timeout but not enough for keep-alive — continue listening
+                        continue;
+                    }
                 }
-            };
+            }
+            _ = shutdown_token.cancelled() => {
+                // Shutdown signal — emit graceful error event before closing
+                tracing::info!("🛑 SSE stream: shutdown signal received — emitting graceful error");
+                // CR7: Emit error event unconditionally — client needs it even before message_start
+                let error_event = json!({
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "Server is shutting down for restart. Please retry — your request will be processed by the new instance."
+                    }
+                });
+                yield Ok(Bytes::from(format!("event: error\ndata: {}\n\n", serde_json::to_string(&error_event).unwrap_or_default())));
+                if has_sent_message_start {
+                    // Close any open content block
+                    if current_block_type.is_some() {
+                        let stop_block = json!({"type": "content_block_stop", "index": content_index});
+                        yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&stop_block).unwrap_or_default())));
+                    }
+                    // Emit message_stop for clean stream termination
+                    let stop_event = json!({"type": "message_stop"});
+                    yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n", serde_json::to_string(&stop_event).unwrap_or_default())));
+                }
+                break;
+            }
+        };
+
+        // Reset keepalive timer when we receive a real chunk
+        last_keepalive = std::time::Instant::now();
+        consecutive_keepalives = 0;
 
             match chunk {
                 Ok(bytes) => {
@@ -265,6 +324,14 @@ pub(crate) fn create_sse_stream(
                                         );
                                         accumulated_input_tokens = usage.prompt_tokens;
                                         accumulated_output_tokens = usage.completion_tokens;
+
+                                        // S7: Release semaphore permit early once stream has output tokens
+                                        if accumulated_output_tokens > 0 {
+                                            if let Some(p) = permit_opt.take() {
+                                                drop(p);
+                                                tracing::debug!("🔓 Semaphore permit released — stream has output tokens");
+                                            }
+                                        }
 
                                         // FIX 2: Check if context is nearly full AFTER successful retry.
                                         // When Fixable retry succeeds (reducing max_tokens), the request
@@ -337,6 +404,15 @@ pub(crate) fn create_sse_stream(
                                             yield Ok(Bytes::from(sse_data));
                                             has_sent_message_start = true;
                                             tracing::info!("📊 message_start: estimated_input={}", estimated_input_tokens);
+
+                            // S7: Release semaphore permit early once stream is warm
+                            // This allows new requests to start while this stream continues flowing
+                            if accumulated_output_tokens > 0 {
+                                if let Some(p) = permit_opt.take() {
+                                    drop(p);
+                                    tracing::debug!("🔓 Semaphore permit released — stream is flowing");
+                                }
+                            }
                                         }
 
                                         let reasoning_val = choice.delta.reasoning_content.as_ref()

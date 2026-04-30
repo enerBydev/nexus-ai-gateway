@@ -29,6 +29,7 @@ serde_json = "1.0"
 # Async utilities
 futures = "0.3"
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Observability
 tracing = "0.1"

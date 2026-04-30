@@ -30,10 +30,18 @@ pub(crate) async fn resilient_send(
     loop {
         attempt += 1;
 
+        // S8: Fail-fast when server is draining — skip retries only, not first attempt
+        if attempt > 1 && crate::IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("Server is draining — skipping retry (attempt {})", attempt);
+            return Err(crate::error::ProxyError::Upstream(
+                "Server is shutting down — request not retried".to_string(),
+            ));
+        }
+
         // Circuit breaker check
         let (allowed, generation) = circuit_breaker.is_allowed().await;
         if !allowed {
-            tracing::warn!("⚡ Circuit breaker OPEN — rejecting request (upstream unhealthy)");
+            tracing::warn!("Circuit breaker OPEN — rejecting request (upstream unhealthy)");
             return Err(ProxyError::Upstream(
                 "Service unavailable: circuit breaker open".to_string(),
             ));
@@ -111,7 +119,15 @@ pub(crate) async fn resilient_send(
                     max_retries,
                     delay
                 );
-                tokio::time::sleep(Duration::from_millis(delay)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = crate::SHUTDOWN_TOKEN.cancelled() => {
+                        tracing::warn!("Server is draining — aborting retry backoff");
+                        return Err(ProxyError::Upstream(
+                            "Server is shutting down — request not retried".to_string(),
+                        ));
+                    }
+                }
                 continue;
             }
             ErrorClass::Fixable { reason } => {
@@ -204,10 +220,18 @@ pub(crate) async fn resilient_send_raw(
     loop {
         attempt += 1;
 
+        // S8: Fail-fast when server is draining — skip retries only, not first attempt
+        if attempt > 1 && crate::IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("Server is draining — skipping retry (attempt {})", attempt);
+            return Err(crate::error::ProxyError::Upstream(
+                "Server is shutting down — request not retried".to_string(),
+            ));
+        }
+
         // Circuit breaker check
         let (allowed, generation) = circuit_breaker.is_allowed().await;
         if !allowed {
-            tracing::warn!("⚡ Circuit breaker OPEN — rejecting request (upstream unhealthy)");
+            tracing::warn!("Circuit breaker OPEN — rejecting request (upstream unhealthy)");
             return Err(ProxyError::Upstream(
                 "Service unavailable: circuit breaker open".to_string(),
             ));
@@ -283,7 +307,15 @@ pub(crate) async fn resilient_send_raw(
                     max_retries,
                     delay
                 );
-                tokio::time::sleep(Duration::from_millis(delay)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = crate::SHUTDOWN_TOKEN.cancelled() => {
+                        tracing::warn!("Server is draining — aborting retry backoff");
+                        return Err(ProxyError::Upstream(
+                            "Server is shutting down — request not retried".to_string(),
+                        ));
+                    }
+                }
                 continue;
             }
             ErrorClass::Fixable { reason } => {
