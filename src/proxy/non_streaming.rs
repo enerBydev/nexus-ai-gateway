@@ -40,7 +40,7 @@ pub(crate) async fn handle_non_streaming(
 ) -> ProxyResult<axum::response::Response> {
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
-    // ╚════════════════════════════════���══════════╝
+    // ╚═══════════════════════════════════════════╝
     let _permit = acquire_model_permit(
         &model_semaphores,
         &openai_req.model,
