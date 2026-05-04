@@ -309,6 +309,7 @@ pub(crate) fn create_sse_stream(
                                         // completes but context keeps growing. If scaled tokens exceed the
                                         // configurable threshold (default 90%) of CC's context window, emit
                                         // an error event so CC shows "Use /compact".
+                                        // Only .input needed; output=0 because input/output scaling are independent
                                         let scaled_for_check = scale_token_usage(usage.prompt_tokens, 0, upstream_ctx, cc_ctx, "streaming-overflow").input;
                                         let context_threshold_pct = crate::proxy::get_overflow_threshold_pct();
                                         let context_threshold = cc_context_window * context_threshold_pct / 100;
@@ -362,6 +363,7 @@ pub(crate) fn create_sse_stream(
                                                                 .map(|u| u.prompt_tokens)
                                                                 .filter(|&t| t > 0)
                                                                 .unwrap_or(estimated_input_tokens);
+                                                            // Only .input needed; output=0 because message_start has no output tokens yet
                                                             let scaled_start = scale_token_usage(start_input, 0, upstream_ctx, cc_ctx, "streaming-start");
                                                             scaled_start.input
                                                         },

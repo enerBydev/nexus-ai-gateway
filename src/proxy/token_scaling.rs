@@ -25,6 +25,15 @@ pub struct ScaledTokens {
     pub output: u32,
 }
 
+/// Parameters for token scaling in response transformation.
+/// When provided, `openai_to_anthropic()` will scale token counts
+/// to match Claude Code's context window.
+#[derive(Debug, Clone, Copy)]
+pub struct TokenScalingParams {
+    pub context_limit: u32,
+    pub cc_context_window: u32,
+}
+
 /// Scale token usage between upstream context and CC's context window.
 ///
 /// # Branch 1: `context_limit < cc_context_window`
@@ -264,13 +273,4 @@ mod tests {
         let overflow_90 = effective * 90 / 100;
         assert!(overflow_90 < compact_trigger, "overflow at 90% should fire before CC compact");
     }
-}
-
-/// Parameters for token scaling in response transformation.
-/// When provided, `openai_to_anthropic()` will scale token counts
-/// to match Claude Code's context window.
-#[derive(Debug, Clone, Copy)]
-pub struct TokenScalingParams {
-    pub context_limit: u32,
-    pub cc_context_window: u32,
 }
