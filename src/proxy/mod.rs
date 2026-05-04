@@ -18,6 +18,7 @@ pub mod overflow_tracker;
 pub mod rate_limit;
 pub mod retry;
 pub mod streaming;
+pub mod token_scaling;
 
 use axum::{response::Response, Extension, Json};
 use metrics::{counter, gauge, histogram};
@@ -105,23 +106,24 @@ fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
     Ok(())
 }
 
-/// Returns the context overflow threshold percentage (default: 80%).
+/// Returns the context overflow threshold percentage (default: 90%).
+/// Aligned with CC's effective window after overhead subtraction (P5).
 /// Configurable via CC_OVERFLOW_THRESHOLD_PCT env var (range: 50-95).
 pub(crate) fn get_overflow_threshold_pct() -> u32 {
     std::env::var("CC_OVERFLOW_THRESHOLD_PCT")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&pct| (50..=95).contains(&pct))
-        .unwrap_or(80)
+        .unwrap_or(90)
 }
 
-/// Resolve the effective CC context window for a given model.
+/// Resolve the raw CC context window without system overhead.
 /// Priority order:
 /// 1. CC_MODEL_CONTEXT_WINDOWS per-model mapping (highest priority)
 /// 2. CLAUDE_CODE_AUTO_COMPACT_WINDOW (set by CC itself)
 /// 3. CC_CONTEXT_WINDOW (manual override)
 /// 4. 200_000 fallback (default for standard Claude models)
-pub(crate) fn resolve_cc_context_window(model_id: &str, config: &Config) -> u32 {
+pub(crate) fn resolve_raw_cc_context_window(model_id: &str, config: &Config) -> u32 {
     // 1. Per-model mapping (CC_MODEL_CONTEXT_WINDOWS env var)
     if let Some(&window) = config.cc_model_context_windows.get(model_id).filter(|&&w| w > 0) {
         tracing::debug!(
@@ -156,6 +158,17 @@ pub(crate) fn resolve_cc_context_window(model_id: &str, config: &Config) -> u32 
     // 4. Default: 200K (standard for Claude Sonnet/Opus/Haiku)
     tracing::debug!("📐 CC context window: default 200K");
     200_000
+}
+
+/// Resolve CC's effective context window, accounting for system overhead.
+/// Matches Claude Code binary function Pd():
+/// effective_window = raw_window - min(model_max_tokens, 20_000)
+///
+/// This ensures the proxy's overflow threshold aligns with CC's actual
+/// auto-compact trigger (effective_window - 13_000).
+pub(crate) fn resolve_cc_context_window(model_id: &str, config: &Config) -> u32 {
+    let raw = resolve_raw_cc_context_window(model_id, config);
+    token_scaling::resolve_effective_cc_context_window(raw, model_id)
 }
 
 pub async fn proxy_handler(
@@ -413,10 +426,10 @@ mod threshold_tests {
     use super::*;
 
     #[test]
-    fn test_default_threshold_is_80() {
+    fn test_default_threshold_is_90() {
         let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
-        assert_eq!(get_overflow_threshold_pct(), 80);
+        assert_eq!(get_overflow_threshold_pct(), 90);
     }
 
     #[test]
@@ -432,7 +445,7 @@ mod threshold_tests {
         let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
         std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "40");
-        assert_eq!(get_overflow_threshold_pct(), 80);
+        assert_eq!(get_overflow_threshold_pct(), 90);
     }
 
     #[test]
@@ -440,7 +453,7 @@ mod threshold_tests {
         let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _env = EnvGuard::new(vec!["CC_OVERFLOW_THRESHOLD_PCT"]);
         std::env::set_var("CC_OVERFLOW_THRESHOLD_PCT", "99");
-        assert_eq!(get_overflow_threshold_pct(), 80);
+        assert_eq!(get_overflow_threshold_pct(), 90);
     }
 }
 
@@ -480,7 +493,7 @@ mod context_window_tests {
         let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         let config = make_minimal_config();
-        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 200_000);
+        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 180_000);
     }
 
     #[test]
@@ -489,7 +502,7 @@ mod context_window_tests {
         let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
         std::env::set_var("CC_CONTEXT_WINDOW", "150000");
         let config = make_minimal_config();
-        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 150_000);
+        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 130_000);
     }
 
     #[test]
@@ -500,7 +513,7 @@ mod context_window_tests {
         std::env::set_var("CC_CONTEXT_WINDOW", "150000");
         let config = make_minimal_config();
         // CLAUDE_CODE_AUTO_COMPACT_WINDOW should take priority over CC_CONTEXT_WINDOW
-        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 100_000);
+        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 80_000);
     }
 
     #[test]
@@ -512,9 +525,34 @@ mod context_window_tests {
         let mut config = make_minimal_config();
         config.cc_model_context_windows.insert("claude-opus-4-6".to_string(), 1_000_000);
         // Per-model mapping should take priority over both env vars
-        assert_eq!(resolve_cc_context_window("claude-opus-4-6", &config), 1_000_000);
+        assert_eq!(resolve_cc_context_window("claude-opus-4-6", &config), 980_000);
         // Unmapped model should fall through to CLAUDE_CODE_AUTO_COMPACT_WINDOW
-        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 100_000);
+        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 80_000);
+    }
+
+    #[test]
+    fn test_effective_window_subtracts_overhead() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
+        let config = make_minimal_config();
+        assert_eq!(resolve_cc_context_window("claude-sonnet-4-6", &config), 180_000);
+    }
+
+    #[test]
+    fn test_effective_window_opus_4_6() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
+        let config = make_minimal_config();
+        assert_eq!(resolve_cc_context_window("claude-opus-4-6", &config), 180_000);
+    }
+
+    #[test]
+    fn test_effective_window_old_model() {
+        let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::new(vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CC_CONTEXT_WINDOW"]);
+        let config = make_minimal_config();
+        // claude-3-sonnet: max_tokens=8192, reserved=min(8192,20000)=8192
+        assert_eq!(resolve_cc_context_window("claude-3-sonnet", &config), 200_000 - 8_192);
     }
 }
 

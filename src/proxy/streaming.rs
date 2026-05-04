@@ -17,6 +17,7 @@ use crate::error::ProxyResult;
 use crate::models::{anthropic, openai};
 use crate::proxy::concurrency::{acquire_model_permit, ModelSemaphores};
 use crate::proxy::retry::{resilient_send_raw, CHUNK_TIMEOUT_SECS, MAX_SSE_BUFFER};
+use crate::proxy::token_scaling::scale_token_usage;
 use crate::tokenizer;
 use crate::transform;
 use crate::web_fetch;
@@ -112,39 +113,8 @@ pub(crate) fn create_sse_stream(
             cc_context_window / 1000,
             context_limit / 1000
         );
-        let scale_tokens = |real_tokens: u32| -> u32 {
-            if context_limit > 0 {
-                if context_limit < cc_context_window {
-                    // Upstream has LESS context than CC — inflate so CC sees approaching limit
-                    let scaled = (real_tokens as f64 * cc_context_window as f64
-                        / context_limit as f64) as u32;
-                    tracing::debug!(
-                        "📐 Scaling up input_tokens: {} → {} (upstream_ctx={}K < cc_ctx={}K)",
-                        real_tokens,
-                        scaled,
-                        context_limit / 1000,
-                        cc_context_window / 1000
-                    );
-                    scaled
-                } else {
-                    // Upstream has MORE context than CC — CC will hit its limit first
-                    // Add 10% buffer so CC auto-compacts before hitting the hard limit
-                    let fill_ratio = real_tokens as f64 / cc_context_window as f64;
-                    let scaled = (real_tokens as f64 * 1.1) as u32;
-                    tracing::debug!(
-                        "📐 Scaling up input_tokens: {} → {} (fill={:.1}%, upstream_ctx={}K > cc_ctx={}K)",
-                        real_tokens,
-                        scaled,
-                        fill_ratio * 100.0,
-                        context_limit / 1000,
-                        cc_context_window / 1000
-                    );
-                    scaled.min(cc_context_window) // Never exceed CC's window
-                }
-            } else {
-                real_tokens
-            }
-        };
+        let cc_ctx = cc_context_window;
+        let upstream_ctx = context_limit;
 
         let mut permit_opt: Option<tokio::sync::OwnedSemaphorePermit> = Some(_permit);
 
@@ -282,15 +252,16 @@ pub(crate) fn create_sse_stream(
                             if let Some(data) = l.strip_prefix("data: ") {
                                 if data.trim() == "[DONE]" {
                                     if let Some(ref stop) = saved_stop_reason {
+                                        let scaled_delta = scale_token_usage(accumulated_input_tokens, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
                                         let delta_event = json!({
                                             "type": "message_delta",
                                             "delta": {
                                                 "stop_reason": stop,
-                                                "stop_sequence": serde_json::Value::Null
+                                                "stop_sequence": serde_json::Value::Null,
                                             },
                                             "usage": {
-                                                "input_tokens": scale_tokens(accumulated_input_tokens),
-                                                "output_tokens": accumulated_output_tokens,
+                                                "input_tokens": scaled_delta.input,
+                                                "output_tokens": scaled_delta.output,
                                                 "cache_creation_input_tokens": 0,
                                                 "cache_read_input_tokens": 0
                                             }
@@ -336,9 +307,10 @@ pub(crate) fn create_sse_stream(
                                         // FIX 2: Check if context is nearly full AFTER successful retry.
                                         // When Fixable retry succeeds (reducing max_tokens), the request
                                         // completes but context keeps growing. If scaled tokens exceed the
-                                        // configurable threshold (default 80%) of CC's context window, emit
+                                        // configurable threshold (default 90%) of CC's context window, emit
                                         // an error event so CC shows "Use /compact".
-                                        let scaled_for_check = scale_tokens(usage.prompt_tokens);
+                                        // Only .input needed; output=0 because input/output scaling are independent
+                                        let scaled_for_check = scale_token_usage(usage.prompt_tokens, 0, upstream_ctx, cc_ctx, "streaming-overflow").input;
                                         let context_threshold_pct = crate::proxy::get_overflow_threshold_pct();
                                         let context_threshold = cc_context_window * context_threshold_pct / 100;
                                         if scaled_for_check > context_threshold {
@@ -386,12 +358,15 @@ pub(crate) fn create_sse_stream(
                                                     role: "assistant".to_string(),
                                                     model: original_model_owned.clone(),
                                                     usage: anthropic::Usage {
-                                                        input_tokens: scale_tokens(
-                                                            chunk.usage.as_ref()
+                                                        input_tokens: {
+                                                            let start_input = chunk.usage.as_ref()
                                                                 .map(|u| u.prompt_tokens)
                                                                 .filter(|&t| t > 0)
-                                                                .unwrap_or(estimated_input_tokens)
-                                                        ),
+                                                                .unwrap_or(estimated_input_tokens);
+                                                            // Only .input needed; output=0 because message_start has no output tokens yet
+                                                            let scaled_start = scale_token_usage(start_input, 0, upstream_ctx, cc_ctx, "streaming-start");
+                                                            scaled_start.input
+                                                        },
                                                         output_tokens: 0,
                                                         cache_creation_input_tokens: Some(0),
                                                         cache_read_input_tokens: Some(0),
