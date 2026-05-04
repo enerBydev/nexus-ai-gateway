@@ -307,7 +307,7 @@ pub(crate) fn create_sse_stream(
                                         // FIX 2: Check if context is nearly full AFTER successful retry.
                                         // When Fixable retry succeeds (reducing max_tokens), the request
                                         // completes but context keeps growing. If scaled tokens exceed the
-                                        // configurable threshold (default 80%) of CC's context window, emit
+                                        // configurable threshold (default 90%) of CC's context window, emit
                                         // an error event so CC shows "Use /compact".
                                         let scaled_for_check = scale_token_usage(usage.prompt_tokens, 0, upstream_ctx, cc_ctx, "streaming-overflow").input;
                                         let context_threshold_pct = crate::proxy::get_overflow_threshold_pct();

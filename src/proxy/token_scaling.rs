@@ -140,14 +140,6 @@ pub fn resolve_effective_cc_context_window(raw_cc_context_window: u32, model_id:
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Parameters for token scaling in response transformation.
-    /// When provided, `openai_to_anthropic()` will scale token counts
-    /// to match Claude Code's context window.
-    #[derive(Debug, Clone, Copy)]
-    pub struct TokenScalingParams {
-        pub context_limit: u32,
-        pub cc_context_window: u32,
-    }
 
     // === Branch 1: upstream < CC context ===
 
