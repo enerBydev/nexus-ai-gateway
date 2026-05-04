@@ -388,4 +388,129 @@ mod tests {
         let input = "The value should be x > 5 and y < 10";
         assert_eq!(sanitize_reasoning(input), input);
     }
+
+    // =========================================================================
+    // Tests for openai_to_anthropic token scaling
+    // =========================================================================
+
+    #[test]
+    fn test_openai_to_anthropic_no_scaling() {
+        use crate::models::openai::OpenAIResponse;
+        use crate::transform::openai_to_anthropic;
+
+        let openai_response = OpenAIResponse {
+            id: "test-id".to_string(),
+            object: "test-object".to_string(),
+            created: 1234567890,
+            model: "gpt-4".to_string(),
+            system_fingerprint: None,
+            choices: vec![crate::models::openai::Choice {
+                index: 0,
+                message: crate::models::openai::ChoiceMessage {
+                    role: "assistant".to_string(),
+                    content: Some("Test response".to_string()),
+                    tool_calls: None,
+                    reasoning_content: None,
+                    reasoning: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: crate::models::openai::Usage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+            },
+        };
+
+        // Test with None scaling - should pass through raw tokens
+        let result = openai_to_anthropic(openai_response, "claude-sonnet-4-6", None).unwrap();
+        assert_eq!(result.usage.input_tokens, 100);
+        assert_eq!(result.usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_scaling_branch1() {
+        use crate::models::openai::OpenAIResponse;
+        use crate::proxy::token_scaling::TokenScalingParams;
+        use crate::transform::openai_to_anthropic;
+
+        let openai_response = OpenAIResponse {
+            id: "test-id".to_string(),
+            object: "test-object".to_string(),
+            created: 1234567890,
+            model: "gpt-4".to_string(),
+            system_fingerprint: None,
+            choices: vec![crate::models::openai::Choice {
+                index: 0,
+                message: crate::models::openai::ChoiceMessage {
+                    role: "assistant".to_string(),
+                    content: Some("Test response".to_string()),
+                    tool_calls: None,
+                    reasoning_content: None,
+                    reasoning: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: crate::models::openai::Usage {
+                prompt_tokens: 50000,
+                completion_tokens: 4000,
+                total_tokens: 54000,
+            },
+        };
+
+        // Test with scaling parameters that trigger Branch 1 (context_limit < cc_context_window)
+        let scaling_params =
+            TokenScalingParams { context_limit: 100_000, cc_context_window: 200_000 };
+
+        let result =
+            openai_to_anthropic(openai_response, "claude-sonnet-4-6", Some(scaling_params))
+                .unwrap();
+        // Should be scaled: 50000 * (200000/100000) = 100000, 4000 * (200000/100000) = 8000
+        assert_eq!(result.usage.input_tokens, 100000);
+        assert_eq!(result.usage.output_tokens, 8000);
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_scaling_branch2() {
+        use crate::models::openai::OpenAIResponse;
+        use crate::proxy::token_scaling::TokenScalingParams;
+        use crate::transform::openai_to_anthropic;
+
+        let openai_response = OpenAIResponse {
+            id: "test-id".to_string(),
+            object: "test-object".to_string(),
+            created: 1234567890,
+            model: "gpt-4".to_string(),
+            system_fingerprint: None,
+            choices: vec![crate::models::openai::Choice {
+                index: 0,
+                message: crate::models::openai::ChoiceMessage {
+                    role: "assistant".to_string(),
+                    content: Some("Test response".to_string()),
+                    tool_calls: None,
+                    reasoning_content: None,
+                    reasoning: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: crate::models::openai::Usage {
+                prompt_tokens: 100000,
+                completion_tokens: 4000,
+                total_tokens: 104000,
+            },
+        };
+
+        // Test with scaling parameters that trigger Branch 2 (context_limit >= cc_context_window)
+        let scaling_params = TokenScalingParams {
+            context_limit: 200_000, // Equal to cc_context_window, so no scaling
+            cc_context_window: 200_000,
+        };
+
+        let result =
+            openai_to_anthropic(openai_response, "claude-sonnet-4-6", Some(scaling_params))
+                .unwrap();
+        // Should NOT be scaled - tokens should pass through as-is
+        assert_eq!(result.usage.input_tokens, 100000);
+        assert_eq!(result.usage.output_tokens, 4000);
+    }
 }

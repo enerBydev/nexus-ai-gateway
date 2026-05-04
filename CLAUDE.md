@@ -76,6 +76,7 @@ SSE Stream → transform back to Anthropic format
 | `concurrency.rs` | Per-model semaphores, circuit breaker |
 | `discovery.rs` | Model capability probing with caching |
 | `overflow_tracker.rs` | Context window overflow tracking |
+| `token_scaling.rs` | Token scaling between upstream context and CC's context window |
 | `error_types.rs` | Upstream error structures |
 
 **Models layer** — `src/models/` (API type definitions):
@@ -127,19 +128,21 @@ These behaviors are intentional and should not be changed:
 
 ### Proxy Layer (src/proxy/)
 
-4. **Context overflow threshold BY DESIGN** — Default 80% (configurable via `CC_OVERFLOW_THRESHOLD_PCT`, clamped to 50-95). Requests exceeding context window are pre-checked and clamped before upstream calls.
+4. **Context overflow threshold BY DESIGN** — Default 90% (configurable via `CC_OVERFLOW_THRESHOLD_PCT`, clamped to 50-95). Requests exceeding context window are pre-checked and clamped before upstream calls.
 
 5. **`probe_model_limit` capability discovery BY DESIGN** — Models without known limits are probed at runtime with a test request. Results cached in `ModelCache` (TTL from `PROBE_CACHE_TTL_SECS`).
 
 6. **`anthropic.keep-alive` SSE event BY DESIGN** — Streaming sends periodic `anthropic.keep-alive` events (30s interval) to prevent Claude Code timeout on slow upstreams.
 
+7. **Token scaling alignment BY DESIGN** — `scale_token_usage()` in `token_scaling.rs` scales both `input_tokens` and `output_tokens` proportionally when upstream context < CC context (Branch 1). When upstream >= CC context (Branch 2), real tokens are reported — CC manages its own window. The `resolve_cc_context_window()` function subtracts `min(max_tokens, 20000)` system overhead (matching CC binary `Pd()`) so the proxy's overflow threshold (default 90%) aligns with CC's auto-compact trigger (~167K for opus-4-6).
+
 ### Config (src/config.rs)
 
-7. **SharedConfig = Arc<ArcSwap<Config>> BY DESIGN** — Lock-free reads via `arc_swap`. Hot-reload works by storing new Arc in ArcSwap; no RwLock poisoning possible.
+8. **SharedConfig = Arc<ArcSwap<Config>> BY DESIGN** — Lock-free reads via `arc_swap`. Hot-reload works by storing new Arc in ArcSwap; no RwLock poisoning possible.
 
-8. **Config reload serialization BY DESIGN** — SIGHUP and file watcher reloads are serialized via `AtomicBool` compare_exchange to prevent race conditions.
+9. **Config reload serialization BY DESIGN** — SIGHUP and file watcher reloads are serialized via `AtomicBool` compare_exchange to prevent race conditions.
 
-9. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
+10. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
 
 ## Key Environment Variables
 
@@ -152,7 +155,7 @@ These behaviors are intentional and should not be changed:
 | `DEBUG` | `false` | Enable debug logging |
 | `VERBOSE` | `false` | Full request/response logging |
 | `CC_CONTEXT_WINDOW` | `200000` | Context window size for auto-compact calibration |
-| `CC_OVERFLOW_THRESHOLD_PCT` | `80` | Context overflow threshold (50-95%) |
+| `CC_OVERFLOW_THRESHOLD_PCT` | `90` | Context overflow threshold (50-95%) |
 | `PROBE_CACHE_TTL_SECS` | `3600` | Model capability probe cache TTL |
 | `DISABLE_PROBING` | `false` | Disable runtime model probing |
 | `MODEL_LIMIT_OVERRIDES` | (none) | Override model context limits: `model_id:tokens` |

@@ -445,6 +445,7 @@ pub fn sanitize_reasoning(raw: &str) -> String {
 pub fn openai_to_anthropic(
     resp: openai::OpenAIResponse,
     original_model: &str,
+    scaling: Option<crate::proxy::token_scaling::TokenScalingParams>,
 ) -> ProxyResult<anthropic::AnthropicResponse> {
     let choice = resp
         .choices
@@ -519,12 +520,33 @@ pub fn openai_to_anthropic(
         model: original_model.to_string(), // Phase 6: preserve original ClaudeModelID
         stop_reason,
         stop_sequence: None,
-        usage: anthropic::Usage {
-            input_tokens: resp.usage.prompt_tokens,
-            output_tokens: resp.usage.completion_tokens,
-            cache_creation_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
-            cache_read_input_tokens: Some(0), // TODO: When Anthropic upstream is supported, populate from response
-            ..Default::default()
+        usage: {
+            let raw_input = resp.usage.prompt_tokens;
+            let raw_output = resp.usage.completion_tokens;
+            if let Some(params) = scaling {
+                let scaled = crate::proxy::token_scaling::scale_token_usage(
+                    raw_input,
+                    raw_output,
+                    params.context_limit,
+                    params.cc_context_window,
+                    "transform",
+                );
+                anthropic::Usage {
+                    input_tokens: scaled.input,
+                    output_tokens: scaled.output,
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(0),
+                    ..Default::default()
+                }
+            } else {
+                anthropic::Usage {
+                    input_tokens: raw_input,
+                    output_tokens: raw_output,
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(0),
+                    ..Default::default()
+                }
+            }
         },
     })
 }

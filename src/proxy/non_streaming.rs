@@ -35,12 +35,12 @@ pub(crate) async fn handle_non_streaming(
     upstream_name: &str,
     model_semaphores: ModelSemaphores,
     circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
-    context_limit: u32,     // FIX 6: for token scaling
+    context_limit: u32,     // FIX 6: for token_scaling
     cc_context_window: u32, // Issue #28: resolved dynamically
 ) -> ProxyResult<axum::response::Response> {
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
-    // ╚═══════════════════════════════════════════╝
+    // ╚════════════════════════════════���══════════╝
     let _permit = acquire_model_permit(
         &model_semaphores,
         &openai_req.model,
@@ -79,42 +79,18 @@ pub(crate) async fn handle_non_streaming(
             );
         }
 
-        let anthropic_resp = transform::openai_to_anthropic(openai_resp, &original_req.model)?;
+        let anthropic_resp = transform::openai_to_anthropic(
+            openai_resp,
+            &original_req.model,
+            Some(crate::proxy::token_scaling::TokenScalingParams {
+                context_limit,
+                cc_context_window,
+            }),
+        )?;
 
         // FIX 2: Check if context is nearly full after successful retry
 
-        // FIX 6: Token scaling for non-streaming path (parity with streaming)
-        let scale_tokens = |real_tokens: u32| -> u32 {
-            if context_limit > 0 {
-                if context_limit < cc_context_window {
-                    let scaled = (real_tokens as f64 * cc_context_window as f64
-                        / context_limit as f64) as u32;
-                    tracing::debug!(
-                        "📐 [non-streaming] Scaling up input_tokens: {} → {} (upstream_ctx={}K < cc_ctx={}K)",
-                        real_tokens,
-                        scaled,
-                        context_limit / 1000,
-                        cc_context_window / 1000
-                    );
-                    scaled
-                } else {
-                    let scaled = (real_tokens as f64 * 1.1) as u32;
-                    tracing::debug!(
-                        "📐 [non-streaming] Scaling up input_tokens: {} → {} (upstream_ctx={}K > cc_ctx={}K)",
-                        real_tokens,
-                        scaled,
-                        context_limit / 1000,
-                        cc_context_window / 1000
-                    );
-                    scaled.min(cc_context_window)
-                }
-            } else {
-                real_tokens
-            }
-        };
-
-        let input_tokens = anthropic_resp.usage.input_tokens as u32;
-        let scaled_input_tokens = scale_tokens(input_tokens); // FIX 6: Apply scaling
+        let scaled_input_tokens = anthropic_resp.usage.input_tokens;
         let context_threshold_pct = crate::proxy::get_overflow_threshold_pct();
         let context_threshold = cc_context_window * context_threshold_pct / 100;
         if scaled_input_tokens > context_threshold {
@@ -150,6 +126,7 @@ pub(crate) async fn handle_non_streaming(
                         "[WebFetch] Max retries ({}) reached, returning as-is",
                         config.web_fetch_max_retries
                     );
+                    // WebFetch max retries reached — return as-is (tokens already scaled via transform)
                     return Ok(Json(anthropic_resp).into_response());
                 }
 
@@ -210,6 +187,7 @@ pub(crate) async fn handle_non_streaming(
             }
         }
 
+        // No web_fetch found, return the response directly (tokens already scaled via transform)
         return Ok(Json(anthropic_resp).into_response());
     }
 }
