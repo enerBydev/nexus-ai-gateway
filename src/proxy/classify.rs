@@ -25,7 +25,7 @@ pub(crate) const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplifica
 pub(crate) const RETRY_BASE_MS: u64 = 1500; // Kept for reference, overridden per error class
 pub(crate) const MIN_CLAMP_TOKENS: u32 = 4096;
 
-/// Error classification: 3 layers (Structural → Content-Aware → Status-Based)
+/// Error classification: 3 layers (Structural → Status-Guard → Content-Aware → Status-Based)
 #[derive(Debug)]
 pub(crate) enum ErrorClass {
     /// Transient server error — retry with exponential backoff + jitter
@@ -66,6 +66,8 @@ pub(crate) const RETRYABLE_PATTERNS: &[&str] = &[
 ];
 
 /// Content patterns that indicate a fatal/permanent error
+/// NOTE: These are ONLY applied when status code is in the 4xx range (non-retryable).
+/// For 429/5xx, the status code is authoritative and L1 FATAL cannot override it.
 pub(crate) const FATAL_PATTERNS: &[&str] = &[
     "invalid api key",
     "unauthorized",
@@ -102,37 +104,38 @@ pub(crate) fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
     Some(safe_max)
 }
 
-/// 3-layer error classification.
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ Issue #34: Redesigned error classification with status-code guards     ║
+// ║                                                                        ║
+// ║ NEW ORDER: L0 (Structural) → StatusGuard (429/5xx) → L1 (Content) → L2║
+// ║                                                                        ║
+// ║ KEY INVARIANT: L1 FATAL_PATTERNS can NEVER override a retryable        ║
+// ║ HTTP status code (429, 500-504, 529). The status code is the           ║
+// ║ authoritative signal from the upstream server.                         ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+/// 3-layer error classification with status-code guards.
 ///
 /// Layer 0: Structural — uses NIM's typed error fields (error.type, error.param)
+/// Status Guard: For retryable status codes (429/5xx), bypass L1 FATAL_PATTERNS
 /// Layer 1: Content-Aware — pattern matching on error message body
 /// Layer 2: Status-Based — HTTP status code fallback
 pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     let lower = upstream.message.to_lowercase();
-
-    // Check for L2 rate limit first (more specific)
-    if is_l2_rate_limit(upstream) {
-        log_l2_rate_limit("<model>", upstream);
-        tracing::warn!(
-            "⚠️ L2 rate limit detected: {} - using extended backoff",
-            upstream.message.chars().take(100).collect::<String>()
-        );
-        return ErrorClass::Retryable {
-            base_delay_ms: L2_MIN_BACKOFF_MS,
-            max_retries: 3,
-            reason: "L2 rate limit — provider concurrency cap",
-        };
-    }
+    let status = upstream.status;
 
     // ╔══════════════════════════════════════════════════════════╗
-    // ║ LAYER 0: Structural — NIM typed error fields ║
+    // ║ LAYER 0: Structural — NIM typed error fields            ║
+    // ║ Most precise: uses error.type + error.param             ║
     // ╚══════════════════════════════════════════════════════════╝
     if let Some(ref etype) = upstream.error_type {
-        if etype.as_str() == "BadRequestError" && upstream.param.as_deref() == Some("input_tokens")
-        {
+        // Phase 2 (M8): Accept multi-provider error_type variants
+        let is_structural =
+            matches!(etype.as_str(), "BadRequestError" | "invalid_request_error" | "request_error");
+        if is_structural && upstream.param.as_deref() == Some("input_tokens") {
             // v10.2: Try to auto-fix by reducing max_tokens to fit real input
             // Only fatal if we can't extract the real counts from the error
-            if let Some(_safe_max) = extract_safe_max_tokens_from_error(&upstream.message) {
+            if extract_safe_max_tokens_from_error(&upstream.message).is_some() {
                 return ErrorClass::Fixable {
                     reason: "input_tokens overflow — auto-clamping max_tokens to fit (L0)",
                 };
@@ -144,7 +147,50 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     }
 
     // ╔══════════════════════════════════════════════════════════╗
-    // ║ LAYER 1: Content-Aware Classification ║
+    // ║ STATUS GUARD: Retryable status codes (429, 5xx)         ║
+    // ║                                                         ║
+    // ║ INVARIANT: L1 FATAL_PATTERNS cannot reach here.         ║
+    // ║ The HTTP status code is the authoritative signal.       ║
+    // ║ L1 can only REFINE within the Retryable class           ║
+    // ║ (e.g., Retryable→Fixable), never escalate to Fatal.    ║
+    // ║                                                         ║
+    // ║ Fixes: M1, M2, M3, M4, M5, M6, M7                     ║
+    // ╚══════════════════════════════════════════════════════════╝
+    let is_retryable_status = matches!(status, 429 | 500..=504 | 529);
+
+    if is_retryable_status {
+        // L2 rate limit check (concurrency-specific patterns)
+        if is_l2_rate_limit(upstream) {
+            log_l2_rate_limit("<model>", upstream);
+            tracing::warn!(
+                "⚠️ L2 rate limit detected: {} - using extended backoff",
+                upstream.message.chars().take(100).collect::<String>()
+            );
+            return ErrorClass::Retryable {
+                base_delay_ms: L2_MIN_BACKOFF_MS,
+                max_retries: 3,
+                reason: "L2 rate limit — provider concurrency cap",
+            };
+        }
+
+        // Within retryable status, L1 FIXABLE patterns CAN refine
+        // (e.g., a 502 wrapping a token overflow should be Fixable)
+        for pattern in FIXABLE_PATTERNS {
+            if lower.contains(pattern) {
+                return ErrorClass::Fixable {
+                    reason: "fixable pattern in retryable status (L1+guard)",
+                };
+            }
+        }
+
+        // No L1 refinement — fall through to pure status classification
+        return classify_by_status(status);
+    }
+
+    // ╔══════════════════════════════════════════════════════════╗
+    // ║ NON-RETRYABLE STATUS (4xx mostly)                       ║
+    // ║ L1 content patterns apply fully here.                   ║
+    // ║ FATAL_PATTERNS are safe to apply on 4xx.                ║
     // ╚══════════════════════════════════════════════════════════╝
     for pattern in FATAL_PATTERNS {
         if lower.contains(pattern) {
@@ -169,13 +215,22 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     }
 
     // ╔══════════════════════════════════════════════════════════╗
-    // ║ LAYER 2: Status-Based Classification ║
+    // ║ LAYER 2: Status-Based Classification (fallback)         ║
     // ╚══════════════════════════════════════════════════════════╝
-    match upstream.status {
+    classify_by_status(status)
+}
+
+/// Pure status-code classification — extracted for reuse from both
+/// the status guard path and the L2 fallback path.
+fn classify_by_status(status: u16) -> ErrorClass {
+    match status {
+        // Issue #34 Q1: Reduced from 3 to 1 retry for 429.
+        // CC has its own 2 (SDK) + 10 (app) retries.
+        // 1 proxy retry gives one chance to auto-heal without amplification.
         429 => ErrorClass::Retryable {
             base_delay_ms: 10_000, // 10s — matches NIM recovery time
-            max_retries: 3,
-            reason: "429 rate limit — NIM concurrency cap (L2)",
+            max_retries: 1,
+            reason: "429 rate limit (L2)",
         },
         500 => ErrorClass::Retryable {
             base_delay_ms: 3000,
@@ -199,7 +254,7 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
         },
         529 => ErrorClass::Retryable {
             base_delay_ms: 5000,
-            max_retries: 3,
+            max_retries: 4,
             reason: "529 overloaded (L2)",
         },
         400 => ErrorClass::Fatal { reason: "400 bad request — no fixable pattern (L2)" },
@@ -238,3 +293,7 @@ pub(crate) fn delay_with_jitter(base_ms: u64, attempt: u32) -> u64 {
     let jitter = rand::rng().random_range(0..=(jitter_range * 2));
     capped.saturating_sub(jitter_range) + jitter
 }
+
+#[cfg(test)]
+#[path = "classify_test.rs"]
+mod classify_test;

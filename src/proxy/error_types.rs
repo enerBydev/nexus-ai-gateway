@@ -35,6 +35,13 @@ pub(crate) fn parse_upstream_error(status: u16, body: &str) -> UpstreamError {
                     &err.message.chars().take(80).collect::<String>(),
                     &inner.message.chars().take(80).collect::<String>()
                 );
+                // Issue #34 Q5: If nested error has a valid status, use it
+                // for classify_error(). Inner status is more precise than
+                // the wrapper status (e.g., NIM wraps 400 inside 502).
+                if inner.status > 0 && inner.status != err.status {
+                    tracing::debug!("🔍 Inner status override: {} → {}", err.status, inner.status);
+                    err.status = inner.status;
+                }
                 err.message = inner.message;
                 if err.error_type.is_none() {
                     err.error_type = inner.error_type;

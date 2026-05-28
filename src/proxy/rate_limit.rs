@@ -21,7 +21,7 @@ pub(crate) fn is_l2_rate_limit(error: &UpstreamError) -> bool {
 /// Tracking: Future integration for advanced L2 backoff calculation (PHASE 3.5)
 #[allow(dead_code)]
 pub(crate) const L2_BACKOFF_MULTIPLIER: f64 = 2.0;
-pub(crate) const L2_MIN_BACKOFF_MS: u64 = 2000;
+pub(crate) const L2_MIN_BACKOFF_MS: u64 = 10_000; // Issue #34 M10: aligned with L2-status 429
 /// Tracking: Future integration for advanced L2 backoff calculation (PHASE 3.5)
 #[allow(dead_code)]
 pub(crate) const L2_MAX_BACKOFF_MS: u64 = 30000;

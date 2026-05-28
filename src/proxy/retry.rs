@@ -6,7 +6,8 @@ use crate::config::{Config, UpstreamType};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::openai;
 use crate::proxy::classify::{
-    classify_error, delay_with_jitter, error_regexes, ErrorClass, MAX_RETRIES, MIN_CLAMP_TOKENS,
+    classify_error, delay_with_jitter, error_regexes, extract_safe_max_tokens_from_error,
+    ErrorClass, MAX_RETRIES, MIN_CLAMP_TOKENS,
 };
 use crate::proxy::error_types::parse_upstream_error;
 use crate::proxy::overflow_tracker::OverflowLoopTracker;
@@ -132,6 +133,13 @@ pub(crate) async fn resilient_send(
             }
             ErrorClass::Fixable { reason } => {
                 if attempt >= MAX_RETRIES {
+                    // v10.2: If we exhausted retries on input_tokens overflow, it's truly full
+                    if reason.contains("input_tokens overflow") {
+                        return Err(ProxyError::ContextOverflow(format!(
+                            "Context window full: {}. Use /compact to reduce context.",
+                            crate::str_utils::safe_truncate(&upstream_err.message, 300)
+                        )));
+                    }
                     tracing::error!(
                         "⛔ Fixable [{}]: exhausted {} retries — giving up",
                         reason,
@@ -167,17 +175,34 @@ pub(crate) async fn resilient_send(
                         )));
                     }
                 }
-                let current = openai_req.max_tokens.unwrap_or(64000);
-                let new_max = (current / 2).max(MIN_CLAMP_TOKENS);
-                tracing::warn!(
-                    "🔧 {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
-                    status.as_u16(),
-                    reason,
-                    attempt,
-                    MAX_RETRIES,
-                    current,
-                    new_max
-                );
+                // Issue #34 M9: Precise extraction (unified with streaming path)
+                let new_max = if reason.contains("input_tokens overflow") {
+                    if let Some(safe) = extract_safe_max_tokens_from_error(&upstream_err.message) {
+                        let margin = 2048 + (attempt * 1024);
+                        let safe_with_margin = safe.saturating_sub(margin).max(1024);
+                        tracing::warn!(
+                            "🔧 input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens → {}",
+                            attempt, MAX_RETRIES, safe, margin, safe_with_margin
+                        );
+                        safe_with_margin
+                    } else {
+                        let current = openai_req.max_tokens.unwrap_or(64000);
+                        (current / 2).max(MIN_CLAMP_TOKENS)
+                    }
+                } else {
+                    let current = openai_req.max_tokens.unwrap_or(64000);
+                    let halved = (current / 2).max(MIN_CLAMP_TOKENS);
+                    tracing::warn!(
+                        "🔧 {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
+                        status.as_u16(),
+                        reason,
+                        attempt,
+                        MAX_RETRIES,
+                        current,
+                        halved
+                    );
+                    halved
+                };
                 openai_req.max_tokens = Some(new_max);
                 continue;
             }
