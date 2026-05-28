@@ -13,7 +13,10 @@ use crate::proxy::error_types::parse_upstream_error;
 use crate::proxy::overflow_tracker::OverflowLoopTracker;
 
 // v0.11.0: Stream stability constants (CR-01, CR-02)
-pub(crate) const CHUNK_TIMEOUT_SECS: u64 = 120; // Max seconds to wait for next SSE chunk from NIM
+// CR3-fix: Configurable via CHUNK_TIMEOUT_SECS env var (default 120s)
+pub(crate) fn chunk_timeout_secs() -> u64 {
+    std::env::var("CHUNK_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120)
+}
 pub(crate) const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
 
 /// Resilient send for non-streaming: returns parsed OpenAI response.
@@ -264,7 +267,11 @@ pub(crate) async fn resilient_send_raw(
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
-            .timeout(Duration::from_secs(300)); // P0: was 900s — must be < CC's API_TIMEOUT_MS (600s)
+            // CR1-fix: No per-request timeout for streaming.
+            // Protection: read_timeout(120s) on client + CHUNK_TIMEOUT in streaming.rs
+            // CR2-fix: Force HTTP/1.1 — NIM sends HTTP/2 GOAWAY that kills long streams.
+            // HTTP/1.1 uses a dedicated TCP connection with no multiplexing interference.
+            .version(reqwest::Version::HTTP_11);
 
         if let Some(api_key) = &config.get_upstream_key(upstream_name) {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));

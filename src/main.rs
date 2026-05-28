@@ -171,7 +171,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     }
 
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        // CR1-fix: NO global timeout — it kills legitimate streams of 4-6 min.
+        // read_timeout is per-chunk: resets on each chunk received from upstream.
+        // Streams can run 10+ min as long as data keeps flowing.
+        // Non-streaming requests use per-request .timeout(300s) in retry.rs.
+        .read_timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(10))
         // v0.12.0: HTTP Client Hardening (Gap #3, #4)
         .pool_max_idle_per_host(50) // Increased from 10 for multi-agent scenarios
