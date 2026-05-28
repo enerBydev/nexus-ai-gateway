@@ -107,7 +107,33 @@ impl IntoResponse for ProxyError {
             }
         }));
 
-        (status, body).into_response()
+        // ╔══════════════════════════════════════════════════════════════╗
+        // ║ P2: x-should-retry + retry-after headers for CC SDK        ║
+        // ║ CC's SDK checks x-should-retry BEFORE status code.         ║
+        // ║ Without this, SDK retries blindly based on status alone.    ║
+        // ╚══════════════════════════════════════════════════════════════╝
+        let status_u16 = status.as_u16();
+        let should_retry = matches!(status_u16, 429 | 500 | 502 | 503 | 504 | 529);
+
+        let mut response = (status, body).into_response();
+        let headers = response.headers_mut();
+
+        // x-should-retry: CC SDK's highest-priority retry signal
+        headers
+            .insert("x-should-retry", if should_retry { "true" } else { "false" }.parse().unwrap());
+
+        // retry-after: backoff hint for rate-limited or overloaded responses
+        match status_u16 {
+            429 => {
+                headers.insert("retry-after", "10".parse().unwrap());
+            }
+            503 | 529 => {
+                headers.insert("retry-after", "5".parse().unwrap());
+            }
+            _ => {}
+        }
+
+        response
     }
 }
 

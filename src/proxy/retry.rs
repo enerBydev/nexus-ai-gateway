@@ -50,7 +50,7 @@ pub(crate) async fn resilient_send(
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
-            .timeout(Duration::from_secs(900));
+            .timeout(Duration::from_secs(300)); // P0: was 900s — must be < CC's API_TIMEOUT_MS (600s)
 
         if let Some(api_key) = &config.get_upstream_key(upstream_name) {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
@@ -239,7 +239,7 @@ pub(crate) async fn resilient_send_raw(
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
             .json(&*openai_req)
-            .timeout(Duration::from_secs(900));
+            .timeout(Duration::from_secs(300)); // P0: was 900s — must be < CC's API_TIMEOUT_MS (600s)
 
         if let Some(api_key) = &config.get_upstream_key(upstream_name) {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
