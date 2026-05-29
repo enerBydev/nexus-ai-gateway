@@ -290,7 +290,7 @@ impl Config {
         let mut model_map = HashMap::new();
         for (key, value) in data {
             if let Some(model_id_raw) = key.strip_prefix("MODEL_MAP_") {
-                let model_id = model_id_raw.replace('_', "-");
+                let model_id = model_id_raw.replace('_', "-").to_lowercase();
                 if let Some((upstream, target)) = value.split_once(':') {
                     model_map.insert(
                         model_id.clone(),
@@ -559,7 +559,7 @@ impl Config {
         let mut model_map = HashMap::new();
         for (key, value) in env::vars() {
             if let Some(model_id_raw) = key.strip_prefix("MODEL_MAP_") {
-                let model_id = model_id_raw.replace('_', "-");
+                let model_id = model_id_raw.replace('_', "-").to_lowercase();
                 if let Some((upstream, target)) = value.split_once(':') {
                     model_map.insert(
                         model_id.clone(),
@@ -823,8 +823,8 @@ mod tests {
         map.insert("MODEL_MAP_CLAUDE_OPUS_4_6".to_string(), "bigmodel:some-model".to_string());
         let config = Config::from_map(&map).unwrap();
         // Config should still load successfully (warnings, not errors)
-        // Env var MODEL_MAP_CLAUDE_OPUS_4_6 → key "CLAUDE-OPUS-4-6" (underscores→hyphens)
-        assert!(config.model_map.contains_key("CLAUDE-OPUS-4-6"));
+        // Env var MODEL_MAP_CLAUDE_OPUS_4_6 → key "claude-opus-4-6" (underscores→hyphens, lowercase)
+        assert!(config.model_map.contains_key("claude-opus-4-6"));
     }
 
     #[test]
@@ -834,7 +834,7 @@ mod tests {
         map.insert("MODEL_MAP_CLAUDE_OPUS_4_6".to_string(), "nonexistent:some-model".to_string());
         let config = Config::from_map(&map).unwrap();
         // Config should still load, model_map entry exists
-        assert!(config.model_map.contains_key("CLAUDE-OPUS-4-6"));
+        assert!(config.model_map.contains_key("claude-opus-4-6"));
     }
 
     #[test]
@@ -858,7 +858,7 @@ mod tests {
         let mut map = make_test_map();
         map.insert("UPSTREAM_BIGMODEL_BASE_URL".to_string(), "http://bigmodel:11434".to_string());
         map.insert("UPSTREAM_BIGMODEL_TYPE".to_string(), "anthropic".to_string());
-        map.insert("MODEL_MAP_CLAUDE-OPUS-4-6".to_string(), "bigmodel:z-ai/glm5".to_string());
+        map.insert("MODEL_MAP_CLAUDE_OPUS_4_6".to_string(), "bigmodel:z-ai/glm5".to_string());
         let config = Config::from_map(&map).unwrap();
 
         // default uses global NIM

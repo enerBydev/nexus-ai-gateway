@@ -121,7 +121,7 @@ These behaviors are intentional and should not be changed:
 
 ### Transform Layer (src/transform.rs)
 
-1. **`has_thinking = true` BY DESIGN** — All requests force `enable_thinking=true` via `chat_template_kwargs`. NIM models produce better output with thinking enabled globally, not just for Opus.
+1. **`has_thinking = true` BY DESIGN** — NIM upstreams force `enable_thinking=true` via `chat_template_kwargs` to produce better output with thinking enabled globally, not just for Opus. Non-NIM upstreams (Anthropic, OpenAI, OpenRouter) handle thinking natively and do not receive `chat_template_kwargs`.
 
 2. **Model identity preservation BY DESIGN** — Responses return the original Claude model ID (e.g., `claude-sonnet-4-6`) even when routed to different upstream models. This is done via `original_model` parameter in streaming responses.
 

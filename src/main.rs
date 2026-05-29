@@ -32,6 +32,8 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::proxy::retry::chunk_timeout_secs;
+
 /// Global flag — true when server is draining for shutdown.
 /// /health endpoint returns 503 when this is true.
 /// Retry logic (S8) and config reload (S11) also check this flag.
@@ -175,7 +177,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         // read_timeout is per-chunk: resets on each chunk received from upstream.
         // Streams can run 10+ min as long as data keeps flowing.
         // Non-streaming requests use per-request .timeout(300s) in retry.rs.
-        .read_timeout(std::time::Duration::from_secs(120))
+        .read_timeout(std::time::Duration::from_secs(chunk_timeout_secs()))
         .connect_timeout(std::time::Duration::from_secs(10))
         // v0.12.0: HTTP Client Hardening (Gap #3, #4)
         .pool_max_idle_per_host(50) // Increased from 10 for multi-agent scenarios
