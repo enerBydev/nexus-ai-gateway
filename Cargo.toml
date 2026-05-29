@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "signal"] }
 
 # Web framework
 axum = { version = "0.7", features = ["http2"] }
