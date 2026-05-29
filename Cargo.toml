@@ -63,7 +63,6 @@ regex = "1.11"
 # v5.0 Hardening
 rand = "0.10"
 notify = "8"
-notify-debouncer-mini = "0.7"
 
 # Scanner module
 sha2 = "0.10"
