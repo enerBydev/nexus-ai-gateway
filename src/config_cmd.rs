@@ -44,14 +44,20 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
 
     // Upstream section
     eprintln!("\n  {}", style("━━━ Upstream ━━━").yellow().bold());
+    eprintln!(" Type: {}", style(&config.upstream_type).green());
     eprintln!("    Base URL:        {}", style(&config.base_url).green());
     eprintln!("    API Key:         {}", mask_key(&config.api_key));
 
     // Additional upstreams
     for (name, upstream) in &config.upstreams {
         if name != "default" {
+            let type_str = upstream
+                .upstream_type
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| format!("{} (global)", config.upstream_type));
             eprintln!("    {} URL:   {}", style(name).bold(), style(&upstream.base_url).green());
             eprintln!("    {} Key:   {}", style(name).bold(), mask_key(&upstream.api_key));
+            eprintln!(" {} Type: {}", style(name).bold(), style(&type_str).cyan());
         }
     }
 
@@ -65,11 +71,13 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
         entries.sort_by_key(|(k, _)| (*k).clone());
 
         for (claude_id, route) in entries {
+            let route_type = config.get_upstream_type(&route.upstream_name);
             eprintln!(
-                "    {} → {}:{}",
+                " {} → {}:{} [type={}]",
                 style(claude_id).dim(),
                 style(&route.upstream_name).cyan(),
-                style(&route.target_model).green()
+                style(&route.target_model).green(),
+                style(route_type).yellow()
             );
         }
     }

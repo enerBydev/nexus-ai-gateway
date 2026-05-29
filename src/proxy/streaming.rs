@@ -39,6 +39,7 @@ pub(crate) async fn handle_streaming(
     cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
     shutdown_token: CancellationToken,
+    client_headers: crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<Response> {
     let permit = acquire_model_permit(
         &model_semaphores,
@@ -64,9 +65,15 @@ pub(crate) async fn handle_streaming(
         nim_model_name
     );
 
-    let response =
-        resilient_send_raw(&client, &config, &mut mutable_req, upstream_name, _circuit_breaker)
-            .await?;
+    let response = resilient_send_raw(
+        &client,
+        &config,
+        &mut mutable_req,
+        upstream_name,
+        _circuit_breaker,
+        &client_headers,
+    )
+    .await?;
 
     let stream = response.bytes_stream();
     let original_model_owned = original_model.to_string();

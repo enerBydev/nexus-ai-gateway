@@ -22,12 +22,14 @@ pub(crate) const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit 
 /// Resilient send for non-streaming: returns parsed OpenAI response.
 /// Auto-retries on 429 (rate limit) with exponential backoff.
 /// Auto-clamps max_tokens on 400 (too large) and retries.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resilient_send(
     client: &Client,
     config: &Config,
     openai_req: &mut openai::OpenAIRequest,
     upstream_name: &str,
     circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
+    client_headers: &crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<openai::OpenAIResponse> {
     let mut attempt: u32 = 0;
 
@@ -60,9 +62,24 @@ pub(crate) async fn resilient_send(
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
         }
 
-        // v0.13.0: Only send anthropic-beta to Anthropic endpoints
+        // Issue #35: Forward anthropic-beta + anthropic-version to Anthropic upstreams
         if config.get_upstream_type(upstream_name) == UpstreamType::Anthropic {
-            req_builder = req_builder.header("anthropic-beta", "prompt-caching-2024-06-01");
+            // Bug B: Forward merged betas (client + proxy minimum, deduplicated)
+            // Bug C: Auto-resolved — no more hardcoded outdated beta value
+            // User Decision Q1 (Option C): merge client + proxy betas
+            // User Decision Q2 (Option B): always inject minimum set
+            let beta = client_headers.resolve_anthropic_beta();
+            let version = client_headers.resolve_anthropic_version();
+            tracing::debug!(
+                "📤 Forwarding to Anthropic upstream '{}': beta={}, version={}",
+                upstream_name,
+                beta,
+                version
+            );
+            req_builder = req_builder.header("anthropic-beta", &beta);
+            // Bug D: Forward anthropic-version with fallback
+            // User Decision Q5 (Option A): forward with default
+            req_builder = req_builder.header("anthropic-version", version);
         }
 
         let response = req_builder.send().await?;
@@ -236,12 +253,14 @@ pub(crate) async fn resilient_send(
 
 /// Resilient send for streaming: returns raw reqwest::Response (not parsed).
 /// Same retry logic as resilient_send but returns the response for streaming.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resilient_send_raw(
     client: &Client,
     config: &Config,
     openai_req: &mut openai::OpenAIRequest,
     upstream_name: &str,
     circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
+    client_headers: &crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<reqwest::Response> {
     let mut attempt: u32 = 0;
 
@@ -277,9 +296,18 @@ pub(crate) async fn resilient_send_raw(
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
         }
 
-        // v0.13.0: Only send anthropic-beta to Anthropic endpoints
+        // Issue #35: Forward anthropic-beta + anthropic-version to Anthropic upstreams
         if config.get_upstream_type(upstream_name) == UpstreamType::Anthropic {
-            req_builder = req_builder.header("anthropic-beta", "prompt-caching-2024-06-01");
+            let beta = client_headers.resolve_anthropic_beta();
+            let version = client_headers.resolve_anthropic_version();
+            tracing::debug!(
+                "📤 [stream] Forwarding to Anthropic upstream '{}': beta={}, version={}",
+                upstream_name,
+                beta,
+                version
+            );
+            req_builder = req_builder.header("anthropic-beta", &beta);
+            req_builder = req_builder.header("anthropic-version", version);
         }
 
         let response = req_builder.send().await?;
@@ -453,5 +481,53 @@ pub(crate) async fn resilient_send_raw(
                 )));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod anthropic_header_tests {
+    use crate::proxy::headers::ClientHeaders;
+
+    #[test]
+    fn test_anthropic_headers_sent_to_anthropic_upstream() {
+        // Verify that when upstream type is Anthropic, headers would be set
+        let ch = ClientHeaders {
+            anthropic_beta: Some("interleaved-thinking-2025-05-14".into()),
+            anthropic_version: Some("2024-10-22".into()),
+        };
+        let beta = ch.resolve_anthropic_beta();
+        let version = ch.resolve_anthropic_version();
+
+        // Beta should include proxy minimum + client betas
+        assert!(beta.contains("prompt-caching-scope-2026-01-05"));
+        assert!(beta.contains("interleaved-thinking-2025-05-14"));
+
+        // Version should be forwarded
+        assert_eq!(version, "2024-10-22");
+    }
+
+    #[test]
+    fn test_anthropic_headers_default_version() {
+        // When client doesn't send anthropic-version, default is used
+        let ch = ClientHeaders { anthropic_beta: None, anthropic_version: None };
+
+        assert_eq!(ch.resolve_anthropic_version(), "2023-06-01");
+        assert_eq!(ch.resolve_anthropic_beta(), "prompt-caching-scope-2026-01-05");
+    }
+
+    #[test]
+    fn test_beta_merge_with_per_route_type() {
+        // When global=NIM but bigmodel=Anthropic, only bigmodel gets betas
+        // This is tested by get_upstream_type() — if it returns Anthropic,
+        // the headers code runs. If it returns NIM, the headers code doesn't run.
+        // Here we verify the header resolution logic itself.
+        let ch = ClientHeaders {
+            anthropic_beta: Some("compact-2026-01-12".into()),
+            anthropic_version: None,
+        };
+        let beta = ch.resolve_anthropic_beta();
+
+        assert!(beta.contains("prompt-caching-scope-2026-01-05"));
+        assert!(beta.contains("compact-2026-01-12"));
     }
 }

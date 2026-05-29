@@ -77,6 +77,7 @@ SSE Stream → transform back to Anthropic format
 | `discovery.rs` | Model capability probing with caching |
 | `overflow_tracker.rs` | Context window overflow tracking |
 | `token_scaling.rs` | Token scaling between upstream context and CC's context window |
+| `headers.rs` | Client header extraction (`anthropic-beta`, `anthropic-version`) and resolution for Anthropic upstreams |
 | `error_types.rs` | Upstream error structures |
 
 **Models layer** — `src/models/` (API type definitions):
@@ -124,25 +125,27 @@ These behaviors are intentional and should not be changed:
 
 2. **Model identity preservation BY DESIGN** — Responses return the original Claude model ID (e.g., `claude-sonnet-4-6`) even when routed to different upstream models. This is done via `original_model` parameter in streaming responses.
 
-3. **`anthropic-beta` header conditional BY DESIGN** — Only sent to Anthropic upstream (when `NEXUS_UPSTREAM_TYPE=anthropic`). Never sent to NIM/OpenAI/OpenRouter.
+3. **`anthropic-beta` header conditional BY DESIGN** — Only sent to Anthropic upstream (when `NEXUS_UPSTREAM_TYPE=anthropic` or per-upstream `UPSTREAM_<NAME>_TYPE=anthropic`). Never sent to NIM/OpenAI/OpenRouter. Client betas are merged with `PROXY_MINIMUM_BETAS` (e.g. `prompt-caching-scope-2026-01-05`) and deduplicated. When client omits `anthropic-beta`, only proxy minimums are sent.
+
+4. **`chat_template_kwargs` conditional BY DESIGN** — `enable_thinking=true` via `chat_template_kwargs` is only included when the upstream type is NIM. Non-NIM upstreams (Anthropic, OpenAI, OpenRouter) receive the request without `chat_template_kwargs`, since they handle thinking natively.
 
 ### Proxy Layer (src/proxy/)
 
-4. **Context overflow threshold BY DESIGN** — Default 90% (configurable via `CC_OVERFLOW_THRESHOLD_PCT`, clamped to 50-95). Requests exceeding context window are pre-checked and clamped before upstream calls.
+5. **Context overflow threshold BY DESIGN** — Default 90% (configurable via `CC_OVERFLOW_THRESHOLD_PCT`, clamped to 50-95). Requests exceeding context window are pre-checked and clamped before upstream calls.
 
-5. **`probe_model_limit` capability discovery BY DESIGN** — Models without known limits are probed at runtime with a test request. Results cached in `ModelCache` (TTL from `PROBE_CACHE_TTL_SECS`).
+6. **`probe_model_limit` capability discovery BY DESIGN** — Models without known limits are probed at runtime with a test request. Results cached in `ModelCache` (TTL from `PROBE_CACHE_TTL_SECS`).
 
-6. **`anthropic.keep-alive` SSE event BY DESIGN** — Streaming sends periodic `anthropic.keep-alive` events (30s interval) to prevent Claude Code timeout on slow upstreams.
+7. **`anthropic.keep-alive` SSE event BY DESIGN** — Streaming sends periodic `anthropic.keep-alive` events (30s interval) to prevent Claude Code timeout on slow upstreams.
 
-7. **Token scaling alignment BY DESIGN** — `scale_token_usage()` in `token_scaling.rs` scales both `input_tokens` and `output_tokens` proportionally when upstream context < CC context (Branch 1). When upstream >= CC context (Branch 2), real tokens are reported — CC manages its own window. The `resolve_cc_context_window()` function subtracts `min(max_tokens, 20000)` system overhead (matching CC binary `Pd()`) so the proxy's overflow threshold (default 90%) aligns with CC's auto-compact trigger (~167K for opus-4-6).
+8. **Token scaling alignment BY DESIGN** — `scale_token_usage()` in `token_scaling.rs` scales both `input_tokens` and `output_tokens` proportionally when upstream context < CC context (Branch 1). When upstream >= CC context (Branch 2), real tokens are reported — CC manages its own window. The `resolve_cc_context_window()` function subtracts `min(max_tokens, 20000)` system overhead (matching CC binary `Pd()`) so the proxy's overflow threshold (default 90%) aligns with CC's auto-compact trigger (~167K for opus-4-6).
 
 ### Config (src/config.rs)
 
-8. **SharedConfig = Arc<ArcSwap<Config>> BY DESIGN** — Lock-free reads via `arc_swap`. Hot-reload works by storing new Arc in ArcSwap; no RwLock poisoning possible.
+9. **SharedConfig = Arc<ArcSwap<Config>> BY DESIGN** — Lock-free reads via `arc_swap`. Hot-reload works by storing new Arc in ArcSwap; no RwLock poisoning possible.
 
-9. **Config reload serialization BY DESIGN** — SIGHUP and file watcher reloads are serialized via `AtomicBool` compare_exchange to prevent race conditions.
+10. **Config reload serialization BY DESIGN** — SIGHUP and file watcher reloads are serialized via `AtomicBool` compare_exchange to prevent race conditions.
 
-10. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
+11. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
 
 ## Key Environment Variables
 
@@ -151,6 +154,7 @@ These behaviors are intentional and should not be changed:
 | `UPSTREAM_BASE_URL` | (required) | Upstream API endpoint URL |
 | `UPSTREAM_API_KEY` | (required) | API key for upstream service |
 | `NEXUS_UPSTREAM_TYPE` | `nim` | Upstream type: `anthropic`, `nim`, `openai`, `openrouter` |
+| `UPSTREAM_<NAME>_TYPE` | (falls back to `NEXUS_UPSTREAM_TYPE`) | Per-upstream type override. `<NAME>` matches the upstream name (e.g., `UPSTREAM_BIGMODEL_TYPE=anthropic`). Overrides global `NEXUS_UPSTREAM_TYPE` for that upstream |
 | `PORT` | `8315` | Server port |
 | `DEBUG` | `false` | Enable debug logging |
 | `VERBOSE` | `false` | Full request/response logging |
@@ -164,6 +168,7 @@ These behaviors are intentional and should not be changed:
 | `DRAIN_TIMEOUT_SECS` | `30` | Max graceful drain duration before forced shutdown |
 
 Model mapping: `MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>` (hyphens → underscores in model IDs)
+Per-upstream type: `UPSTREAM_<NAME>_TYPE=anthropic|nim|openai|openrouter` — overrides global `NEXUS_UPSTREAM_TYPE` for a named upstream
 
 ## Testing Strategy
 

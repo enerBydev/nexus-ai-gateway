@@ -13,6 +13,7 @@ pub mod classify;
 pub mod concurrency;
 pub mod discovery;
 pub mod error_types;
+pub mod headers;
 pub mod non_streaming;
 pub mod overflow_tracker;
 pub mod rate_limit;
@@ -20,7 +21,7 @@ pub mod retry;
 pub mod streaming;
 pub mod token_scaling;
 
-use axum::{response::Response, Extension, Json};
+use axum::{http::HeaderMap, response::Response, Extension, Json};
 use metrics::{counter, gauge, histogram};
 use reqwest::Client;
 
@@ -171,6 +172,7 @@ pub(crate) fn resolve_cc_context_window(model_id: &str, config: &Config) -> u32 
     token_scaling::resolve_effective_cc_context_window(raw, model_id)
 }
 
+#[allow(clippy::too_many_arguments)] // Axum extractors + HeaderMap for Issue #35
 pub async fn proxy_handler(
     Extension(shared_config): Extension<SharedConfig>,
     Extension(client): Extension<Client>,
@@ -178,6 +180,7 @@ pub async fn proxy_handler(
     Extension(model_cache): Extension<ModelCache>,
     Extension(model_semaphores): Extension<ModelSemaphores>,
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
+    headers: HeaderMap, // Issue #35 F4: Extract client headers for forwarding
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
     // S3: Track active connections
@@ -203,6 +206,21 @@ pub async fn proxy_handler(
     // v4.1: ArcSwap provides lock-free reads, no poisoning possible
     let config = shared_config.load_full();
 
+    // Issue #35 F4: Extract client headers for Anthropic header forwarding
+    let client_headers = crate::proxy::headers::ClientHeaders::from_headers(&headers);
+    if client_headers.anthropic_beta.is_some() {
+        tracing::debug!(
+            "📥 Client anthropic-beta: {}",
+            client_headers.anthropic_beta.as_deref().unwrap_or("")
+        );
+    }
+    if client_headers.anthropic_version.is_some() {
+        tracing::debug!(
+            "📥 Client anthropic-version: {}",
+            client_headers.anthropic_version.as_deref().unwrap_or("")
+        );
+    }
+
     tracing::info!("Received request: model={} streaming={}", req.model, is_streaming);
 
     // v8.0: Log CC thinking/effort params for forensic investigation
@@ -225,7 +243,10 @@ pub async fn proxy_handler(
         );
     }
 
-    let transform_result = transform::anthropic_to_openai(req.clone(), &config)?;
+    // Issue #35 F9: Pre-resolve upstream_name for conditional chat_template_kwargs
+    let (_, upstream_name_pre) = transform::resolve_model_and_upstream(&req.model, true, &config);
+    let transform_result =
+        transform::anthropic_to_openai(req.clone(), &config, &upstream_name_pre)?;
     let mut openai_req = transform_result.request;
     let upstream_name = transform_result.upstream_name;
     // PHASE 3.5: Cache markers available for cache integration (currently unused)
@@ -279,6 +300,7 @@ pub async fn proxy_handler(
             cc_context_window, // Issue #28: resolved dynamically
             &circuit_breaker,
             crate::SHUTDOWN_TOKEN.clone(), // NEW: pass cancellation token for graceful shutdown
+            client_headers.clone(), // Issue #35 F5: forward client headers for Anthropic upstreams
         )
         .await
     } else {
@@ -290,8 +312,9 @@ pub async fn proxy_handler(
             &upstream_name,
             model_semaphores,
             &circuit_breaker,
-            context_limit,     // FIX 6: pass context_limit for token scaling
-            cc_context_window, // Issue #28: resolved dynamically
+            context_limit,          // FIX 6: pass context_limit for token scaling
+            cc_context_window,      // Issue #28: resolved dynamically
+            client_headers.clone(), // Issue #35 F5: forward client headers for Anthropic upstreams
         )
         .await
     };
