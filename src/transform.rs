@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, UpstreamType};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use crate::prompt_cache::{CacheLocation, PromptCache};
@@ -30,7 +30,7 @@ pub struct TransformResult {
 }
 
 /// Resolve model name and upstream from model map or config defaults
-fn resolve_model_and_upstream(
+pub(crate) fn resolve_model_and_upstream(
     req_model: &str,
     has_thinking: bool,
     config: &Config,
@@ -59,6 +59,7 @@ fn resolve_model_and_upstream(
 pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     config: &Config,
+    upstream_name: &str, // Issue #35 F9: for conditional chat_template_kwargs
 ) -> ProxyResult<TransformResult> {
     // v5.0: Force thinking (effort max) for ALL models globally.
     // CC defaults to effort=medium which sends thinking.type="adaptive".
@@ -71,7 +72,7 @@ pub fn anthropic_to_openai(
     let mut cache_markers: Vec<CacheMarker> = Vec::new();
 
     // Resolve model AND upstream via model map or config
-    let (model, upstream_name) = resolve_model_and_upstream(&req.model, has_thinking, config);
+    let (model, _resolved_upstream) = resolve_model_and_upstream(&req.model, has_thinking, config);
 
     // Convert messages
     let mut openai_messages = Vec::new();
@@ -220,7 +221,11 @@ pub fn anthropic_to_openai(
             },
             tools,
             tool_choice: None,
-            chat_template_kwargs: if has_thinking {
+            // Issue #35 Bug E: chat_template_kwargs only valid for NIM upstreams.
+            // Anthropic/OpenAI/OpenRouter don't recognize this field.
+            chat_template_kwargs: if has_thinking
+                && config.get_upstream_type(upstream_name) == UpstreamType::NIM
+            {
                 Some(json!({
                     "enable_thinking": true,
                     "clear_thinking": false
@@ -229,7 +234,7 @@ pub fn anthropic_to_openai(
                 None
             },
         },
-        upstream_name,
+        upstream_name: upstream_name.to_string(),
         cache_markers,
     })
 }

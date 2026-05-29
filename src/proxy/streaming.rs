@@ -16,7 +16,7 @@ use crate::config::Config;
 use crate::error::ProxyResult;
 use crate::models::{anthropic, openai};
 use crate::proxy::concurrency::{acquire_model_permit, ModelSemaphores};
-use crate::proxy::retry::{resilient_send_raw, CHUNK_TIMEOUT_SECS, MAX_SSE_BUFFER};
+use crate::proxy::retry::{chunk_timeout_secs, resilient_send_raw, MAX_SSE_BUFFER};
 use crate::proxy::token_scaling::scale_token_usage;
 use crate::tokenizer;
 use crate::transform;
@@ -39,6 +39,7 @@ pub(crate) async fn handle_streaming(
     cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
     shutdown_token: CancellationToken,
+    client_headers: crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<Response> {
     let permit = acquire_model_permit(
         &model_semaphores,
@@ -64,9 +65,15 @@ pub(crate) async fn handle_streaming(
         nim_model_name
     );
 
-    let response =
-        resilient_send_raw(&client, &config, &mut mutable_req, upstream_name, _circuit_breaker)
-            .await?;
+    let response = resilient_send_raw(
+        &client,
+        &config,
+        &mut mutable_req,
+        upstream_name,
+        _circuit_breaker,
+        &client_headers,
+    )
+    .await?;
 
     let stream = response.bytes_stream();
     let original_model_owned = original_model.to_string();
@@ -144,7 +151,8 @@ pub(crate) fn create_sse_stream(
     let mut last_keepalive = std::time::Instant::now();
     // Use min of KEEPALIVE_INTERVAL and CHUNK_TIMEOUT for the select timeout
     // This allows us to emit keep-alive even when CHUNK_TIMEOUT is 120s
-    let keepalive_check_interval = Duration::from_secs(KEEPALIVE_INTERVAL_SECS.min(CHUNK_TIMEOUT_SECS));
+    let chunk_timeout = chunk_timeout_secs();
+    let keepalive_check_interval = Duration::from_secs(KEEPALIVE_INTERVAL_SECS.min(chunk_timeout));
     let mut consecutive_keepalives: u32 = 0;
 
     loop {
@@ -165,9 +173,9 @@ pub(crate) fn create_sse_stream(
                             last_keepalive = std::time::Instant::now();
                             consecutive_keepalives += 1;
                             // If too many consecutive keepalives, the upstream is truly dead
-                            let max_consecutive = (CHUNK_TIMEOUT_SECS / KEEPALIVE_INTERVAL_SECS).max(1);
+                            let max_consecutive = (chunk_timeout / KEEPALIVE_INTERVAL_SECS).max(1);
                             if consecutive_keepalives >= max_consecutive as u32 {
-                                tracing::error!("⏰ Stream chunk timeout after {}s — emitting error event", CHUNK_TIMEOUT_SECS);
+                                tracing::error!("⏰ Stream chunk timeout after {}s — emitting error event", chunk_timeout);
                                 // CR7: Emit error event unconditionally — client needs it even before message_start
                                 let error_event = json!({
                                     "type": "error",
@@ -175,7 +183,7 @@ pub(crate) fn create_sse_stream(
                                         "type": "api_error",
                                         "message": format!(
                                             "Stream timeout: upstream stopped responding after {}s. The response may be incomplete.",
-                                            CHUNK_TIMEOUT_SECS
+                                            chunk_timeout
                                         )
                                     }
                                 });
@@ -636,17 +644,37 @@ pub(crate) fn create_sse_stream(
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Stream error: {}", e);
+                    // CR4-fix: Diagnose specific error type for forensics
+                    let err_detail = format!(
+                        "timeout={}, connect={}, decode={}, body={}, status={:?}",
+                        e.is_timeout(), e.is_connect(), e.is_decode(), e.is_body(), e.status()
+                    );
+                    tracing::error!("Stream error: {} [{}]", e, err_detail);
                     let error_event = json!({
                         "type": "error",
                         "error": {
                             "type": "api_error",
-                            "message": format!("Stream error: {}", e)
+                            "message": format!(
+                                "Stream error: {}. This is a transient upstream error — retry should succeed.",
+                                e
+                            )
                         }
                     });
                     let sse_data = format!("event: error\ndata: {}\n\n",
                         serde_json::to_string(&error_event).unwrap_or_default());
                     yield Ok(Bytes::from(sse_data));
+
+                    // CR4-fix: Close stream cleanly so CC doesn't hang
+                    if has_sent_message_start {
+                        if current_block_type.is_some() {
+                            let stop_block = json!({"type": "content_block_stop", "index": content_index});
+                            yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n",
+                                serde_json::to_string(&stop_block).unwrap_or_default())));
+                        }
+                        let stop_event = json!({"type": "message_stop"});
+                        yield Ok(Bytes::from(format!("event: message_stop\ndata: {}\n\n",
+                            serde_json::to_string(&stop_event).unwrap_or_default())));
+                    }
                     break;
                 }
             }

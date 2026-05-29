@@ -47,6 +47,15 @@ mod tests {
                 target_model: "z-ai/glm5".to_string(),
             },
         );
+        // Insert bigmodel upstream entry so get_upstream_type can resolve it
+        config.upstreams.insert(
+            "bigmodel".to_string(),
+            crate::config::UpstreamConfig {
+                base_url: "http://bigmodel:11434".to_string(),
+                api_key: None,
+                upstream_type: None, // inherits global type by default
+            },
+        );
         config
     }
 
@@ -80,7 +89,8 @@ mod tests {
         };
 
         let config = test_config();
-        let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
 
         // Verify cache_markers has length 1 from system prompt
         assert_eq!(
@@ -135,7 +145,8 @@ mod tests {
         };
 
         let config = test_config();
-        let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
 
         // Debug output
         eprintln!("DEBUG: cache_markers.len() = {}", result.cache_markers.len());
@@ -191,7 +202,8 @@ mod tests {
         };
 
         let config = test_config();
-        let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
 
         // Verify cache_markers is empty
         assert!(
@@ -242,7 +254,8 @@ mod tests {
         };
 
         let config = test_config();
-        let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
 
         // Verify multiple markers are extracted from message content blocks
         // (system prompt markers not yet implemented)
@@ -284,7 +297,8 @@ mod tests {
             extra: json!({}),
         };
 
-        let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
+        let result =
+            anthropic_to_openai(req, &config, "bigmodel").expect("Transform should succeed");
 
         // Verify upstream_name is set to "bigmodel"
         assert_eq!(
@@ -318,7 +332,8 @@ mod tests {
         };
 
         let config = test_config();
-        let result = anthropic_to_openai(req, &config).expect("Transform should succeed");
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
 
         // Verify the request field is a properly constructed OpenAIRequest
         assert!(!result.request.model.is_empty(), "Request model should not be empty");
@@ -512,5 +527,157 @@ mod tests {
         // Should NOT be scaled - tokens should pass through as-is
         assert_eq!(result.usage.input_tokens, 100000);
         assert_eq!(result.usage.output_tokens, 4000);
+    }
+
+    // =========================================================================
+    // Issue #35 F9: Conditional chat_template_kwargs gating tests
+    // =========================================================================
+
+    #[test]
+    fn test_chat_template_kwargs_sent_to_nim() {
+        // With default NIM type, chat_template_kwargs should be included
+        let message = Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
+            extra: json!({}),
+        };
+
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![message],
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            system: None,
+            metadata: None,
+            extra: json!({}),
+        };
+
+        let config = test_config(); // global NIM
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+        assert!(
+            result.request.chat_template_kwargs.is_some(),
+            "chat_template_kwargs should be present for NIM upstream"
+        );
+    }
+
+    #[test]
+    fn test_chat_template_kwargs_not_sent_to_anthropic() {
+        // With Anthropic type, chat_template_kwargs should NOT be included
+        let mut config = test_config();
+        config.upstream_type = crate::config::UpstreamType::Anthropic;
+
+        let message = Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
+            extra: json!({}),
+        };
+
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![message],
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            system: None,
+            metadata: None,
+            extra: json!({}),
+        };
+
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+        assert!(
+            result.request.chat_template_kwargs.is_none(),
+            "chat_template_kwargs should NOT be present for Anthropic upstream"
+        );
+    }
+
+    #[test]
+    fn test_chat_template_kwargs_not_sent_to_openai() {
+        // With OpenAI type, chat_template_kwargs should NOT be included
+        let mut config = test_config();
+        config.upstream_type = crate::config::UpstreamType::OpenAI;
+
+        let message = Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
+            extra: json!({}),
+        };
+
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![message],
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            system: None,
+            metadata: None,
+            extra: json!({}),
+        };
+
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+        assert!(
+            result.request.chat_template_kwargs.is_none(),
+            "chat_template_kwargs should NOT be present for OpenAI upstream"
+        );
+    }
+
+    // =========================================================================
+    // Issue #35 F10: Edge case test for chat_template_kwargs per-route
+    // =========================================================================
+
+    #[test]
+    fn test_chat_template_kwargs_per_route_nim_default_anthropic_bigmodel() {
+        // Global=NIM but bigmodel=Anthropic → request to bigmodel should NOT have chat_template_kwargs
+        let mut config = test_config_with_model_map();
+        // Set bigmodel upstream to Anthropic type
+        config
+            .upstreams
+            .get_mut("bigmodel")
+            .expect("bigmodel upstream should exist")
+            .upstream_type = Some(crate::config::UpstreamType::Anthropic);
+        config.upstream_type = crate::config::UpstreamType::NIM; // global NIM
+
+        let message = Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
+            extra: json!({}),
+        };
+
+        let req = AnthropicRequest {
+            model: "claude-opus-4-6".to_string(), // maps to bigmodel
+            messages: vec![message],
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            system: None,
+            metadata: None,
+            extra: json!({}),
+        };
+
+        let result =
+            anthropic_to_openai(req, &config, "bigmodel").expect("Transform should succeed");
+        assert!(
+            result.request.chat_template_kwargs.is_none(),
+            "chat_template_kwargs should NOT be present when upstream is Anthropic even if global is NIM"
+        );
     }
 }

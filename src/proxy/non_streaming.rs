@@ -37,6 +37,7 @@ pub(crate) async fn handle_non_streaming(
     circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
     context_limit: u32,     // FIX 6: for token_scaling
     cc_context_window: u32, // Issue #28: resolved dynamically
+    client_headers: crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<axum::response::Response> {
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
@@ -69,6 +70,7 @@ pub(crate) async fn handle_non_streaming(
             &mut current_openai_req,
             upstream_name,
             circuit_breaker,
+            &client_headers,
         )
         .await?;
 
@@ -176,7 +178,8 @@ pub(crate) async fn handle_non_streaming(
 
                 let mut rebuilt_req = original_req.clone();
                 rebuilt_req.messages = current_messages.clone();
-                let transform_result = transform::anthropic_to_openai(rebuilt_req, &config)?;
+                let transform_result =
+                    transform::anthropic_to_openai(rebuilt_req, &config, upstream_name)?;
                 current_openai_req = transform_result.request;
 
                 tracing::info!(
