@@ -301,7 +301,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 tracing::warn!("⚠️ Config reload already in progress (SIGHUP skipped)");
                 continue;
             }
-            match Config::reload(cli_debug, cli_verbose, cli_port) {
+            let reload_path = reload_config.load().config_path.clone();
+            match Config::reload(cli_debug, cli_verbose, cli_port, reload_path) {
                 Ok(new_config) => {
                     let old_maps = reload_config.load().model_map.len();
                     reload_config.store(Arc::new(new_config));
@@ -320,95 +321,143 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
     });
 
-    // v5.0: File watcher for auto-reload on .env changes (Doc1 Component 1)
+    // fix#52: File watcher with notify direct + 5-layer protection stack
+    // Layer 1: notify v8 direct — filter ModifyKind::Data (excludes ACCESS/OPEN)
+    // Layer 2: Manual debounce (10s) via tokio::select!
+    // Layer 3: mtime check (defense-in-depth)
+    // Layer 4: Cooldown 15s > debounce 10s (prevents burst reloads)
+    // Layer 5: AtomicBool serialization (prevents concurrent SIGHUP+watcher reload)
     let watch_config = config.clone();
     tokio::spawn(async move {
-        use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+        use notify::event::ModifyKind;
+        use notify::{Event, EventKind, RecursiveMode, Watcher};
 
-        let env_path = std::env::var("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".nexus-ai-gateway.env"))
-            .unwrap_or_else(|_| std::path::PathBuf::from(".env"));
+        // Derive watch_path from stored config (partial fix for #45)
+        let env_path = watch_config.load().config_path.clone().unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".nexus-ai-gateway.env"))
+                .unwrap_or_else(|_| std::path::PathBuf::from(".env"))
+        });
 
         if !env_path.exists() {
             tracing::warn!("👁 File watcher: {} not found, skipping", env_path.display());
             return;
         }
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(16);
         let rt = tokio::runtime::Handle::current();
-        let mut debouncer = match new_debouncer(
-            std::time::Duration::from_secs(10), // > cooldown * 2 to prevent burst reloads
-            move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, _>| {
-                if let Ok(evts) = events {
-                    for evt in evts {
-                        if evt.kind == DebouncedEventKind::Any {
-                            let tx = tx.clone();
-                            rt.spawn(async move {
-                                let _ = tx.send(()).await;
-                            });
-                        }
+
+        // Layer 1: notify direct — filter only Modify(Data) events
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+                if let Ok(event) = res {
+                    if matches!(event.kind, EventKind::Modify(ModifyKind::Data(_))) {
+                        let tx = tx.clone();
+                        rt.spawn(async move {
+                            let _ = tx.send(()).await;
+                        });
                     }
                 }
-            },
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!("👁 File watcher init failed: {} (SIGHUP still works)", e);
-                return;
-            }
-        };
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::warn!("👁 File watcher init failed: {} (SIGHUP still works)", e);
+                    return;
+                }
+            };
 
-        if let Err(e) = debouncer.watcher().watch(&env_path, notify::RecursiveMode::NonRecursive) {
+        if let Err(e) = watcher.watch(&env_path, RecursiveMode::NonRecursive) {
             tracing::warn!("👁 Cannot watch {}: {} (SIGHUP still works)", env_path.display(), e);
             return;
         }
 
         tracing::info!(
-            "👁 Watching {} for changes (auto-reload enabled, 10s debounce)",
+            "👁 Watching {} for changes (notify direct, 10s debounce, mtime check, 15s cooldown)",
             env_path.display()
         );
 
-        // v10.3: Add cooldown to prevent rapid-fire reloads from write lock contention
-        let mut last_reload = std::time::Instant::now();
-        while rx.recv().await.is_some() {
-            if last_reload.elapsed().as_secs() < 5 {
-                // Increased for stability
-                tracing::debug!("🔄 .env change debounced (cooldown)");
-                continue;
-            }
-            last_reload = std::time::Instant::now();
-            // S11: Skip config reload if server is draining for shutdown
-            if IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::debug!("🛑 Server is draining — skipping file watcher config reload");
-                reload_flag_watcher.store(false, std::sync::atomic::Ordering::SeqCst);
-                continue;
-            }
-            tracing::info!("🔄 .env changed — auto-reloading config...");
-            // v0.11.0 (HI-06): Skip if another reload is already in progress
-            if reload_flag_watcher
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-                .is_err()
-            {
-                tracing::warn!("⚠️ Config reload already in progress (watcher skipped)");
-                continue;
-            }
-            match Config::reload(cli_debug, cli_verbose, cli_port) {
-                Ok(new_config) => {
-                    let old_maps = watch_config.load().model_map.len();
-                    watch_config.store(Arc::new(new_config));
-                    let new_maps = watch_config.load().model_map.len();
-                    tracing::info!(
-                        "✅ Config auto-reloaded: {} model mappings (was {})",
-                        new_maps,
-                        old_maps
-                    );
+        // Layer 3: mtime tracking (defense-in-depth against spurious Modify events)
+        let mut last_mtime = std::fs::metadata(&env_path).and_then(|m| m.modified()).ok();
+
+        // Layer 4: Cooldown (15s > debounce 10s — prevents burst reloads)
+        let mut last_reload = std::time::Instant::now() - std::time::Duration::from_secs(20); // Allow first reload immediately
+
+        // Layer 2: Manual debounce with tokio::select!
+        let debounce = std::time::Duration::from_secs(10);
+        let debounce_sleep = tokio::time::sleep(debounce);
+        tokio::pin!(debounce_sleep);
+        // Reset to "now" so the first select! branch fires immediately on the first event
+        debounce_sleep.as_mut().reset(tokio::time::Instant::now());
+
+        loop {
+            tokio::select! {
+                // New Modify event arrived → reset debounce timer
+                _ = rx.recv() => {
+                    debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
                 }
-                Err(e) => {
-                    tracing::error!("❌ Auto-reload failed: {}", e);
+                // Debounce expired → proceed with reload pipeline
+                _ = debounce_sleep.as_mut() => {
+                    // S11: Skip if server is draining
+                    if IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+                        tracing::debug!("🛑 Server is draining — skipping file watcher reload");
+                        debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
+                        continue;
+                    }
+
+                    // Layer 3: mtime check (defense-in-depth)
+                    let current_mtime = std::fs::metadata(&env_path)
+                        .and_then(|m| m.modified())
+                        .ok();
+                    if current_mtime == last_mtime {
+                        tracing::debug!("🔄 .env modify event but mtime unchanged — skipping reload");
+                        debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
+                        continue;
+                    }
+                    last_mtime = current_mtime;
+
+                    // Layer 4: Cooldown check (15s minimum between reloads)
+                    if last_reload.elapsed().as_secs() < 15 {
+                        tracing::debug!(
+                            "🔄 .env change debounced (cooldown {}s < 15s)",
+                            last_reload.elapsed().as_secs()
+                        );
+                        debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
+                        continue;
+                    }
+                    last_reload = std::time::Instant::now();
+
+                    // Layer 5: AtomicBool serialization
+                    if reload_flag_watcher
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+                        .is_err()
+                    {
+                        tracing::warn!("⚠️ Config reload already in progress (watcher skipped)");
+                        debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
+                        continue;
+                    }
+
+                    tracing::info!("🔄 .env changed — auto-reloading config...");
+                    let reload_path = watch_config.load().config_path.clone();
+                    match Config::reload(cli_debug, cli_verbose, cli_port, reload_path) {
+                        Ok(new_config) => {
+                            let old_maps = watch_config.load().model_map.len();
+                            watch_config.store(Arc::new(new_config));
+                            let new_maps = watch_config.load().model_map.len();
+                            tracing::info!(
+                                "✅ Config auto-reloaded: {} model mappings (was {})",
+                                new_maps, old_maps
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("❌ Auto-reload failed: {}", e);
+                        }
+                    }
+                    reload_flag_watcher.store(false, Ordering::SeqCst);
+
+                    // Reset timer for next cycle
+                    debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
                 }
             }
-            reload_flag_watcher.store(false, Ordering::SeqCst);
         }
     });
 
@@ -695,3 +744,8 @@ fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// fix#52: Unit tests for file watcher 5-layer protection stack
+#[cfg(test)]
+#[path = "watcher_test.rs"]
+mod watcher_test;

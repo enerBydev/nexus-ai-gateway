@@ -508,6 +508,7 @@ mod context_window_tests {
             cb_threshold: 10,
             cb_recovery_secs: 60,
             cc_model_context_windows: Default::default(),
+            config_path: None,
         }
     }
 

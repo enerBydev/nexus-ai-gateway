@@ -34,6 +34,7 @@ mod tests {
             cb_threshold: 10,
             cb_recovery_secs: 60,
             cc_model_context_windows: HashMap::new(),
+            config_path: None,
         }
     }
 

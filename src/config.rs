@@ -91,6 +91,9 @@ pub struct Config {
     /// Populated from CC_MODEL_CONTEXT_WINDOWS env var.
     /// Format: "claude-opus-4-6:200000,claude-sonnet-4-6:200000,claude-haiku-4-5:200000"
     pub cc_model_context_windows: HashMap<String, u32>,
+    /// Path to custom config file (--config flag)
+    /// Stored for hot-reload support (SIGHUP + file watcher)
+    pub config_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -400,6 +403,7 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
+            config_path: None, // Set by caller (from_env_with_path)
         })
     }
 
@@ -438,6 +442,7 @@ impl Config {
     }
 
     pub fn from_env_with_path(custom_path: Option<PathBuf>) -> Result<Self> {
+        let stored_config_path = custom_path.clone();
         if let Some(path) = Self::load_dotenv(custom_path) {
             eprintln!("📄 Loaded config from: {}", path.display());
         } else {
@@ -637,7 +642,7 @@ impl Config {
             }
         }
 
-        Ok(Config {
+        let config = Config {
             port,
             base_url,
             api_key,
@@ -660,7 +665,9 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
-        })
+            config_path: stored_config_path,
+        };
+        Ok(config)
     }
 
     /// Returns the chat completions URL for the default upstream.
@@ -698,9 +705,17 @@ impl Config {
 
     /// Reload config from environment/dotenv file
     /// Preserves CLI overrides (debug, verbose, port)
-    pub fn reload(cli_debug: bool, cli_verbose: bool, cli_port: Option<u16>) -> Result<Self> {
-        let env_map = Self::load_env_to_map(None)?;
+    pub fn reload(
+        cli_debug: bool,
+        cli_verbose: bool,
+        cli_port: Option<u16>,
+        config_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        let env_map = Self::load_env_to_map(config_path.clone())?;
         let mut config = Self::from_map(&env_map)?;
+        // fix#52 (CodeRabbit): Preserve config_path so subsequent reloads
+        // (SIGHUP/watcher) still use the custom --config path
+        config.config_path = config_path;
         if cli_debug {
             config.debug = true;
         }
