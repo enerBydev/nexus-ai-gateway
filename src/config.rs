@@ -642,7 +642,7 @@ impl Config {
             }
         }
 
-        let mut config = Config {
+        let config = Config {
             port,
             base_url,
             api_key,
@@ -665,9 +665,8 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
-            config_path: None,
+            config_path: stored_config_path,
         };
-        config.config_path = stored_config_path;
         Ok(config)
     }
 
@@ -712,8 +711,11 @@ impl Config {
         cli_port: Option<u16>,
         config_path: Option<PathBuf>,
     ) -> Result<Self> {
-        let env_map = Self::load_env_to_map(config_path)?;
+        let env_map = Self::load_env_to_map(config_path.clone())?;
         let mut config = Self::from_map(&env_map)?;
+        // fix#52 (CodeRabbit): Preserve config_path so subsequent reloads
+        // (SIGHUP/watcher) still use the custom --config path
+        config.config_path = config_path;
         if cli_debug {
             config.debug = true;
         }

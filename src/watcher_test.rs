@@ -105,7 +105,7 @@ fn layer1_remove_event_should_not_trigger() {
 #[test]
 fn layer3_mtime_unchanged_skips_reload() {
     // Simulate: both last_mtime and current_mtime are the same
-    let last_mtime: Option<Instant> = Some(Instant::now());
+    let last_mtime: Option<std::time::SystemTime> = Some(std::time::SystemTime::now());
     let current_mtime = last_mtime;
 
     // The watcher logic is: if current_mtime == last_mtime { skip }
@@ -115,9 +115,10 @@ fn layer3_mtime_unchanged_skips_reload() {
 #[test]
 fn layer3_mtime_changed_allows_reload() {
     // Simulate: last_mtime and current_mtime differ
-    let last_mtime: Option<Instant> = Some(Instant::now());
+    let last_mtime: Option<std::time::SystemTime> = Some(std::time::SystemTime::now());
     // After a file write, mtime would be later
-    let current_mtime: Option<Instant> = Some(Instant::now() + Duration::from_secs(1));
+    let current_mtime: Option<std::time::SystemTime> =
+        Some(std::time::SystemTime::now() + Duration::from_secs(1));
 
     assert_ne!(current_mtime, last_mtime, "When mtime changed, reload should NOT be skipped");
 }
@@ -126,8 +127,8 @@ fn layer3_mtime_changed_allows_reload() {
 fn layer3_none_mtime_allows_reload() {
     // If we couldn't read mtime before (None), and now we can (Some),
     // that's a change → allow reload
-    let last_mtime: Option<Instant> = None;
-    let current_mtime: Option<Instant> = Some(Instant::now());
+    let last_mtime: Option<std::time::SystemTime> = None;
+    let current_mtime: Option<std::time::SystemTime> = Some(std::time::SystemTime::now());
 
     assert_ne!(current_mtime, last_mtime, "Transition from None→Some mtime must allow reload");
 }
@@ -136,8 +137,8 @@ fn layer3_none_mtime_allows_reload() {
 fn layer3_both_none_skips_reload() {
     // If both are None (can't read mtime at all), the watcher
     // logic treats them as equal → skip
-    let last_mtime: Option<Instant> = None;
-    let current_mtime: Option<Instant> = None;
+    let last_mtime: Option<std::time::SystemTime> = None;
+    let current_mtime: Option<std::time::SystemTime> = None;
 
     assert_eq!(current_mtime, last_mtime, "Both None means mtime unchanged — must skip reload");
 }
