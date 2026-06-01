@@ -379,33 +379,46 @@ impl Config {
             Self::get_from_map(data, "TELEMETRY_BEACON_URL").filter(|u| !u.is_empty());
 
         // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
-        // If HOME is unset, disable telemetry rather than risk insecure storage.
+        // If HOME is unset AND no explicit paths provided, disable telemetry.
+        let explicit_telemetry_dir = Self::get_from_map(data, "TELEMETRY_DIR");
+        let explicit_secret_path = Self::get_from_map(data, "TELEMETRY_SECRET_PATH");
+
         let home_dir = match std::env::var("HOME") {
             Ok(h) if !h.is_empty() => h,
-            _ => {
-                if telemetry_enabled {
-                    tracing::warn!(
-                        "⚠️ TELEMETRY_ENABLED=true but $HOME not set — cannot safely store secret. \
-                         Disabling telemetry."
-                    );
-                }
-                String::new()
-            }
+            _ => String::new(),
         };
-        let telemetry_dir = Self::get_from_map(data, "TELEMETRY_DIR")
+
+        let telemetry_dir = explicit_telemetry_dir
+            .clone()
             .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway"));
         let telemetry_db_path = Self::get_from_map(data, "TELEMETRY_DB_PATH")
             .unwrap_or_else(|| format!("{telemetry_dir}/telemetry.db"));
-        // If HOME was unset, force-disable telemetry
-        let telemetry_enabled = if home_dir.is_empty() { false } else { telemetry_enabled };
+
+        // Only force-disable telemetry when HOME is unset AND no explicit paths given
+        // (systemd/containers commonly set TELEMETRY_DIR explicitly)
+        let telemetry_enabled = if home_dir.is_empty()
+            && explicit_telemetry_dir.is_none()
+            && explicit_secret_path.is_none()
+        {
+            if telemetry_enabled {
+                tracing::warn!(
+                    "⚠️ TELEMETRY_ENABLED=true but $HOME not set and no explicit \
+                     TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret. \
+                     Disabling telemetry."
+                );
+            }
+            false
+        } else {
+            telemetry_enabled
+        };
 
         let telemetry_retention_days = Self::get_from_map(data, "TELEMETRY_RETENTION_DAYS")
             .and_then(|v| v.parse().ok())
             .unwrap_or(30)
             .max(1);
 
-        let telemetry_secret_path = Self::get_from_map(data, "TELEMETRY_SECRET_PATH")
-            .unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
+        let telemetry_secret_path =
+            explicit_secret_path.unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
 
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
@@ -683,25 +696,38 @@ impl Config {
         let telemetry_beacon_url = env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty());
 
         // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
-        // If HOME is unset, disable telemetry rather than risk insecure storage.
+        // If HOME is unset AND no explicit paths provided, disable telemetry.
+        let explicit_telemetry_dir = env::var("TELEMETRY_DIR").ok();
+        let explicit_secret_path = env::var("TELEMETRY_SECRET_PATH").ok();
+
         let home_dir = match std::env::var("HOME") {
             Ok(h) if !h.is_empty() => h,
-            _ => {
-                if telemetry_enabled {
-                    tracing::warn!(
-                        "⚠️ TELEMETRY_ENABLED=true but $HOME not set — cannot safely store secret. \
-                         Disabling telemetry."
-                    );
-                }
-                String::new()
-            }
+            _ => String::new(),
         };
-        let telemetry_dir = env::var("TELEMETRY_DIR")
-            .unwrap_or_else(|_| format!("{home_dir}/.local/share/nexus-ai-gateway"));
+
+        let telemetry_dir = explicit_telemetry_dir
+            .clone()
+            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway"));
         let telemetry_db_path = env::var("TELEMETRY_DB_PATH")
             .unwrap_or_else(|_| format!("{telemetry_dir}/telemetry.db"));
-        // If HOME was unset, force-disable telemetry
-        let telemetry_enabled = if home_dir.is_empty() { false } else { telemetry_enabled };
+
+        // Only force-disable telemetry when HOME is unset AND no explicit paths given
+        // (systemd/containers commonly set TELEMETRY_DIR explicitly)
+        let telemetry_enabled = if home_dir.is_empty()
+            && explicit_telemetry_dir.is_none()
+            && explicit_secret_path.is_none()
+        {
+            if telemetry_enabled {
+                tracing::warn!(
+                    "⚠️ TELEMETRY_ENABLED=true but $HOME not set and no explicit \
+                     TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret. \
+                     Disabling telemetry."
+                );
+            }
+            false
+        } else {
+            telemetry_enabled
+        };
 
         let telemetry_retention_days = env::var("TELEMETRY_RETENTION_DAYS")
             .ok()
@@ -709,9 +735,8 @@ impl Config {
             .unwrap_or(30)
             .max(1);
 
-        let telemetry_secret_path = env::var("TELEMETRY_SECRET_PATH").unwrap_or_else(|_| {
-            format!("{home_dir}/.local/share/nexus-ai-gateway/.telemetry_secret")
-        });
+        let telemetry_secret_path =
+            explicit_secret_path.unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
 
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
