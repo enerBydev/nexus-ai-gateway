@@ -140,12 +140,19 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         PrometheusBuilder::new().install_recorder().expect("Failed to install Prometheus recorder");
 
     // v0.18.0: Initialize telemetry (privacy-first analytics)
+    // CR fix: Pass beacon_url + explicit failure logging
     let telemetry_ctx = crate::telemetry::TelemetryContext::init(
         config.telemetry_enabled,
         &config.telemetry_db_path,
         &config.telemetry_secret_path,
         config.telemetry_retention_days,
+        config.telemetry_beacon_url.clone(),
     );
+    if config.telemetry_enabled && telemetry_ctx.is_none() {
+        tracing::warn!(
+            "⚠️ Telemetry was enabled but initialization failed — running without telemetry"
+        );
+    }
 
     tracing::info!("Starting NEXUS-AI-Gateway v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Port: {}", config.port);

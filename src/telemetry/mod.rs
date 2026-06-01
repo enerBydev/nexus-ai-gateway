@@ -112,6 +112,7 @@ impl TelemetryContext {
         db_path: &str,
         secret_path: &str,
         retention_days: u32,
+        beacon_url: Option<String>,
     ) -> Option<Self> {
         if !enabled {
             tracing::info!("📊 Telemetry: disabled (TELEMETRY_ENABLED=false)");
@@ -144,6 +145,10 @@ impl TelemetryContext {
         // Update Prometheus gauge with today's unique count
         if let Ok(count) = store.get_unique_fingerprint_count_today() {
             crate::telemetry::metrics::record_unique_users(count);
+        }
+
+        if beacon_url.is_some() {
+            tracing::info!("📡 Telemetry beacon configured");
         }
 
         tracing::info!("📊 Telemetry: enabled (db={}, retention={}d)", db_path, retention_days);

@@ -95,6 +95,8 @@ pub struct Config {
     pub telemetry_enabled: bool,
     #[allow(dead_code)]
     pub telemetry_beacon_url: Option<String>,
+    #[allow(dead_code)]
+    pub telemetry_dir: String,
     pub telemetry_db_path: String,
     pub telemetry_retention_days: u32,
     pub telemetry_secret_path: String,
@@ -370,15 +372,32 @@ impl Config {
 
         // Telemetry configuration (v0.18.0)
         let telemetry_enabled = Self::get_from_map(data, "TELEMETRY_ENABLED")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(true);
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let telemetry_beacon_url =
             Self::get_from_map(data, "TELEMETRY_BEACON_URL").filter(|u| !u.is_empty());
 
-        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
+        // If HOME is unset, disable telemetry rather than risk insecure storage.
+        let home_dir = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => {
+                if telemetry_enabled {
+                    tracing::warn!(
+                        "⚠️ TELEMETRY_ENABLED=true but $HOME not set — cannot safely store secret. \
+                         Disabling telemetry."
+                    );
+                }
+                String::new()
+            }
+        };
+        let telemetry_dir = Self::get_from_map(data, "TELEMETRY_DIR")
+            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway"));
         let telemetry_db_path = Self::get_from_map(data, "TELEMETRY_DB_PATH")
-            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway/telemetry.db"));
+            .unwrap_or_else(|| format!("{telemetry_dir}/telemetry.db"));
+        // If HOME was unset, force-disable telemetry
+        let telemetry_enabled = if home_dir.is_empty() { false } else { telemetry_enabled };
 
         let telemetry_retention_days = Self::get_from_map(data, "TELEMETRY_RETENTION_DAYS")
             .and_then(|v| v.parse().ok())
@@ -386,9 +405,7 @@ impl Config {
             .max(1);
 
         let telemetry_secret_path = Self::get_from_map(data, "TELEMETRY_SECRET_PATH")
-            .unwrap_or_else(|| {
-                format!("{home_dir}/.local/share/nexus-ai-gateway/.telemetry_secret")
-            });
+            .unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
 
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
@@ -434,6 +451,7 @@ impl Config {
             cc_model_context_windows,
             telemetry_enabled,
             telemetry_beacon_url,
+            telemetry_dir,
             telemetry_db_path,
             telemetry_retention_days,
             telemetry_secret_path,
@@ -659,14 +677,31 @@ impl Config {
 
         // Telemetry configuration (v0.18.0)
         let telemetry_enabled = env::var("TELEMETRY_ENABLED")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(true);
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let telemetry_beacon_url = env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty());
 
-        let home_dir = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
+        // If HOME is unset, disable telemetry rather than risk insecure storage.
+        let home_dir = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => {
+                if telemetry_enabled {
+                    tracing::warn!(
+                        "⚠️ TELEMETRY_ENABLED=true but $HOME not set — cannot safely store secret. \
+                         Disabling telemetry."
+                    );
+                }
+                String::new()
+            }
+        };
+        let telemetry_dir = env::var("TELEMETRY_DIR")
+            .unwrap_or_else(|_| format!("{home_dir}/.local/share/nexus-ai-gateway"));
         let telemetry_db_path = env::var("TELEMETRY_DB_PATH")
-            .unwrap_or_else(|_| format!("{home_dir}/.local/share/nexus-ai-gateway/telemetry.db"));
+            .unwrap_or_else(|_| format!("{telemetry_dir}/telemetry.db"));
+        // If HOME was unset, force-disable telemetry
+        let telemetry_enabled = if home_dir.is_empty() { false } else { telemetry_enabled };
 
         let telemetry_retention_days = env::var("TELEMETRY_RETENTION_DAYS")
             .ok()
@@ -722,6 +757,7 @@ impl Config {
             cc_model_context_windows,
             telemetry_enabled,
             telemetry_beacon_url,
+            telemetry_dir,
             telemetry_db_path,
             telemetry_retention_days,
             telemetry_secret_path,

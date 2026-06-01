@@ -92,31 +92,62 @@ impl TelemetryStore {
             ],
         ).with_context(|| "inserting daily_fingerprint")?;
 
-        // Merge model stats if row already existed
-        // Simple approach: just update with the current model
-        let _ = conn.execute(
-            "UPDATE daily_fingerprints SET model_stats = ?
-             WHERE date = ?1 AND fingerprint = ?2",
-            params![serde_json::json!({ fp.model.clone(): 1 }).to_string(), today, composite],
-        );
+        // CR fix: Proper accumulation for daily_stats (read-modify-write)
+        let tool_flag_f = if fp.has_tool_use { 1.0 } else { 0.0 };
+        let existing_stats: Option<(i64, String, String, f64, f64)> = conn
+            .query_row(
+                "SELECT total_requests, models_used, client_types, avg_message_count, tool_use_ratio \
+                 FROM daily_stats WHERE date = ?1",
+                params![today],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .ok();
 
-        // Upsert daily_stats
-        let tool_flag = if fp.has_tool_use { 1 } else { 0 };
-        conn.execute(
-            "INSERT INTO daily_stats (date, total_requests, unique_fingerprints, models_used, client_types, avg_message_count, tool_use_ratio)
-             VALUES (?1, 1, 0, ?2, ?3, ?4, ?5)
-             ON CONFLICT(date) DO UPDATE SET
-               total_requests = total_requests + 1,
-               models_used = excluded.models_used,
-               client_types = excluded.client_types",
-            params![
-                today,
-                serde_json::json!({ fp.model.clone(): 1 }).to_string(),
-                serde_json::json!({ ct_label: 1 }).to_string(),
-                fp.message_count as f64,
-                tool_flag as f64,
-            ],
-        ).with_context(|| "inserting daily_stats")?;
+        if let Some((reqs, models_json, types_json, avg_msg, tool_ratio)) = existing_stats {
+            // Merge model counts
+            let mut models: std::collections::HashMap<String, i64> =
+                serde_json::from_str(&models_json).unwrap_or_default();
+            *models.entry(fp.model.clone()).or_insert(0) += 1;
+
+            // Merge client type counts
+            let mut types: std::collections::HashMap<String, i64> =
+                serde_json::from_str(&types_json).unwrap_or_default();
+            *types.entry(ct_label.clone()).or_insert(0) += 1;
+
+            // Running average for message_count and tool_use_ratio
+            let total = reqs as f64;
+            let new_avg_msg = (avg_msg * total + fp.message_count as f64) / (total + 1.0);
+            let new_tool_ratio = (tool_ratio * total + tool_flag_f) / (total + 1.0);
+
+            conn.execute(
+                "UPDATE daily_stats SET \
+                 total_requests = total_requests + 1, \
+                 models_used = ?1, client_types = ?2, \
+                 avg_message_count = ?3, tool_use_ratio = ?4 \
+                 WHERE date = ?5",
+                params![
+                    serde_json::to_string(&models).unwrap_or_default(),
+                    serde_json::to_string(&types).unwrap_or_default(),
+                    new_avg_msg,
+                    new_tool_ratio,
+                    today,
+                ],
+            )
+            .with_context(|| "updating daily_stats")?;
+        } else {
+            // First request of the day — insert
+            conn.execute(
+                "INSERT INTO daily_stats (date, total_requests, unique_fingerprints, models_used, client_types, avg_message_count, tool_use_ratio) \
+                 VALUES (?1, 1, 0, ?2, ?3, ?4, ?5)",
+                params![
+                    today,
+                    serde_json::json!({ fp.model.clone(): 1 }).to_string(),
+                    serde_json::json!({ ct_label: 1 }).to_string(),
+                    fp.message_count as f64,
+                    tool_flag_f,
+                ],
+            ).with_context(|| "inserting daily_stats")?;
+        }
 
         // Recalculate unique_fingerprints for today
         let unique: i64 = conn
