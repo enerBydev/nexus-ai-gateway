@@ -76,7 +76,8 @@ if [ "$remote_ref" = "refs/heads/main" ]; then
 
 	# ═══════════════════════════════════════════════════════
 	# Auto-deploy: build and install release binary
-	# For GitHub→local sync, see post-merge hook
+	# For gh pr merge / UI merge sync, git-sync daemon handles automatically
+	# Post-push auto-sync is below (Layer 2 of 3-layer sync system)
 	# ═══════════════════════════════════════════════════════
 	(
 		# Wait for push to complete
@@ -117,6 +118,39 @@ if [ "$remote_ref" = "refs/heads/main" ]; then
 			fi
 		else
 			echo "❌ Build failed — service NOT updated (previous binary still running)"
+		fi
+	) &
+
+	# ═══════════════════════════════════════════════════════
+	# Auto-sync: pull CI version bump commit after push
+	# This is Layer 2 of the 3-layer autonomous sync system.
+	# Layer 1 (git-sync daemon) provides backup coverage.
+	# ═══════════════════════════════════════════════════════
+	(
+		echo ""
+		echo "⏳ Auto-sync: waiting for CI auto-version commit..."
+		MAX_RETRIES=6
+		RETRY_INTERVAL=60
+		SYNCED=false
+
+		for i in $(seq 1 $MAX_RETRIES); do
+			sleep $RETRY_INTERVAL
+			if git pull --ff-only origin main 2>/dev/null; then
+				NEW_VER=$(cat VERSION 2>/dev/null | tr -d '[:space:]')
+				echo "✅ Auto-sync: local updated to v${NEW_VER} (attempt $i/$MAX_RETRIES)"
+
+				# Trigger post-merge hook for rebuild
+				if [ -x scripts/hooks/post-merge ]; then
+					scripts/hooks/post-merge
+				fi
+				SYNCED=true
+				break
+			fi
+		done
+
+		if [ "$SYNCED" = false ]; then
+			echo "ℹ️ Auto-sync: no version bump after $((MAX_RETRIES * RETRY_INTERVAL))s"
+			echo "  Git-sync daemon will handle this automatically"
 		fi
 	) &
 fi
