@@ -91,6 +91,13 @@ pub struct Config {
     /// Populated from CC_MODEL_CONTEXT_WINDOWS env var.
     /// Format: "claude-opus-4-6:200000,claude-sonnet-4-6:200000,claude-haiku-4-5:200000"
     pub cc_model_context_windows: HashMap<String, u32>,
+    // Telemetry configuration (v0.18.0)
+    pub telemetry_enabled: bool,
+    #[allow(dead_code)]
+    pub telemetry_beacon_url: Option<String>,
+    pub telemetry_db_path: String,
+    pub telemetry_retention_days: u32,
+    pub telemetry_secret_path: String,
     /// Path to custom config file (--config flag)
     /// Stored for hot-reload support (SIGHUP + file watcher)
     pub config_path: Option<PathBuf>,
@@ -361,6 +368,28 @@ impl Config {
             .map(|v| Self::parse_model_context_windows(&v))
             .unwrap_or_default();
 
+        // Telemetry configuration (v0.18.0)
+        let telemetry_enabled = Self::get_from_map(data, "TELEMETRY_ENABLED")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(true);
+
+        let telemetry_beacon_url =
+            Self::get_from_map(data, "TELEMETRY_BEACON_URL").filter(|u| !u.is_empty());
+
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let telemetry_db_path = Self::get_from_map(data, "TELEMETRY_DB_PATH")
+            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway/telemetry.db"));
+
+        let telemetry_retention_days = Self::get_from_map(data, "TELEMETRY_RETENTION_DAYS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+            .max(1);
+
+        let telemetry_secret_path = Self::get_from_map(data, "TELEMETRY_SECRET_PATH")
+            .unwrap_or_else(|| {
+                format!("{home_dir}/.local/share/nexus-ai-gateway/.telemetry_secret")
+            });
+
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
             if route.upstream_name != "default" {
@@ -403,6 +432,11 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
+            telemetry_enabled,
+            telemetry_beacon_url,
+            telemetry_db_path,
+            telemetry_retention_days,
+            telemetry_secret_path,
             config_path: None, // Set by caller (from_env_with_path)
         })
     }
@@ -623,6 +657,27 @@ impl Config {
             .map(|v| Self::parse_model_context_windows(&v))
             .unwrap_or_default();
 
+        // Telemetry configuration (v0.18.0)
+        let telemetry_enabled = env::var("TELEMETRY_ENABLED")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(true);
+
+        let telemetry_beacon_url = env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty());
+
+        let home_dir = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let telemetry_db_path = env::var("TELEMETRY_DB_PATH")
+            .unwrap_or_else(|_| format!("{home_dir}/.local/share/nexus-ai-gateway/telemetry.db"));
+
+        let telemetry_retention_days = env::var("TELEMETRY_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+            .max(1);
+
+        let telemetry_secret_path = env::var("TELEMETRY_SECRET_PATH").unwrap_or_else(|_| {
+            format!("{home_dir}/.local/share/nexus-ai-gateway/.telemetry_secret")
+        });
+
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
             if route.upstream_name != "default" {
@@ -665,6 +720,11 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
+            telemetry_enabled,
+            telemetry_beacon_url,
+            telemetry_db_path,
+            telemetry_retention_days,
+            telemetry_secret_path,
             config_path: stored_config_path,
         };
         Ok(config)

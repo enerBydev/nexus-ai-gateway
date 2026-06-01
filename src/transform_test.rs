@@ -34,6 +34,11 @@ mod tests {
             cb_threshold: 10,
             cb_recovery_secs: 60,
             cc_model_context_windows: HashMap::new(),
+            telemetry_enabled: false,
+            telemetry_beacon_url: None,
+            telemetry_db_path: "/tmp/nexus-telemetry.db".to_string(),
+            telemetry_retention_days: 30,
+            telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
             config_path: None,
         }
     }
