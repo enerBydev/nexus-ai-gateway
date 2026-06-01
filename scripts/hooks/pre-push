@@ -129,6 +129,14 @@ if [ "$remote_ref" = "refs/heads/main" ]; then
 	(
 		echo ""
 		echo "⏳ Auto-sync: waiting for CI auto-version commit..."
+
+		# Safety: only pull if currently on main branch
+		AUTO_SYNC_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+		if [ "$AUTO_SYNC_BRANCH" != "main" ]; then
+			echo "ℹ️ Auto-sync: not on main (current: $AUTO_SYNC_BRANCH) — skipping"
+			exit 0
+		fi
+
 		MAX_RETRIES=6
 		RETRY_INTERVAL=60
 		SYNCED=false

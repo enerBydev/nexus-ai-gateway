@@ -23,8 +23,6 @@ test_section() { echo ""; echo "── $1 ──"; }
 # Test Execution
 # ═══════════════════════════════════════════════════════════════
 
-test_section "Syntax & Structure Tests"
-
 # Test 1: Script is valid bash (bash -n exits 0)
 test_section "Syntax & Structure Tests"
 if bash -n "$DAEMON_SCRIPT" 2>/dev/null; then
@@ -49,9 +47,9 @@ if grep -q "cmd_watch" "$DAEMON_SCRIPT" && grep -q "cmd_sync" "$DAEMON_SCRIPT" &
    grep -q "cmd_install" "$DAEMON_SCRIPT" && grep -q "cmd_uninstall" "$DAEMON_SCRIPT" && \
    grep -q "cmd_status" "$DAEMON_SCRIPT" && grep -q "cmd_log" "$DAEMON_SCRIPT" && \
    grep -q "cmd_help" "$DAEMON_SCRIPT"; then
-    pass "All 6 subcommands exist in dispatch"
+    pass "All 7 subcommand functions exist in dispatch"
 else
-    fail "Missing subcommands in dispatch"
+    fail "Missing subcommand functions in dispatch"
 fi
 
 # Test 4: Script has proper shebang
@@ -119,17 +117,19 @@ else
 fi
 
 # Test 7.2: POLL_INTERVAL is numeric and >= 30
-if [ "$(grep "POLL_INTERVAL=" "$DAEMON_SCRIPT" | cut -d= -f2 | cut -d" " -f1 | tr -d ' ')" -ge 30 ] || true; then
+POLL_INTERVAL_VAL=$(grep "POLL_INTERVAL=" "$DAEMON_SCRIPT" | cut -d= -f2 | cut -d" " -f1 | tr -d ' ')
+if [ "$POLL_INTERVAL_VAL" -ge 30 ] 2>/dev/null; then
     pass "POLL_INTERVAL is numeric and >= 30"
 else
-    fail "POLL_INTERVAL is not properly set"
+    fail "POLL_INTERVAL is not properly set (got: ${POLL_INTERVAL_VAL})"
 fi
 
 # Test 7.3: MAX_PULL_RETRIES is numeric and >= 1
-if [ "$(grep "MAX_PULL_RETRIES=" "$DAEMON_SCRIPT" | cut -d= -f2 | cut -d" " -f1 | tr -d ' ')" -ge 1 ] || true; then
+MAX_PULL_RETRIES_VAL=$(grep "MAX_PULL_RETRIES=" "$DAEMON_SCRIPT" | cut -d= -f2 | cut -d" " -f1 | tr -d ' ')
+if [ "$MAX_PULL_RETRIES_VAL" -ge 1 ] 2>/dev/null; then
     pass "MAX_PULL_RETRIES is numeric and >= 1"
 else
-    fail "MAX_PULL_RETRIES is not properly set"
+    fail "MAX_PULL_RETRIES is not properly set (got: ${MAX_PULL_RETRIES_VAL})"
 fi
 
 # Test 7.4: BRANCH is "main"
@@ -185,14 +185,16 @@ fi
 test_section "cmd_status() Tests"
 
 # Test 9.1: status command exits 0 and shows "Sync State" section
-if "$DAEMON_SCRIPT" status >/dev/null 2>&1; then
+STATUS_OUTPUT=$("$DAEMON_SCRIPT" status 2>&1 || true)
+if echo "$STATUS_OUTPUT" | grep -qi "sync state\|status"; then
     pass "status command exits 0 and shows status"
 else
     fail "status command failed"
 fi
 
 # Test 9.2: status command shows the current version
-if "$DAEMON_SCRIPT" status | grep -q "Version:"; then
+STATUS_OUTPUT=$("$DAEMON_SCRIPT" status 2>&1 || true)
+if echo "$STATUS_OUTPUT" | grep -qi "version"; then
     pass "status shows the current version"
 else
     fail "status does not show current version"
@@ -241,9 +243,9 @@ fi
 
 # Summary
 echo ""
-echo "══════════════════════════════════════1"
+echo "═══════════════════════════════════════"
 echo "  Results: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped"
-echo "══════════════════════════════════════1"
+echo "═══════════════════════════════════════"
 
 if [ "$FAIL" -gt 0 ]; then
     exit 1

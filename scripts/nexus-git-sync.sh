@@ -181,6 +181,13 @@ cmd_watch() {
 _flush_on_startup() {
     log INFO "Checking for pending remote changes..."
 
+    local CURRENT
+    CURRENT=$(git branch --show-current 2>/dev/null || echo "")
+    if [ "$CURRENT" != "$BRANCH" ]; then
+        log INFO "Startup: not on $BRANCH (current: $CURRENT) — skipping flush"
+        return
+    fi
+
     if ! git fetch "$REMOTE" 2>/dev/null; then
         log WARN "Startup fetch failed — will retry on next cycle"
         return
@@ -278,7 +285,11 @@ StandardError=append:${LOG_FILE}
 WantedBy=default.target
 EOF
 
-    systemctl --user daemon-reload
+    if ! systemctl --user daemon-reload 2>/dev/null; then
+        echo "ERROR: systemd user instance not available (running in CI/container?)"
+        echo "  Install skipped — daemon will work in foreground mode: $0 watch"
+        return 1
+    fi
     systemctl --user enable "${SERVICE_NAME}.service"
     systemctl --user start "${SERVICE_NAME}.service"
 
