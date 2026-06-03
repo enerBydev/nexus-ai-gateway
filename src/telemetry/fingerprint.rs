@@ -17,14 +17,20 @@ type HmacSha256 = Hmac<Sha256>;
 /// Client type classification based on User-Agent and request patterns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // AnotherProxy is a placeholder for future pattern analysis
 pub enum ClientType {
-    /// Claude Code CLI — User-Agent contains "claude-code" or "ClaudeCode"
     ClaudeCode,
-    /// Anthropic SDK — User-Agent contains "anthropic"
     AnthropicSDK,
-    /// Custom scripts — curl, python-requests, axios, etc.
+    OpenAISDK,
+    Cline,
+    Aider,
+    Continue,
+    Codex,
+    Cursor,
+    Windsurf,
+    Copilot,
+    AnotherProxy,
     CustomScript,
-    /// No User-Agent or unrecognized
     Unknown,
 }
 
@@ -33,6 +39,15 @@ impl std::fmt::Display for ClientType {
         match self {
             ClientType::ClaudeCode => write!(f, "claude_code"),
             ClientType::AnthropicSDK => write!(f, "sdk"),
+            ClientType::OpenAISDK => write!(f, "openai_sdk"),
+            ClientType::Cline => write!(f, "cline"),
+            ClientType::Aider => write!(f, "aider"),
+            ClientType::Continue => write!(f, "continue"),
+            ClientType::Codex => write!(f, "codex"),
+            ClientType::Cursor => write!(f, "cursor"),
+            ClientType::Windsurf => write!(f, "windsurf"),
+            ClientType::Copilot => write!(f, "copilot"),
+            ClientType::AnotherProxy => write!(f, "another_proxy"),
             ClientType::CustomScript => write!(f, "script"),
             ClientType::Unknown => write!(f, "unknown"),
         }
@@ -82,19 +97,61 @@ fn hmac_sha256(secret: &[u8], data: &str) -> String {
 /// Secondary signal: anthropic-beta header (present = likely Claude Code).
 pub fn classify_client_type(headers: &HeaderMap) -> ClientType {
     let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("");
-
     let ua_lower = ua.to_lowercase();
 
-    // Primary: User-Agent classification
+    // Priority 1: Cline (wraps Anthropic SDK, so check BEFORE anthropic)
+    if ua_lower.contains("cline") {
+        return ClientType::Cline;
+    }
+
+    // Priority 2: Aider (wraps Anthropic SDK, so check BEFORE anthropic)
+    if ua_lower.contains("aider") {
+        return ClientType::Aider;
+    }
+
+    // Priority 3: Continue (AI coding assistant)
+    if ua_lower.contains("continue") || ua_lower.contains("continuedev") {
+        return ClientType::Continue;
+    }
+
+    // Priority 4: Claude Code CLI
     if ua_lower.contains("claude-code") || ua_lower.contains("claudecode") {
         return ClientType::ClaudeCode;
     }
 
+    // Priority 5: OpenAI SDK (before generic anthropic check)
+    if ua_lower.contains("openai-python") || ua_lower.contains("openai-node") {
+        return ClientType::OpenAISDK;
+    }
+
+    // Priority 6: Anthropic SDK
     if ua_lower.contains("anthropic") {
         return ClientType::AnthropicSDK;
     }
 
-    // Known script/tool User-Agents
+    // Priority 7: Codex (OpenAI CLI tool — check via originator header or UA)
+    if ua_lower.contains("codex-cli")
+        || headers
+            .get("x-originator")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_lowercase().contains("codex"))
+            .unwrap_or(false)
+    {
+        return ClientType::Codex;
+    }
+
+    // Priority 8: Closed-source tools (best-effort from UA patterns)
+    if ua_lower.contains("cursor") {
+        return ClientType::Cursor;
+    }
+    if ua_lower.contains("windsurf") || ua_lower.contains("codeium") {
+        return ClientType::Windsurf;
+    }
+    if ua_lower.contains("copilot") || ua_lower.contains("github-copilot") {
+        return ClientType::Copilot;
+    }
+
+    // Priority 9: Known script/tool User-Agents
     let script_signatures = [
         "curl/",
         "python-requests",
@@ -107,16 +164,15 @@ pub fn classify_client_type(headers: &HeaderMap) -> ClientType {
         "okhttp",
         "wget",
         "httpie",
-        "reqwest", // generic reqwest (not from NEXUS itself)
+        "reqwest",
     ];
-
     for sig in &script_signatures {
         if ua_lower.contains(sig) {
             return ClientType::CustomScript;
         }
     }
 
-    // Secondary: anthropic-beta presence suggests Claude Code
+    // Priority 10: anthropic-beta header suggests Claude Code
     if headers.get("anthropic-beta").is_some() {
         return ClientType::ClaudeCode;
     }
@@ -201,6 +257,82 @@ mod tests {
     }
 
     // === ClientType classification ===
+
+    #[test]
+    fn classify_cline_user_agent() {
+        let headers = header_map_with(&[("user-agent", "cline/1.3.5")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Cline);
+    }
+
+    #[test]
+    fn classify_aider_user_agent() {
+        let headers = header_map_with(&[("user-agent", "aider/0.45.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Aider);
+    }
+
+    #[test]
+    fn classify_aider_before_anthropic() {
+        // Aider wraps the Anthropic SDK — must be detected as Aider, not AnthropicSDK
+        let headers = header_map_with(&[("user-agent", "aider/0.45.0 anthropic-sdk/python/0.5")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Aider);
+    }
+
+    #[test]
+    fn classify_continue_user_agent() {
+        let headers = header_map_with(&[("user-agent", "continuedev/0.8.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Continue);
+    }
+
+    #[test]
+    fn classify_openai_sdk_python() {
+        let headers = header_map_with(&[("user-agent", "openai-python/1.30.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::OpenAISDK);
+    }
+
+    #[test]
+    fn classify_codex_user_agent() {
+        let headers = header_map_with(&[("user-agent", "codex-cli/1.0.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Codex);
+    }
+
+    #[test]
+    fn classify_codex_via_originator_header() {
+        let headers = header_map_with(&[("user-agent", "SomeApp/1.0"), ("x-originator", "codex")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Codex);
+    }
+
+    #[test]
+    fn classify_cursor_user_agent() {
+        let headers = header_map_with(&[("user-agent", "cursor/0.45.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Cursor);
+    }
+
+    #[test]
+    fn classify_windsurf_user_agent() {
+        let headers = header_map_with(&[("user-agent", "windsurf/1.0.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Windsurf);
+    }
+
+    #[test]
+    fn classify_codeium_user_agent() {
+        let headers = header_map_with(&[("user-agent", "codeium/1.2.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Windsurf);
+    }
+
+    #[test]
+    fn classify_copilot_user_agent() {
+        let headers = header_map_with(&[("user-agent", "github-copilot/1.0.0")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Copilot);
+    }
+
+    #[test]
+    fn classify_cline_before_anthropic() {
+        // Cline wraps the Anthropic SDK — must be detected as Cline, not AnthropicSDK
+        let headers = header_map_with(&[("user-agent", "cline/1.3.5 anthropic-sdk/python/0.5")]);
+        assert_eq!(classify_client_type(&headers), ClientType::Cline);
+    }
+
+    // === ClientType classification (original tests) ===
 
     #[test]
     fn classify_claude_code_user_agent() {
