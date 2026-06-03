@@ -60,10 +60,3 @@ CLAUDE.md
 # Codex auto-generated (do not track)
 AGENTS.md
 
-# Stale git hooks (active hooks are in scripts/hooks/ via core.hooksPath)
-.git/hooks/pre-push
-.git/hooks/pre-commit
-.git/hooks/commit-msg
-.git/hooks/post-commit
-.git/hooks/post-merge
-
