@@ -93,10 +93,10 @@ pub struct Config {
     pub cc_model_context_windows: HashMap<String, u32>,
     // Telemetry configuration (v0.18.0)
     pub telemetry_enabled: bool,
-    #[allow(dead_code)]
     pub telemetry_beacon_url: Option<String>,
     pub beacon_auth_token: Option<String>,
     #[allow(dead_code)]
+    // Used internally to build telemetry_db_path/secret_path; not read at runtime
     pub telemetry_dir: String,
     pub telemetry_db_path: String,
     pub telemetry_retention_days: u32,
