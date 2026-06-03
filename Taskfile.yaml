@@ -224,14 +224,7 @@ tasks:
       - echo "  COMPLETION_MODEL             - Override model for standard mode"
       - echo "  DEBUG                        - Enable debug logging (1 or true)"
 
-  # SETUP (first-time after clone)
-  setup:
-    desc: Full project setup (build, install, hooks, service)
-    cmds:
-      - task: install
-      - task: setup-hooks
-      - echo "✅ Project ready! Run 'task service-install' to enable auto-start"
-
+  
   setup-hooks:
     desc: Configure git to use portable hooks from scripts/hooks/
     cmds:
@@ -346,4 +339,38 @@ tasks:
       - task: auto-version
       - git push origin main --tags
       - echo "✅ Release pushed. GitHub Actions will build and publish."
+
+  # GIT SYNC DAEMON (Layer 1 of 3-layer autonomous sync)
+  git-sync:
+    desc: One-shot git sync (pull if remote ahead)
+    cmds:
+      - bash scripts/nexus-git-sync.sh sync
+
+  git-sync-install:
+    desc: Install autonomous git-sync daemon service
+    cmds:
+      - bash scripts/nexus-git-sync.sh install
+
+  git-sync-uninstall:
+    desc: Remove autonomous git-sync daemon service
+    cmds:
+      - bash scripts/nexus-git-sync.sh uninstall
+
+  git-sync-status:
+    desc: Show git-sync daemon status and sync state
+    cmds:
+      - bash scripts/nexus-git-sync.sh status
+
+  git-sync-log:
+    desc: Follow git-sync daemon log
+    cmds:
+      - bash scripts/nexus-git-sync.sh log
+
+  setup:
+    desc: Full project setup (build, install, hooks, sync daemon, service)
+    cmds:
+      - task: install
+      - task: setup-hooks
+      - task: git-sync-install
+      - echo "✅ Project ready! All sync layers active."
 

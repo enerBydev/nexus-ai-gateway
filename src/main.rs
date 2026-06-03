@@ -9,6 +9,7 @@ mod proxy;
 mod scan;
 mod setup;
 mod str_utils;
+mod telemetry;
 mod tokenizer;
 mod transform;
 mod watcher;
@@ -134,9 +135,65 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Phase 4.5: Install Prometheus metrics recorder
+    // v0.18.0: Install Prometheus metrics recorder
     let prometheus_handle =
         PrometheusBuilder::new().install_recorder().expect("Failed to install Prometheus recorder");
+
+    // Log telemetry disabled reason (config loads before logging, so we defer the message here)
+    if !config.telemetry_enabled {
+        if let Some(ref reason) = config.telemetry_disabled_reason {
+            tracing::warn!("⚠️ Telemetry auto-disabled: {reason}");
+        }
+    }
+
+    // v0.18.0: Initialize telemetry (privacy-first analytics)
+    // CR fix: Pass beacon_url + explicit failure logging
+    let telemetry_ctx = crate::telemetry::TelemetryContext::init(
+        config.telemetry_enabled,
+        &config.telemetry_db_path,
+        &config.telemetry_secret_path,
+        config.telemetry_retention_days,
+        config.telemetry_beacon_url.clone(),
+    );
+    if config.telemetry_enabled && telemetry_ctx.is_none() {
+        tracing::warn!(
+            "⚠️ Telemetry was enabled but initialization failed — running without telemetry"
+        );
+    }
+
+    // Spawn daily beacon task (if configured)
+    if let Some(ref beacon_url) = config.telemetry_beacon_url {
+        if let Some(ref tctx) = telemetry_ctx {
+            let beacon_config = crate::telemetry::beacon::BeaconConfig {
+                url: beacon_url.clone(),
+                instance_id: crate::telemetry::beacon::compute_instance_id(
+                    &hostname::get().unwrap_or_default().to_string_lossy(),
+                    tctx.secret.as_bytes(),
+                ),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                auth_token: config.beacon_auth_token.clone().unwrap_or_default(),
+            };
+            let store = tctx.store.clone();
+            tokio::spawn(async move {
+                // Warm-up: wait 5 minutes before first beacon
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                loop {
+                    if let Ok(stats) = store.get_daily_stats(1) {
+                        if let Some(latest) = stats.into_iter().next() {
+                            if let Err(e) =
+                                crate::telemetry::beacon::send_beacon(&beacon_config, &latest).await
+                            {
+                                tracing::debug!("📡 Telemetry beacon failed: {e}");
+                            }
+                        }
+                    }
+                    // Wait 24 hours
+                    tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+                }
+            });
+            tracing::info!("📡 Telemetry beacon task spawned (url={})", beacon_url);
+        }
+    }
 
     tracing::info!("Starting NEXUS-AI-Gateway v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Port: {}", config.port);
@@ -253,6 +310,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .route("/v1/messages/count_tokens", post(count_tokens_handler))
         .route("/health", axum::routing::get(health_handler))
         .route("/metrics", axum::routing::get(metrics_handler))
+        .route("/analytics", axum::routing::get(analytics_handler))
         .layer(Extension(config.clone()))
         .layer(Extension(client))
         .layer(Extension(model_cache))
@@ -261,9 +319,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .layer(Extension(circuit_breaker))
         .layer(Extension(prometheus_handle.clone()))
         .layer(TraceLayer::new_for_http())
+        .layer(Extension(telemetry_ctx.clone()))
         .layer(cors);
 
-    let addr = format!("0.0.0.0:{}", config.load().port); // v0.11.0 (CR-04)
+    let addr = format!("0.0.0.0:{}", config.clone().load().port); // v0.11.0 (CR-04)
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Listening on {}", addr);
@@ -477,7 +536,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let server_shutdown_token = tokio_util::sync::CancellationToken::new();
     let server_ct_for_graceful = server_shutdown_token.clone();
     let server_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .with_graceful_shutdown(async move {
                 server_ct_for_graceful.cancelled().await;
             })
@@ -537,6 +596,35 @@ async fn metrics_handler(Extension(prometheus_handle): Extension<PrometheusHandl
         .header("content-type", "text/plain; charset=utf-8")
         .body(response_body.into())
         .unwrap()
+}
+
+/// v0.18.0: Analytics endpoint — returns aggregated telemetry stats (zero PII)
+async fn analytics_handler(
+    Extension(telemetry_ctx): Extension<Option<crate::telemetry::TelemetryContext>>,
+) -> Response {
+    let Some(ctx) = telemetry_ctx else {
+        return Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(r#"{"error":"telemetry_disabled"}"#.into())
+            .unwrap();
+    };
+
+    match tokio::task::spawn_blocking(move || ctx.store.get_daily_stats(30)).await {
+        Ok(Ok(stats)) => {
+            let body = serde_json::to_string(&stats).unwrap_or_else(|_| "[]".to_string());
+            Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(body.into())
+                .unwrap()
+        }
+        _ => Response::builder()
+            .status(500)
+            .header("content-type", "application/json")
+            .body(r#"{"error":"query_failed"}"#.into())
+            .unwrap(),
+    }
 }
 
 /// Shutdown signal handler for graceful shutdown

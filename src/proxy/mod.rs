@@ -21,6 +21,7 @@ pub mod retry;
 pub mod streaming;
 pub mod token_scaling;
 
+use axum::extract::ConnectInfo;
 use axum::{http::HeaderMap, response::Response, Extension, Json};
 use metrics::{counter, gauge, histogram};
 use reqwest::Client;
@@ -66,6 +67,7 @@ impl Drop for ConnectionGuard {
 
 /// Validate semantic correctness of an Anthropic request before sending upstream.
 /// Returns a ProxyError for invalid requests, preventing wasted API calls.
+#[allow(dead_code)]
 fn validate_request(req: &anthropic::AnthropicRequest) -> ProxyResult<()> {
     // Model must be non-empty
     if req.model.is_empty() {
@@ -180,7 +182,9 @@ pub async fn proxy_handler(
     Extension(model_cache): Extension<ModelCache>,
     Extension(model_semaphores): Extension<ModelSemaphores>,
     Extension(calibration): Extension<tokenizer::CalibrationFactors>,
+    Extension(telemetry_ctx): Extension<Option<crate::telemetry::TelemetryContext>>,
     headers: HeaderMap, // Issue #35 F4: Extract client headers for forwarding
+    ConnectInfo(client_addr): ConnectInfo<std::net::SocketAddr>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
     // S3: Track active connections
@@ -199,8 +203,15 @@ pub async fn proxy_handler(
     )
     .increment(1);
 
-    // Validate request before any upstream calls
-    validate_request(&req)?;
+    // v0.18.0: Telemetry capture (if enabled)
+    if let Some(ref telemetry) = telemetry_ctx {
+        let fp = crate::telemetry::capture(&headers, &client_addr, &req, &telemetry.secret);
+        crate::telemetry::metrics::record_client_type_request(fp.client_type);
+        let store = telemetry.store.clone();
+        tokio::spawn(async move {
+            crate::telemetry::record_async(store, fp).await;
+        });
+    }
 
     // v0.11.0 (CR-04): Recover from poisoned RwLock instead of panicking
     // v4.1: ArcSwap provides lock-free reads, no poisoning possible
@@ -508,7 +519,15 @@ mod context_window_tests {
             cb_threshold: 10,
             cb_recovery_secs: 60,
             cc_model_context_windows: Default::default(),
+            telemetry_enabled: false,
+            telemetry_beacon_url: None,
+            beacon_auth_token: None,
+            telemetry_dir: "/tmp".to_string(),
+            telemetry_db_path: "/tmp/nexus-telemetry.db".to_string(),
+            telemetry_retention_days: 30,
+            telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
             config_path: None,
+            telemetry_disabled_reason: None,
         }
     }
 

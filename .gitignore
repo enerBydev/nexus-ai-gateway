@@ -2,6 +2,9 @@
 /target/
 **/*.rs.bk
 *.pdb
+*.bk
+*.bak
+*.backup
 
 # Cargo lock for libraries (keep for binaries)
 # Cargo.lock
@@ -29,11 +32,21 @@ Thumbs.db
 # Documentation build
 AUDIT_REPORT_NIM_V4.md
 /docs/
+nexus-beacon-receiver/
+
 # Dotfiles (specific — avoid blanket .* which blocks .github/, .cargo/, etc.)
 .env
 .env.*
 *.env.local
 .nexus-ai-gateway.env
+.claude
+.omc
+.cargo/
+.wrangler
+
+
+# Beacon receiver microservice (developed in-tree, deployed to CF Workers separately)
+/nexus-beacon-receiver/
 
 # Temporary files
 /tmp/
@@ -42,3 +55,8 @@ AUDIT_REPORT_NIM_V4.md
 
 # Claude Code auto-generated (do not track)
 CLAUDE.md
+.gstack/
+
+# Codex auto-generated (do not track)
+AGENTS.md
+

@@ -91,6 +91,20 @@ pub struct Config {
     /// Populated from CC_MODEL_CONTEXT_WINDOWS env var.
     /// Format: "claude-opus-4-6:200000,claude-sonnet-4-6:200000,claude-haiku-4-5:200000"
     pub cc_model_context_windows: HashMap<String, u32>,
+    // Telemetry configuration (v0.18.0)
+    pub telemetry_enabled: bool,
+    pub telemetry_beacon_url: Option<String>,
+    pub beacon_auth_token: Option<String>,
+    #[allow(dead_code)]
+    // Used internally to build telemetry_db_path/secret_path; not read at runtime
+    pub telemetry_dir: String,
+    pub telemetry_db_path: String,
+    pub telemetry_retention_days: u32,
+    pub telemetry_secret_path: String,
+
+    /// If telemetry was explicitly disabled by the user, None.
+    /// If telemetry was auto-disabled (e.g., $HOME guard), contains the reason.
+    pub telemetry_disabled_reason: Option<String>,
     /// Path to custom config file (--config flag)
     /// Stored for hot-reload support (SIGHUP + file watcher)
     pub config_path: Option<PathBuf>,
@@ -361,6 +375,55 @@ impl Config {
             .map(|v| Self::parse_model_context_windows(&v))
             .unwrap_or_default();
 
+        // Telemetry configuration (v0.18.0)
+        let telemetry_enabled = Self::get_from_map(data, "TELEMETRY_ENABLED")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let telemetry_beacon_url =
+            Self::get_from_map(data, "TELEMETRY_BEACON_URL").filter(|u| !u.is_empty());
+
+        let beacon_auth_token = Self::get_from_map(data, "BEACON_AUTH_TOKEN");
+
+        // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
+        // If HOME is unset AND no explicit paths provided, disable telemetry.
+        let explicit_telemetry_dir = Self::get_from_map(data, "TELEMETRY_DIR");
+        let explicit_secret_path = Self::get_from_map(data, "TELEMETRY_SECRET_PATH");
+
+        let home_dir = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => String::new(),
+        };
+
+        let telemetry_dir = explicit_telemetry_dir
+            .clone()
+            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway"));
+        let telemetry_db_path = Self::get_from_map(data, "TELEMETRY_DB_PATH")
+            .unwrap_or_else(|| format!("{telemetry_dir}/telemetry.db"));
+
+        // Only force-disable telemetry when HOME is unset AND no explicit paths given
+        // (systemd/containers commonly set TELEMETRY_DIR explicitly)
+        let (telemetry_enabled, telemetry_disabled_reason) = if home_dir.is_empty()
+            && explicit_telemetry_dir.is_none()
+            && explicit_secret_path.is_none()
+        {
+            if telemetry_enabled {
+                (false, Some("$HOME not set and no explicit TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret".to_string()))
+            } else {
+                (false, None)
+            }
+        } else {
+            (telemetry_enabled, None)
+        };
+
+        let telemetry_retention_days = Self::get_from_map(data, "TELEMETRY_RETENTION_DAYS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+            .max(1);
+
+        let telemetry_secret_path =
+            explicit_secret_path.unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
+
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
             if route.upstream_name != "default" {
@@ -403,6 +466,14 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
+            telemetry_enabled,
+            telemetry_beacon_url,
+            beacon_auth_token,
+            telemetry_dir,
+            telemetry_db_path,
+            telemetry_retention_days,
+            telemetry_secret_path,
+            telemetry_disabled_reason,
             config_path: None, // Set by caller (from_env_with_path)
         })
     }
@@ -623,6 +694,55 @@ impl Config {
             .map(|v| Self::parse_model_context_windows(&v))
             .unwrap_or_default();
 
+        // Telemetry configuration (v0.18.0)
+        let telemetry_enabled = env::var("TELEMETRY_ENABLED")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let telemetry_beacon_url = env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty());
+
+        let beacon_auth_token = env::var("BEACON_AUTH_TOKEN").ok();
+
+        // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
+        // If HOME is unset AND no explicit paths provided, disable telemetry.
+        let explicit_telemetry_dir = env::var("TELEMETRY_DIR").ok();
+        let explicit_secret_path = env::var("TELEMETRY_SECRET_PATH").ok();
+
+        let home_dir = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => String::new(),
+        };
+
+        let telemetry_dir = explicit_telemetry_dir
+            .clone()
+            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway"));
+        let telemetry_db_path = env::var("TELEMETRY_DB_PATH")
+            .unwrap_or_else(|_| format!("{telemetry_dir}/telemetry.db"));
+
+        // Only force-disable telemetry when HOME is unset AND no explicit paths given
+        // (systemd/containers commonly set TELEMETRY_DIR explicitly)
+        let (telemetry_enabled, telemetry_disabled_reason) = if home_dir.is_empty()
+            && explicit_telemetry_dir.is_none()
+            && explicit_secret_path.is_none()
+        {
+            if telemetry_enabled {
+                (false, Some("$HOME not set and no explicit TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret".to_string()))
+            } else {
+                (false, None)
+            }
+        } else {
+            (telemetry_enabled, None)
+        };
+
+        let telemetry_retention_days = env::var("TELEMETRY_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+            .max(1);
+
+        let telemetry_secret_path =
+            explicit_secret_path.unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
+
         // Issue #35 Bug F: Validate model_map routes against configured upstreams
         for (model_id, route) in &model_map {
             if route.upstream_name != "default" {
@@ -665,6 +785,14 @@ impl Config {
             cb_threshold,
             cb_recovery_secs,
             cc_model_context_windows,
+            telemetry_enabled,
+            telemetry_beacon_url,
+            beacon_auth_token,
+            telemetry_dir,
+            telemetry_db_path,
+            telemetry_retention_days,
+            telemetry_secret_path,
+            telemetry_disabled_reason,
             config_path: stored_config_path,
         };
         Ok(config)
