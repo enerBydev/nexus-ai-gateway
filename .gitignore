@@ -32,7 +32,8 @@ Thumbs.db
 # Documentation build
 AUDIT_REPORT_NIM_V4.md
 /docs/
-nexus-beacon-receiver
+nexus-beacon-receiver/
+
 # Dotfiles (specific — avoid blanket .* which blocks .github/, .cargo/, etc.)
 .env
 .env.*
@@ -41,6 +42,8 @@ nexus-beacon-receiver
 .claude
 .omc
 .cargo/
+.wrangler
+
 
 # Beacon receiver microservice (developed in-tree, deployed to CF Workers separately)
 /nexus-beacon-receiver/

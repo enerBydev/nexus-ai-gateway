@@ -95,6 +95,7 @@ pub struct Config {
     pub telemetry_enabled: bool,
     #[allow(dead_code)]
     pub telemetry_beacon_url: Option<String>,
+    pub beacon_auth_token: Option<String>,
     #[allow(dead_code)]
     pub telemetry_dir: String,
     pub telemetry_db_path: String,
@@ -382,6 +383,8 @@ impl Config {
         let telemetry_beacon_url =
             Self::get_from_map(data, "TELEMETRY_BEACON_URL").filter(|u| !u.is_empty());
 
+        let beacon_auth_token = Self::get_from_map(data, "BEACON_AUTH_TOKEN");
+
         // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
         // If HOME is unset AND no explicit paths provided, disable telemetry.
         let explicit_telemetry_dir = Self::get_from_map(data, "TELEMETRY_DIR");
@@ -465,6 +468,7 @@ impl Config {
             cc_model_context_windows,
             telemetry_enabled,
             telemetry_beacon_url,
+            beacon_auth_token,
             telemetry_dir,
             telemetry_db_path,
             telemetry_retention_days,
@@ -697,6 +701,8 @@ impl Config {
 
         let telemetry_beacon_url = env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty());
 
+        let beacon_auth_token = env::var("BEACON_AUTH_TOKEN").ok();
+
         // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
         // If HOME is unset AND no explicit paths provided, disable telemetry.
         let explicit_telemetry_dir = env::var("TELEMETRY_DIR").ok();
@@ -781,6 +787,7 @@ impl Config {
             cc_model_context_windows,
             telemetry_enabled,
             telemetry_beacon_url,
+            beacon_auth_token,
             telemetry_dir,
             telemetry_db_path,
             telemetry_retention_days,

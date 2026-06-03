@@ -5,8 +5,6 @@
 //! Only counts and ratios — zero PII.
 //!
 //! Enabled only when TELEMETRY_BEACON_URL is set in environment.
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use serde::Serialize;
 
@@ -21,6 +19,7 @@ pub struct BeaconConfig {
     pub instance_id: String,
     /// NEXUS version string.
     pub version: String,
+    pub auth_token: String,
 }
 
 /// Beacon payload — only aggregated stats, zero PII.
@@ -81,8 +80,13 @@ pub async fn send_beacon(config: &BeaconConfig, stats: &DailyStatsEntry) -> Resu
         .build()
         .context("building beacon HTTP client")?;
 
-    let response =
-        client.post(&config.url).json(&payload).send().await.context("sending telemetry beacon")?;
+    let response = client
+        .post(&config.url)
+        .header("Authorization", format!("Bearer {}", config.auth_token))
+        .json(&payload)
+        .send()
+        .await
+        .context("sending telemetry beacon")?;
 
     let status = response.status();
     if status.is_success() {
@@ -96,6 +100,7 @@ pub async fn send_beacon(config: &BeaconConfig, stats: &DailyStatsEntry) -> Resu
 
 /// Validate that a beacon URL is acceptable.
 /// Returns Ok if valid HTTPS URL, Err otherwise.
+#[allow(dead_code)]
 pub fn validate_beacon_url(url: &str) -> Result<()> {
     if url.is_empty() {
         anyhow::bail!("Beacon URL is empty");

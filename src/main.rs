@@ -161,6 +161,40 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         );
     }
 
+    // Spawn daily beacon task (if configured)
+    if let Some(ref beacon_url) = config.telemetry_beacon_url {
+        if let Some(ref tctx) = telemetry_ctx {
+            let beacon_config = crate::telemetry::beacon::BeaconConfig {
+                url: beacon_url.clone(),
+                instance_id: crate::telemetry::beacon::compute_instance_id(
+                    &hostname::get().unwrap_or_default().to_string_lossy(),
+                    tctx.secret.as_bytes(),
+                ),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                auth_token: config.beacon_auth_token.clone().unwrap_or_default(),
+            };
+            let store = tctx.store.clone();
+            tokio::spawn(async move {
+                // Warm-up: wait 5 minutes before first beacon
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                loop {
+                    if let Ok(stats) = store.get_daily_stats(1) {
+                        if let Some(latest) = stats.into_iter().next() {
+                            if let Err(e) =
+                                crate::telemetry::beacon::send_beacon(&beacon_config, &latest).await
+                            {
+                                tracing::debug!("📡 Telemetry beacon failed: {e}");
+                            }
+                        }
+                    }
+                    // Wait 24 hours
+                    tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+                }
+            });
+            tracing::info!("📡 Telemetry beacon task spawned (url={})", beacon_url);
+        }
+    }
+
     tracing::info!("Starting NEXUS-AI-Gateway v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Port: {}", config.port);
     tracing::info!("Upstream URL: {}", config.base_url);

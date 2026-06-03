@@ -36,6 +36,7 @@ mod tests {
             cc_model_context_windows: HashMap::new(),
             telemetry_enabled: false,
             telemetry_beacon_url: None,
+            beacon_auth_token: None,
             telemetry_dir: "/tmp".to_string(),
             telemetry_db_path: "/tmp/nexus-telemetry.db".to_string(),
             telemetry_retention_days: 30,
