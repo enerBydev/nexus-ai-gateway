@@ -2,6 +2,9 @@
 /target/
 **/*.rs.bk
 *.pdb
+*.bk
+*.bak
+*.backup
 
 # Cargo lock for libraries (keep for binaries)
 # Cargo.lock
@@ -37,6 +40,7 @@ nexus-beacon-receiver
 .nexus-ai-gateway.env
 .claude
 .omc
+.cargo/
 
 # Beacon receiver microservice (developed in-tree, deployed to CF Workers separately)
 /nexus-beacon-receiver/
