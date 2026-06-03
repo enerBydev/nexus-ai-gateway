@@ -29,11 +29,17 @@ Thumbs.db
 # Documentation build
 AUDIT_REPORT_NIM_V4.md
 /docs/
+nexus-beacon-receiver
 # Dotfiles (specific — avoid blanket .* which blocks .github/, .cargo/, etc.)
 .env
 .env.*
 *.env.local
 .nexus-ai-gateway.env
+.claude
+.omc
+
+# Beacon receiver microservice (developed in-tree, deployed to CF Workers separately)
+/nexus-beacon-receiver/
 
 # Temporary files
 /tmp/
@@ -44,9 +50,13 @@ AUDIT_REPORT_NIM_V4.md
 CLAUDE.md
 .gstack/
 
+# Codex auto-generated (do not track)
+AGENTS.md
+
 # Stale git hooks (active hooks are in scripts/hooks/ via core.hooksPath)
 .git/hooks/pre-push
 .git/hooks/pre-commit
 .git/hooks/commit-msg
 .git/hooks/post-commit
 .git/hooks/post-merge
+

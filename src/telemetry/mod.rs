@@ -115,7 +115,7 @@ impl TelemetryContext {
         beacon_url: Option<String>,
     ) -> Option<Self> {
         if !enabled {
-            tracing::info!("📊 Telemetry: disabled (TELEMETRY_ENABLED=false)");
+            tracing::info!("📊 Telemetry: disabled");
             return None;
         }
 
@@ -220,10 +220,16 @@ pub fn capture(
 
 /// Record a fingerprint to the store asynchronously.
 /// Uses spawn_blocking to offload the synchronous SQLite write.
+/// Also updates the `nexus_unique_users_today` Prometheus gauge after each write.
 pub async fn record_async(store: TelemetryStore, fp: ClientFingerprint) {
     tokio::task::spawn_blocking(move || {
         if let Err(e) = store.record_fingerprint(&fp) {
             tracing::debug!("Telemetry record failed: {e}");
+        } else {
+            // Update Prometheus gauge with the new unique count
+            if let Ok(count) = store.get_unique_fingerprint_count_today() {
+                crate::telemetry::metrics::record_unique_users(count);
+            }
         }
     })
     .await

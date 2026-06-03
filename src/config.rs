@@ -100,6 +100,10 @@ pub struct Config {
     pub telemetry_db_path: String,
     pub telemetry_retention_days: u32,
     pub telemetry_secret_path: String,
+
+    /// If telemetry was explicitly disabled by the user, None.
+    /// If telemetry was auto-disabled (e.g., $HOME guard), contains the reason.
+    pub telemetry_disabled_reason: Option<String>,
     /// Path to custom config file (--config flag)
     /// Stored for hot-reload support (SIGHUP + file watcher)
     pub config_path: Option<PathBuf>,
@@ -396,20 +400,17 @@ impl Config {
 
         // Only force-disable telemetry when HOME is unset AND no explicit paths given
         // (systemd/containers commonly set TELEMETRY_DIR explicitly)
-        let telemetry_enabled = if home_dir.is_empty()
+        let (telemetry_enabled, telemetry_disabled_reason) = if home_dir.is_empty()
             && explicit_telemetry_dir.is_none()
             && explicit_secret_path.is_none()
         {
             if telemetry_enabled {
-                tracing::warn!(
-                    "⚠️ TELEMETRY_ENABLED=true but $HOME not set and no explicit \
-                     TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret. \
-                     Disabling telemetry."
-                );
+                (false, Some("$HOME not set and no explicit TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret".to_string()))
+            } else {
+                (false, None)
             }
-            false
         } else {
-            telemetry_enabled
+            (telemetry_enabled, None)
         };
 
         let telemetry_retention_days = Self::get_from_map(data, "TELEMETRY_RETENTION_DAYS")
@@ -468,6 +469,7 @@ impl Config {
             telemetry_db_path,
             telemetry_retention_days,
             telemetry_secret_path,
+            telemetry_disabled_reason,
             config_path: None, // Set by caller (from_env_with_path)
         })
     }
@@ -713,20 +715,17 @@ impl Config {
 
         // Only force-disable telemetry when HOME is unset AND no explicit paths given
         // (systemd/containers commonly set TELEMETRY_DIR explicitly)
-        let telemetry_enabled = if home_dir.is_empty()
+        let (telemetry_enabled, telemetry_disabled_reason) = if home_dir.is_empty()
             && explicit_telemetry_dir.is_none()
             && explicit_secret_path.is_none()
         {
             if telemetry_enabled {
-                tracing::warn!(
-                    "⚠️ TELEMETRY_ENABLED=true but $HOME not set and no explicit \
-                     TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret. \
-                     Disabling telemetry."
-                );
+                (false, Some("$HOME not set and no explicit TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret".to_string()))
+            } else {
+                (false, None)
             }
-            false
         } else {
-            telemetry_enabled
+            (telemetry_enabled, None)
         };
 
         let telemetry_retention_days = env::var("TELEMETRY_RETENTION_DAYS")
@@ -786,6 +785,7 @@ impl Config {
             telemetry_db_path,
             telemetry_retention_days,
             telemetry_secret_path,
+            telemetry_disabled_reason,
             config_path: stored_config_path,
         };
         Ok(config)

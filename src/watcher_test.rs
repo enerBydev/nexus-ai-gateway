@@ -320,6 +320,7 @@ fn config_has_config_path_field() {
         telemetry_retention_days: 30,
         telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
         config_path: Some(PathBuf::from("/custom/path.env")),
+        telemetry_disabled_reason: None,
     };
 
     assert_eq!(
@@ -364,6 +365,7 @@ fn config_path_defaults_to_none() {
         telemetry_retention_days: 30,
         telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
         config_path: None,
+        telemetry_disabled_reason: None,
     };
 
     assert!(

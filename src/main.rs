@@ -139,6 +139,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let prometheus_handle =
         PrometheusBuilder::new().install_recorder().expect("Failed to install Prometheus recorder");
 
+    // Log telemetry disabled reason (config loads before logging, so we defer the message here)
+    if !config.telemetry_enabled {
+        if let Some(ref reason) = config.telemetry_disabled_reason {
+            tracing::warn!("⚠️ Telemetry auto-disabled: {reason}");
+        }
+    }
+
     // v0.18.0: Initialize telemetry (privacy-first analytics)
     // CR fix: Pass beacon_url + explicit failure logging
     let telemetry_ctx = crate::telemetry::TelemetryContext::init(

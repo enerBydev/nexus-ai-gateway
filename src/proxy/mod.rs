@@ -526,6 +526,7 @@ mod context_window_tests {
             telemetry_retention_days: 30,
             telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
             config_path: None,
+            telemetry_disabled_reason: None,
         }
     }
 
