@@ -2,7 +2,7 @@
 name = "nexus-ai-gateway"
 version = "0.19.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 authors = ["enerBydev <zakutnii.ivan@gmail.com>"]
 description = "High-performance Anthropic API proxy to OpenAI-compatible endpoints"
 license = "MIT"
@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 
 # Web framework
 axum = { version = "0.7", features = ["http2"] }
@@ -43,10 +43,10 @@ thiserror = "2.0"
 dotenvy = "0.15"
 
 # CLI argument parsing
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 
 # Daemonize
-daemonize = "0.5"
+# daemonize = "0.5"
 
 # Server utilities
 tower = { version = "0.5", features = ["util"] }
@@ -54,7 +54,8 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 
 # Async streams
 async-stream = "0.3"
-bytes = "1.9"
+# Async streams
+bytes = "1"
 pin-project = "1.1"
 
 # HTML text extraction
@@ -67,7 +68,7 @@ notify = "8"
 # Scanner module
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
-tiktoken-rs = "0.11.0"
+tiktoken-rs = "0.12"
 
 # Interactive CLI (Setup Wizard)
 dialoguer = "0.12"
@@ -85,13 +86,13 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 
 # Telemetry (privacy-first analytics)
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
 hmac = "0.12"
 hostname = "0.4"
 obfstr = "0.4"
 
 [dev-dependencies]
-wiremock = "=0.6.4" # Pinned: 0.6.5 uses unstable let_chains (nightly-only)
+wiremock = "0.6" # Pinned: 0.6.5 uses unstable let_chains (nightly-only)
 
 [profile.release]
 opt-level = "z"        # Optimize for size

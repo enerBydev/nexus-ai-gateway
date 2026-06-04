@@ -21,7 +21,7 @@ use axum::{routing::post, Extension, Router};
 use clap::Parser;
 use cli::{Cli, Command};
 use config::{Config, SharedConfig};
-use daemonize::Daemonize;
+// use daemonize::Daemonize;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,31 +75,35 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // if cli.daemon {
+    //     use std::fs::OpenOptions;
+    //
+    //     let stdout =
+    //         OpenOptions::new().create(true).append(true).open("/tmp/nexus-ai-gateway.log")?;
+    //
+    //     let stderr =
+    //         OpenOptions::new().create(true).append(true).open("/tmp/nexus-ai-gateway.log")?;
+    //
+    //     let daemonize = Daemonize::new()
+    //         .pid_file(&cli.pid_file)
+    //         .working_directory(std::env::current_dir()?)
+    //         .stdout(stdout)
+    //         .stderr(stderr)
+    //         .umask(0o027);
+    //
+    //     match daemonize.start() {
+    //         Ok(_) => {}
+    //         Err(e) => {
+    //             eprintln!("✗ Failed to daemonize: {}", e);
+    //             std::process::exit(1);
+    //         }
+    //     }
+    // }
+
+    // Temporarily disabled daemon mode
     if cli.daemon {
-        use std::fs::OpenOptions;
-
-        let stdout =
-            OpenOptions::new().create(true).append(true).open("/tmp/nexus-ai-gateway.log")?;
-
-        let stderr =
-            OpenOptions::new().create(true).append(true).open("/tmp/nexus-ai-gateway.log")?;
-
-        let daemonize = Daemonize::new()
-            .pid_file(&cli.pid_file)
-            .working_directory(std::env::current_dir()?)
-            .stdout(stdout)
-            .stderr(stderr)
-            .umask(0o027);
-
-        match daemonize.start() {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("✗ Failed to daemonize: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        eprintln!("✓ Starting proxy in foreground mode");
+        eprintln!("⚠️ Daemon mode temporarily disabled (daemonize crate unmaintained - RUSTSEC-2025-0069). Use systemd service instead.");
+        std::process::exit(1);
     }
 
     let runtime = tokio::runtime::Runtime::new()?;
