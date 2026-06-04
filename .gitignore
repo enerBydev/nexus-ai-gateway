@@ -48,6 +48,9 @@ nexus-beacon-receiver/
 # Beacon receiver microservice (developed in-tree, deployed to CF Workers separately)
 /nexus-beacon-receiver/
 
+# Repo identity
+.repo
+
 # Temporary files
 /tmp/
 *.tmp
