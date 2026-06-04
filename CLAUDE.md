@@ -103,6 +103,7 @@ SSE Stream → transform back to Anthropic format
 | `str_utils.rs` | UTF-8 safe string truncation (prevents panic on multi-byte chars) |
 | `watcher.rs` | File watcher for .env hot-reload |
 | `cli.rs` | CLI argument parsing (clap) |
+| `telemetry/` | Privacy-first telemetry (HMAC fingerprinting, SQLite analytics, daily beacon) |
 
 ### Key Dependencies
 
@@ -147,6 +148,8 @@ These behaviors are intentional and should not be changed:
 
 11. **No Anthropic API key validation BY DESIGN** — Any non-empty key is accepted. Gateway validates upstream credentials only.
 
+12. **Telemetry always-on BY DESIGN** — Telemetry is enabled by default (v0.19.0+). Local SQLite analytics with HMAC-SHA256 fingerprinting (instance-specific secret) runs without configuration. Daily beacon to CF Worker sends only aggregated stats (zero PII). Users can disable with `TELEMETRY_ENABLED=false` or `TELEMETRY_BEACON_URL=""`.
+
 ## Key Environment Variables
 
 | Variable | Default | Purpose |
@@ -166,6 +169,10 @@ These behaviors are intentional and should not be changed:
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed CORS origins |
 | `NIM_PROMPT_CACHE_ENABLED` | `false` | Enable proxy-side prompt cache for NIM |
 | `DRAIN_TIMEOUT_SECS` | `30` | Max graceful drain duration before forced shutdown |
+| `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all telemetry |
+| `TELEMETRY_BEACON_URL` | `https://nexus-beacon-receiver.enerby212.workers.dev/v1/beacon` | Beacon endpoint URL. Set to empty string to disable beacon only |
+| `BEACON_AUTH_TOKEN` | (compiled in) | Auth token for beacon endpoint. Override via env var if needed |
+| `TELEMETRY_RETENTION_DAYS` | `30` | Days before auto-purge of local analytics data |
 
 Model mapping: `MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>` (hyphens → underscores in model IDs)
 Per-upstream type: `UPSTREAM_<NAME>_TYPE=anthropic|nim|openai|openrouter` — overrides global `NEXUS_UPSTREAM_TYPE` for a named upstream

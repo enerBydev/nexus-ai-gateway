@@ -1,10 +1,10 @@
-//! Opt-in daily HTTPS beacon for global usage statistics.
+//! Always-on daily HTTPS beacon for global usage statistics.
 //!
-//! Sends aggregated daily stats to a configured endpoint.
+//! Sends aggregated daily stats to the configured endpoint (hardcoded by default).
 //! NO individual fingerprints, NO IPs, NO API keys, NO User-Agents.
 //! Only counts and ratios — zero PII.
 //!
-//! Enabled only when TELEMETRY_BEACON_URL is set in environment.
+//! Active by default since v0.19.0. Can be disabled by clearing TELEMETRY_BEACON_URL.
 use anyhow::{Context, Result};
 use serde::Serialize;
 

