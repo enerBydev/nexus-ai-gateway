@@ -346,6 +346,12 @@ pub async fn proxy_handler(
 static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
+/// Crate-level mutex for synchronizing tests that share global atomics
+/// (ACTIVE_CONNECTIONS, IS_DRAINING). Prevents cross-test interference
+/// when tests run in parallel (default cargo test behavior).
+static GLOBAL_STATE_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 /// RAII guard that clears specified env vars on creation and on drop.
 /// Ensures test env vars never leak to other tests.
 struct EnvGuard {
@@ -605,6 +611,7 @@ mod connection_counter_tests {
 
     #[test]
     fn test_active_connections_increment_decrement() {
+        let _guard = GLOBAL_STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ACTIVE_CONNECTIONS.store(0, Ordering::Relaxed);
         assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::Relaxed), 0);
 
@@ -617,6 +624,7 @@ mod connection_counter_tests {
 
     #[test]
     fn test_connection_guard_raii() {
+        let _guard = GLOBAL_STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ACTIVE_CONNECTIONS.store(0, Ordering::Relaxed);
 
         {
@@ -632,6 +640,7 @@ mod connection_counter_tests {
 
     #[test]
     fn test_connection_guard_manual_drop() {
+        let _guard = GLOBAL_STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ACTIVE_CONNECTIONS.store(0, Ordering::Relaxed);
 
         let guard = ConnectionGuard::new();
@@ -646,11 +655,13 @@ mod connection_counter_tests {
 // Phase 5: Graceful shutdown tests for S1-S11
 #[cfg(test)]
 mod drain_state_tests {
+    use super::GLOBAL_STATE_TEST_MUTEX;
     use crate::IS_DRAINING;
     use std::sync::atomic::Ordering;
 
     #[test]
     fn test_is_draining_default_false() {
+        let _guard = GLOBAL_STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Reset to known state
         IS_DRAINING.store(false, Ordering::Relaxed);
         assert!(!IS_DRAINING.load(Ordering::Relaxed));
@@ -658,6 +669,7 @@ mod drain_state_tests {
 
     #[test]
     fn test_is_draining_set_true() {
+        let _guard = GLOBAL_STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         IS_DRAINING.store(true, Ordering::Relaxed);
         assert!(IS_DRAINING.load(Ordering::Relaxed));
         // Reset

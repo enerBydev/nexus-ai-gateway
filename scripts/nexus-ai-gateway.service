@@ -36,7 +36,7 @@ StandardError=append:/tmp/nexus-ai-gateway.log
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/tmp
+ReadWritePaths=/tmp %h/.local/share/nexus-ai-gateway
 
 [Install]
 WantedBy=default.target
