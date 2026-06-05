@@ -290,7 +290,7 @@ mod tests {
 
         assert_eq!(fp.fingerprint_ip.len(), 64, "IP fingerprint must be 64 hex chars");
         assert_eq!(fp.fingerprint_key.len(), 64, "Key fingerprint must be 64 hex chars");
-        assert_eq!(fp.client_type, ClientType::Unknown, "No User-Agent → Unknown");
+        assert_eq!(fp.client_type, ClientType::Unknown, "No User-Agent -> Unknown");
         assert_eq!(fp.message_count, 1);
         assert!(!fp.has_tool_use);
         assert!(!fp.has_system_prompt);

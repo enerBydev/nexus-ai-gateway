@@ -31,7 +31,7 @@ pub(crate) fn parse_upstream_error(status: u16, body: &str) -> UpstreamError {
             // NIM wraps errors: "Upstream returned 400 Bad Request: {...}"
             if let Some(inner) = extract_nested_error(&err.message) {
                 tracing::debug!(
-                    "🔍 Unwrapped nested error: {} → {}",
+                    "[SCAN] Unwrapped nested error: {} -> {}",
                     &err.message.chars().take(80).collect::<String>(),
                     &inner.message.chars().take(80).collect::<String>()
                 );
@@ -39,7 +39,11 @@ pub(crate) fn parse_upstream_error(status: u16, body: &str) -> UpstreamError {
                 // for classify_error(). Inner status is more precise than
                 // the wrapper status (e.g., NIM wraps 400 inside 502).
                 if inner.status > 0 && inner.status != err.status {
-                    tracing::debug!("🔍 Inner status override: {} → {}", err.status, inner.status);
+                    tracing::debug!(
+                        "[SCAN] Inner status override: {} -> {}",
+                        err.status,
+                        inner.status
+                    );
                     err.status = inner.status;
                 }
                 err.message = inner.message;

@@ -73,7 +73,7 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
         for (claude_id, route) in entries {
             let route_type = config.get_upstream_type(&route.upstream_name);
             eprintln!(
-                " {} → {}:{} [type={}]",
+                " {} -> {}:{} [type={}]",
                 style(claude_id).dim(),
                 style(&route.upstream_name).cyan(),
                 style(&route.target_model).green(),
@@ -227,7 +227,7 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
             );
         }
         Err(e) => {
-            eprintln!("  {} CC binary: {}", style("⚠️").yellow(), e);
+            eprintln!("  {} CC binary: {}", style("[WARN]").yellow(), e);
         }
     }
 
@@ -239,7 +239,7 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
             eprintln!("  {} Proxy healthy at port {}", style("✅").green(), config.port);
         }
         Ok(resp) => {
-            eprintln!("  {} Proxy responded: {}", style("⚠️").yellow(), resp.status());
+            eprintln!("  {} Proxy responded: {}", style("[WARN]").yellow(), resp.status());
         }
         Err(_) => {
             eprintln!("  {} Proxy not running on port {}", style("ℹ️").blue(), config.port);
@@ -250,7 +250,7 @@ fn config_test(config_path: Option<PathBuf>) -> Result<()> {
     if !config.model_map.is_empty() {
         eprintln!("  {} {} model mappings configured", style("✅").green(), config.model_map.len());
     } else {
-        eprintln!("  {} No model mappings — run: nexus-ai-gateway setup", style("⚠️").yellow());
+        eprintln!("  {} No model mappings — run: nexus-ai-gateway setup", style("[WARN]").yellow());
     }
 
     eprintln!();

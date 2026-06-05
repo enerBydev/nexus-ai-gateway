@@ -116,7 +116,7 @@ pub(crate) fn create_sse_stream(
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         tracing::debug!(
-            "📐 Auto-compact scaling: cc_context_window={}K, model_context={}K",
+            "[CALIB] Auto-compact scaling: cc_context_window={}K, model_context={}K",
             cc_context_window / 1000,
             context_limit / 1000
         );
@@ -144,7 +144,7 @@ pub(crate) fn create_sse_stream(
         let mut accumulated_input_tokens: u32 = estimated_input_tokens;
         let mut accumulated_output_tokens: u32 = 0;
         let mut saved_stop_reason: Option<String> = None;
-        let reasoning_poisoned = false;
+        let mut reasoning_poisoned = false;
 
         tokio::pin!(stream);
 
@@ -323,7 +323,7 @@ pub(crate) fn create_sse_stream(
                                         let context_threshold = cc_context_window * context_threshold_pct / 100;
                                         if scaled_for_check > context_threshold {
                                             tracing::warn!(
-                                                "⚠️ Context nearly full ({} scaled tokens = {}% of {}K, threshold={}%) — emitting error to trigger /compact",
+                                                "[WARN] Context nearly full ({} scaled tokens = {}% of {}K, threshold={}%) — emitting error to trigger /compact",
                                                 scaled_for_check,
                                                 scaled_for_check * 100 / cc_context_window,
                                                 cc_context_window / 1000,
@@ -439,6 +439,9 @@ pub(crate) fn create_sse_stream(
                                                         serde_json::to_string(&event).unwrap_or_default());
                                                     yield Ok(Bytes::from(sse_data));
                                                 }
+                                            } else {
+                                                // FIX C7 (Issue #60): Reasoning is poisoned — suppress further reasoning output
+                                                tracing::trace!("reasoning_poisoned=true: suppressing reasoning output");
                                             }
                                         }
 
@@ -451,6 +454,24 @@ pub(crate) fn create_sse_stream(
                                                 } else {
                                                     Some(content.to_string())
                                                 };
+
+                                                // Check if we're dealing with <previous_reasoning> content
+                                                if content.contains("<previous_reasoning") {
+                                                    reasoning_poisoned = true;
+                                                    tracing::debug!("reasoning_poisoned = true -- <previous_reasoning> detected in stream");
+                                                }
+
+                                                // FIX C4 (Issue #80): If current block is tool_use and sanitized_content is None,
+                                                // the content was discarded by sanitization (<previous_reasoning>), but the model
+                                                // already transitioned to generating text — close the tool_use block first.
+                                                if current_block_type.as_deref() == Some("tool_use") && sanitized_content.is_none() {
+                                                    let event = json!({"type": "content_block_stop", "index": content_index});
+                                                    let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
+                                                        serde_json::to_string(&event).unwrap_or_default());
+                                                    yield Ok(Bytes::from(sse_data));
+                                                    content_index += 1;
+                                                    current_block_type = None;
+                                                }
 
                                                 if let Some(clean_content) = sanitized_content {
                                                     if current_block_type.as_deref() != Some("text") {
@@ -552,6 +573,20 @@ pub(crate) fn create_sse_stream(
                                                                 serde_json::to_string(&event).unwrap_or_default());
                                                             yield Ok(Bytes::from(sse_data));
                                                         }
+                                                    } else if !is_intercepting_fetch && current_block_type.as_deref() == Some("tool_use") {
+                                                        // FIX C10 (Issue #80): If arguments is None but tool_use is open and we
+                                                        // already have previous arguments, emit empty input_json_delta to keep
+                                                        // the block valid. Without this, the tool_use block stays open with no deltas.
+                                                        if !tool_call_args.is_empty() {
+                                                            let event = json!({
+                                                                "type": "content_block_delta",
+                                                                "index": content_index,
+                                                                "delta": { "type": "input_json_delta", "partial_json": "" }
+                                                            });
+                                                            let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
+                                                                serde_json::to_string(&event).unwrap_or_default());
+                                                            yield Ok(Bytes::from(sse_data));
+                                                        }
                                                     }
                                                 }
                                             }
@@ -597,6 +632,15 @@ pub(crate) fn create_sse_stream(
                                                 tracing::info!("[WebFetch/Stream] Fetched {} chars", fetch_result.len());
 
                                                 if suppressed_block_start {
+                                                    // FIX C11 (Issue #80): Close any prior tool_use block that might be
+                                                    // open (from another tool_call in the same chunk) before emitting text.
+                                                    if current_block_type.is_some() {
+                                                        let event = json!({"type": "content_block_stop", "index": content_index});
+                                                        let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
+                                                            serde_json::to_string(&event).unwrap_or_default());
+                                                        yield Ok(Bytes::from(sse_data));
+                                                        content_index += 1;
+                                                    }
                                                     let event = json!({
                                                         "type": "content_block_start",
                                                         "index": content_index,

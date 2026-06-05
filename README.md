@@ -1,9 +1,9 @@
 # NEXUS-AI-Gateway
 
-![NEXUS Instances](https://img.shields.io/endpoint?url=https://nexus-beacon-receiver.enerby212.workers.dev/v1/stats/shield)
 
 API proxy translating Anthropic Messages API to OpenAI-compatible format.
 
+![NEXUS-Instances](https://img.shields.io/endpoint?url=https://nexus-beacon-receiver.enerby212.workers.dev/v1/stats/shield)
 [![CI](https://img.shields.io/github/actions/workflow/status/enerBydev/NEXUS-AI-Gateway/ci.yml?branch=main)](https://github.com/enerBydev/NEXUS-AI-Gateway/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)

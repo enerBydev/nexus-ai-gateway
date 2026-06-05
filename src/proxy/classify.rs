@@ -20,12 +20,12 @@ pub(crate) fn error_regexes() -> &'static ErrorRegexes {
     })
 }
 
-pub(crate) const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplification (1.58x→~1.3x)
+pub(crate) const MAX_RETRIES: u32 = 3; // Reduced from 4: less cascade amplification (1.58x->~1.3x)
 #[allow(dead_code)]
 pub(crate) const RETRY_BASE_MS: u64 = 1500; // Kept for reference, overridden per error class
 pub(crate) const MIN_CLAMP_TOKENS: u32 = 4096;
 
-/// Error classification: 3 layers (Structural → Status-Guard → Content-Aware → Status-Based)
+/// Error classification: 3 layers (Structural -> Status-Guard -> Content-Aware -> Status-Based)
 #[derive(Debug)]
 pub(crate) enum ErrorClass {
     /// Transient server error — retry with exponential backoff + jitter
@@ -47,6 +47,13 @@ pub(crate) const FIXABLE_PATTERNS: &[&str] = &[
     "exceeds the model",
     "input tokens",
     "reduce the length",
+    // Issue #63/#88: Tool schema format mismatch (C8)
+    "missing field `input_schema`",
+    "missing field `parameters`",
+    "failed to deserialize",
+    // Issue #74/#88: Rate limit wrapped in error (C5)
+    "rate_limit",
+    "too many requests",
 ];
 
 /// Content patterns that indicate a transient/retryable condition
@@ -96,7 +103,7 @@ pub(crate) fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
         context_limit.saturating_sub(real_input).saturating_sub(256).max(MIN_CLAMP_TOKENS);
 
     tracing::info!(
-        "📐 Extracted from NIM error: input={}, limit={}, safe_max={}",
+        "[CALIB] Extracted from NIM error: input={}, limit={}, safe_max={}",
         real_input,
         context_limit,
         safe_max
@@ -107,7 +114,7 @@ pub(crate) fn extract_safe_max_tokens_from_error(message: &str) -> Option<u32> {
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║ Issue #34: Redesigned error classification with status-code guards     ║
 // ║                                                                        ║
-// ║ NEW ORDER: L0 (Structural) → StatusGuard (429/5xx) → L1 (Content) → L2║
+// ║ NEW ORDER: L0 (Structural) -> StatusGuard (429/5xx) -> L1 (Content) -> L2║
 // ║                                                                        ║
 // ║ KEY INVARIANT: L1 FATAL_PATTERNS can NEVER override a retryable        ║
 // ║ HTTP status code (429, 500-504, 529). The status code is the           ║
@@ -152,7 +159,7 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     // ║ INVARIANT: L1 FATAL_PATTERNS cannot reach here.         ║
     // ║ The HTTP status code is the authoritative signal.       ║
     // ║ L1 can only REFINE within the Retryable class           ║
-    // ║ (e.g., Retryable→Fixable), never escalate to Fatal.    ║
+    // ║ (e.g., Retryable->Fixable), never escalate to Fatal.    ║
     // ║                                                         ║
     // ║ Fixes: M1, M2, M3, M4, M5, M6, M7                     ║
     // ╚══════════════════════════════════════════════════════════╝
@@ -163,7 +170,7 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
         if is_l2_rate_limit(upstream) {
             log_l2_rate_limit("<model>", upstream);
             tracing::warn!(
-                "⚠️ L2 rate limit detected: {} - using extended backoff",
+                "[WARN] L2 rate limit detected: {} - using extended backoff",
                 upstream.message.chars().take(100).collect::<String>()
             );
             return ErrorClass::Retryable {
@@ -184,7 +191,7 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
         }
 
         // No L1 refinement — fall through to pure status classification
-        return classify_by_status(status);
+        return classify_by_status(status, &upstream.message);
     }
 
     // ╔══════════════════════════════════════════════════════════╗
@@ -217,12 +224,12 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
     // ╔══════════════════════════════════════════════════════════╗
     // ║ LAYER 2: Status-Based Classification (fallback)         ║
     // ╚══════════════════════════════════════════════════════════╝
-    classify_by_status(status)
+    classify_by_status(status, &upstream.message)
 }
 
 /// Pure status-code classification — extracted for reuse from both
 /// the status guard path and the L2 fallback path.
-fn classify_by_status(status: u16) -> ErrorClass {
+fn classify_by_status(status: u16, error_message: &str) -> ErrorClass {
     match status {
         // Issue #34 Q1: Reduced from 3 to 1 retry for 429.
         // CC has its own 2 (SDK) + 10 (app) retries.
@@ -237,11 +244,23 @@ fn classify_by_status(status: u16) -> ErrorClass {
             max_retries: 3,
             reason: "500 internal server error (L2)",
         },
-        502 => ErrorClass::Retryable {
-            base_delay_ms: 3000,
-            max_retries: 3,
-            reason: "502 bad gateway (L2)",
-        },
+        502 => {
+            // FIX C5 (Issue #74): NIM can wrap 429 in 502 — extract rate limit from body
+            let lower_msg = error_message.to_lowercase();
+            if lower_msg.contains("429")
+                || lower_msg.contains("rate_limit")
+                || lower_msg.contains("too many requests")
+            {
+                tracing::warn!("429 wrapped in 502 detected -- reclassifying as rate limit");
+                ErrorClass::Retryable { base_delay_ms: 10000, max_retries: 1, reason: "429-in-502" }
+            } else {
+                ErrorClass::Retryable {
+                    base_delay_ms: 3000,
+                    max_retries: 3,
+                    reason: "502 bad gateway (L2)",
+                }
+            }
+        }
         503 => ErrorClass::Retryable {
             base_delay_ms: 5000,
             max_retries: 4,

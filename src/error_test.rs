@@ -40,7 +40,7 @@ mod tests {
     fn test_error_408_maps_to_api_error() {
         // HTTP 408 should map to "api_error" for CC retry
         let error_type = anthropic_error_type(StatusCode::from_u16(408).unwrap());
-        // 408 is not explicitly listed → falls through to default "api_error"
+        // 408 is not explicitly listed -> falls through to default "api_error"
         assert_eq!(error_type, "api_error");
     }
 

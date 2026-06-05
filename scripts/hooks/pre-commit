@@ -21,6 +21,18 @@ if [ -n "$LARGE_FILES" ]; then
     echo ""
 fi
 
+# Check for Unicode in Rust files (Issue #88: C1/C2 Edit tool failures)
+if git diff --cached --name-only -- '*.rs' | head -1 | grep -q .; then
+    echo " Running Unicode check..."
+    if ! bash scripts/sanitize-unicode.sh --check 2>/dev/null; then
+        echo ""
+        echo "❌ Unicode characters detected in source files!"
+        echo " Run: bash scripts/sanitize-unicode.sh"
+        exit 1
+    fi
+    echo " ✅ Unicode check passed"
+fi
+
 # Check if there are Rust files staged
 RUST_FILES=$(git diff --cached --name-only -- '*.rs')
 if [ -n "$RUST_FILES" ]; then

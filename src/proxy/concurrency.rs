@@ -29,7 +29,7 @@ pub(crate) async fn acquire_model_permit(
                 .entry(model.to_string())
                 .or_insert_with(|| {
                     tracing::info!(
-                        "🛡️ Created concurrency semaphore for '{}' ({} permits)",
+                        "[GUARD] Created concurrency semaphore for '{}' ({} permits)",
                         model,
                         max_concurrent,
                     );
@@ -72,7 +72,7 @@ pub(crate) async fn acquire_model_permit(
             Ok(permit)
         }
         Ok(Err(_)) => {
-            tracing::error!("🛡️ Semaphore CLOSED for '{}' — this is a bug", model);
+            tracing::error!("[GUARD] Semaphore CLOSED for '{}' — this is a bug", model);
             Err(ProxyError::Internal(format!("Semaphore closed for '{}'", model)))
         }
         Err(_) => {

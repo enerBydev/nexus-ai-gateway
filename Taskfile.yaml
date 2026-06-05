@@ -142,6 +142,16 @@ tasks:
     cmds:
       - cargo audit
 
+  sanitize-unicode:
+    desc: "Replace Unicode with ASCII in Rust source files"
+    cmds:
+      - bash scripts/sanitize-unicode.sh
+
+  sanitize-unicode-check:
+    desc: "Verify no Unicode in source files (CI mode)"
+    cmds:
+      - bash scripts/sanitize-unicode.sh --check
+
   update:
     desc: Update dependencies
     cmds:

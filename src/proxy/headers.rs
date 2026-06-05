@@ -44,8 +44,8 @@ impl ClientHeaders {
     /// Resolve the `anthropic-beta` header value to forward upstream.
     ///
     /// Logic (User Decision Q1, Option C):
-    /// 1. Client sends betas → merge with `PROXY_MINIMUM_BETAS`, deduplicate
-    /// 2. Client does NOT send betas (None or empty) → use only `PROXY_MINIMUM_BETAS`
+    /// 1. Client sends betas -> merge with `PROXY_MINIMUM_BETAS`, deduplicate
+    /// 2. Client does NOT send betas (None or empty) -> use only `PROXY_MINIMUM_BETAS`
     /// 3. Result: comma-separated string ready for the header
     pub(crate) fn resolve_anthropic_beta(&self) -> String {
         let mut betas: Vec<&str> = PROXY_MINIMUM_BETAS.to_vec();
@@ -67,8 +67,8 @@ impl ClientHeaders {
     /// Resolve the `anthropic-version` header value to forward upstream.
     ///
     /// Logic (User Decision Q5, Option A):
-    /// 1. Client sends `anthropic-version` → forward it
-    /// 2. If not → use default `2023-06-01`
+    /// 1. Client sends `anthropic-version` -> forward it
+    /// 2. If not -> use default `2023-06-01`
     pub(crate) fn resolve_anthropic_version(&self) -> &str {
         self.anthropic_version.as_deref().unwrap_or(DEFAULT_ANTHROPIC_VERSION)
     }

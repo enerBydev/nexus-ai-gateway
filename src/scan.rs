@@ -382,7 +382,7 @@ pub fn scan_cc_binary() -> Result<CCScanResult, String> {
     let binary_path = find_cc_binary()
         .ok_or_else(|| "Claude Code binary not found. Is `claude` in PATH?".to_string())?;
 
-    tracing::info!("🔍 Scanning CC binary: {}", binary_path.display());
+    tracing::info!("[SCAN] Scanning CC binary: {}", binary_path.display());
 
     let sha256 = compute_sha256(&binary_path)?;
     tracing::info!("📊 SHA256: {}...{}", &sha256[..8], &sha256[sha256.len() - 8..]);
@@ -452,19 +452,19 @@ pub fn display_scan(result: &CCScanResult) {
     println!("╠══════════════════════════════════════════════════╣");
     println!("║ 🔧 Tools: {} found", result.tools.len());
     for tool in &result.tools {
-        println!("║   ✓ {}", tool);
+        println!("║   [OK] {}", tool);
     }
 
     println!("╠══════════════════════════════════════════════════╣");
     println!("║ ⚡ Capabilities: {} found", result.capabilities.len());
     for cap in &result.capabilities {
-        println!("║   ✓ {}", cap);
+        println!("║   [OK] {}", cap);
     }
 
     println!("╠══════════════════════════════════════════════════╣");
     println!("║ 🌐 Env Vars: {} confirmed in binary", result.env_vars.len());
     for var in &result.env_vars {
-        println!("║   ✓ {}", var);
+        println!("║   [OK] {}", var);
     }
 
     println!("╚══════════════════════════════════════════════════╝");

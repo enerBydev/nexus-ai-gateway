@@ -100,7 +100,7 @@ pub(crate) async fn resilient_send(
         // === Smart Retry: 3-Layer Error Classification ===
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
         tracing::debug!(
-            "🔍 Parsed error: status={}, type={:?}, param={:?}, msg={}",
+            "[SCAN] Parsed error: status={}, type={:?}, param={:?}, msg={}",
             upstream_err.status,
             upstream_err.error_type,
             upstream_err.param,
@@ -152,6 +152,22 @@ pub(crate) async fn resilient_send(
                 continue;
             }
             ErrorClass::Fixable { reason } => {
+                // Issue #63/#88: Tool schema format mismatch — strip tools and retry
+                if (reason.contains("missing field")
+                    || reason.contains("deserialize")
+                    || reason.contains("schema"))
+                    && attempt <= MAX_RETRIES
+                {
+                    tracing::warn!(
+                        "Tool schema mismatch (attempt {}/{}): {} -- retrying WITHOUT tools",
+                        attempt,
+                        MAX_RETRIES,
+                        reason
+                    );
+                    openai_req.tools = None;
+                    openai_req.tool_choice = None;
+                    continue;
+                }
                 if attempt >= MAX_RETRIES {
                     // v10.2: If we exhausted retries on input_tokens overflow, it's truly full
                     if reason.contains("input_tokens overflow") {
@@ -183,7 +199,7 @@ pub(crate) async fn resilient_send(
                         && OverflowLoopTracker::check_overflow_loop(&openai_req.model, real_input)
                     {
                         tracing::warn!(
-                            "🚀 Overflow loop detected for model {} at ~{}K tokens — forcing ContextOverflow",
+                            "[LAUNCH] Overflow loop detected for model {} at ~{}K tokens — forcing ContextOverflow",
                             openai_req.model,
                             real_input / 1000
                         );
@@ -201,7 +217,7 @@ pub(crate) async fn resilient_send(
                         let margin = 2048 + (attempt * 1024);
                         let safe_with_margin = safe.saturating_sub(margin).max(1024);
                         tracing::warn!(
-                            "🔧 input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens → {}",
+                            "🔧 input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens -> {}",
                             attempt, MAX_RETRIES, safe, margin, safe_with_margin
                         );
                         safe_with_margin
@@ -213,7 +229,7 @@ pub(crate) async fn resilient_send(
                     let current = openai_req.max_tokens.unwrap_or(64000);
                     let halved = (current / 2).max(MIN_CLAMP_TOKENS);
                     tracing::warn!(
-                        "🔧 {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
+                        "🔧 {} [{}] (attempt {}/{}): clamping max_tokens {} -> {}",
                         status.as_u16(),
                         reason,
                         attempt,
@@ -233,7 +249,7 @@ pub(crate) async fn resilient_send(
                     reason,
                     crate::str_utils::safe_truncate(&upstream_err.message, 500)
                 );
-                // v6.1/v10.2: input_tokens overflow → try to extract safe max_tokens
+                // v6.1/v10.2: input_tokens overflow -> try to extract safe max_tokens
                 if reason.contains("input_tokens overflow") {
                     return Err(ProxyError::ContextOverflow(format!(
                         "Context window full: {}. Use /compact to reduce context.",
@@ -327,7 +343,7 @@ pub(crate) async fn resilient_send_raw(
         // === Smart Retry: 3-Layer Error Classification [stream] ===
         let upstream_err = parse_upstream_error(status.as_u16(), &error_text);
         tracing::debug!(
-            "🔍 [stream] Parsed error: status={}, type={:?}, param={:?}, msg={}",
+            "[SCAN] [stream] Parsed error: status={}, type={:?}, param={:?}, msg={}",
             upstream_err.status,
             upstream_err.error_type,
             upstream_err.param,
@@ -379,6 +395,22 @@ pub(crate) async fn resilient_send_raw(
                 continue;
             }
             ErrorClass::Fixable { reason } => {
+                // Issue #63/#88: Tool schema format mismatch — strip tools and retry
+                if (reason.contains("missing field")
+                    || reason.contains("deserialize")
+                    || reason.contains("schema"))
+                    && attempt <= MAX_RETRIES
+                {
+                    tracing::warn!(
+                        "Tool schema mismatch (attempt {}/{}): {} -- retrying WITHOUT tools",
+                        attempt,
+                        MAX_RETRIES,
+                        reason
+                    );
+                    openai_req.tools = None;
+                    openai_req.tool_choice = None;
+                    continue;
+                }
                 if attempt >= MAX_RETRIES {
                     // v10.2: If we exhausted retries on input_tokens overflow, it's truly full
                     if reason.contains("input_tokens overflow") {
@@ -410,7 +442,7 @@ pub(crate) async fn resilient_send_raw(
                         && OverflowLoopTracker::check_overflow_loop(&openai_req.model, real_input)
                     {
                         tracing::warn!(
-                            "🚀 [stream] Overflow loop detected for model {} at ~{}K tokens — forcing ContextOverflow",
+                            "[LAUNCH] [stream] Overflow loop detected for model {} at ~{}K tokens — forcing ContextOverflow",
                             openai_req.model,
                             real_input / 1000
                         );
@@ -429,12 +461,12 @@ pub(crate) async fn resilient_send_raw(
                     ) {
                         // v0.11.0: Subtract safety margin to absorb NIM re-tokenization drift
                         // NIM adds ~257 tokens per retry (chat template expansion).
-                        // Without margin: attempt1=63743, NIM says input=139010 (+257) → fail
-                        // With margin: attempt1=61695, NIM says input=139010 → still fits
+                        // Without margin: attempt1=63743, NIM says input=139010 (+257) -> fail
+                        // With margin: attempt1=61695, NIM says input=139010 -> still fits
                         let margin = 2048 + (attempt * 1024); // Growing margin per retry
                         let safe_with_margin = safe.saturating_sub(margin).max(1024);
                         tracing::warn!(
-                            "🔧 [stream] input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens → {}",
+                            "🔧 [stream] input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens -> {}",
                             attempt, MAX_RETRIES, safe, margin, safe_with_margin
                         );
                         safe_with_margin
@@ -446,7 +478,7 @@ pub(crate) async fn resilient_send_raw(
                     let current = openai_req.max_tokens.unwrap_or(64000);
                     let halved = (current / 2).max(MIN_CLAMP_TOKENS);
                     tracing::warn!(
-                        "🔧 [stream] {} [{}] (attempt {}/{}): clamping max_tokens {} → {}",
+                        "🔧 [stream] {} [{}] (attempt {}/{}): clamping max_tokens {} -> {}",
                         status.as_u16(),
                         reason,
                         attempt,
@@ -466,7 +498,7 @@ pub(crate) async fn resilient_send_raw(
                     reason,
                     crate::str_utils::safe_truncate(&upstream_err.message, 500)
                 );
-                // v6.1/v10.2: input_tokens overflow → 400 (CC won't retry)
+                // v6.1/v10.2: input_tokens overflow -> 400 (CC won't retry)
                 if reason.contains("input_tokens overflow") {
                     return Err(ProxyError::ContextOverflow(format!(
                         "Context window full: {}. Use /compact to reduce context.",

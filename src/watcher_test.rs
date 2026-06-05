@@ -3,7 +3,7 @@
 /// These tests validate the protection logic WITHOUT requiring a running
 /// notify watcher or filesystem events. They test:
 /// - Layer 1: EventKind::Modify(ModifyKind::Data) filtering
-/// - Layer 3: mtime comparison (unchanged → skip reload)
+/// - Layer 3: mtime comparison (unchanged -> skip reload)
 /// - Layer 4: Cooldown enforcement (15s minimum between reloads)
 /// - Layer 5: AtomicBool serialization (prevents concurrent reload)
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -126,17 +126,17 @@ fn layer3_mtime_changed_allows_reload() {
 #[test]
 fn layer3_none_mtime_allows_reload() {
     // If we couldn't read mtime before (None), and now we can (Some),
-    // that's a change → allow reload
+    // that's a change -> allow reload
     let last_mtime: Option<std::time::SystemTime> = None;
     let current_mtime: Option<std::time::SystemTime> = Some(std::time::SystemTime::now());
 
-    assert_ne!(current_mtime, last_mtime, "Transition from None→Some mtime must allow reload");
+    assert_ne!(current_mtime, last_mtime, "Transition from None->Some mtime must allow reload");
 }
 
 #[test]
 fn layer3_both_none_skips_reload() {
     // If both are None (can't read mtime at all), the watcher
-    // logic treats them as equal → skip
+    // logic treats them as equal -> skip
     let last_mtime: Option<std::time::SystemTime> = None;
     let current_mtime: Option<std::time::SystemTime> = None;
 
@@ -155,7 +155,7 @@ fn layer4_cooldown_not_elapsed_skips_reload() {
 
     assert!(
         last_reload.elapsed().as_secs() < cooldown_secs,
-        "5s < 15s cooldown → reload MUST be skipped"
+        "5s < 15s cooldown -> reload MUST be skipped"
     );
 }
 
@@ -167,7 +167,7 @@ fn layer4_cooldown_elapsed_allows_reload() {
 
     assert!(
         last_reload.elapsed().as_secs() >= cooldown_secs,
-        "20s >= 15s cooldown → reload MUST be allowed"
+        "20s >= 15s cooldown -> reload MUST be allowed"
     );
 }
 
@@ -181,7 +181,7 @@ fn layer4_cooldown_exact_boundary_allows_reload() {
     // At exactly 15s, < 15 is false, so reload proceeds
     assert!(
         !(last_reload.elapsed().as_secs() < cooldown_secs),
-        "At exactly 15s, the `< 15` check is false → reload allowed"
+        "At exactly 15s, the `< 15` check is false -> reload allowed"
     );
 }
 

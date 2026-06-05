@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
     //     match daemonize.start() {
     //         Ok(_) => {}
     //         Err(e) => {
-    //             eprintln!("✗ Failed to daemonize: {}", e);
+    //             eprintln!("[FAIL] Failed to daemonize: {}", e);
     //             std::process::exit(1);
     //         }
     //     }
@@ -102,7 +102,7 @@ fn main() -> anyhow::Result<()> {
 
     // Temporarily disabled daemon mode
     if cli.daemon {
-        eprintln!("⚠️ Daemon mode temporarily disabled (daemonize crate unmaintained - RUSTSEC-2025-0069). Use systemd service instead.");
+        eprintln!("[WARN] Daemon mode temporarily disabled (daemonize crate unmaintained - RUSTSEC-2025-0069). Use systemd service instead.");
         std::process::exit(1);
     }
 
@@ -146,7 +146,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     // Log telemetry disabled reason (config loads before logging, so we defer the message here)
     if !config.telemetry_enabled {
         if let Some(ref reason) = config.telemetry_disabled_reason {
-            tracing::warn!("⚠️ Telemetry auto-disabled: {reason}");
+            tracing::warn!("[WARN] Telemetry auto-disabled: {reason}");
         }
     }
 
@@ -161,7 +161,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     );
     if config.telemetry_enabled && telemetry_ctx.is_none() {
         tracing::warn!(
-            "⚠️ Telemetry was enabled but initialization failed — running without telemetry"
+            "[WARN] Telemetry was enabled but initialization failed — running without telemetry"
         );
     }
 
@@ -207,14 +207,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     match scan::scan_cc_binary() {
         Ok(result) => {
             tracing::info!(
-                "🔍 CC scan: {} models, {} tools, {} capabilities",
+                "[SCAN] CC scan: {} models, {} tools, {} capabilities",
                 result.models.len(),
                 result.tools.len(),
                 result.capabilities.len()
             );
         }
         Err(e) => {
-            tracing::warn!("⚠️ CC binary scan skipped: {}", e);
+            tracing::warn!("[WARN] CC binary scan skipped: {}", e);
         }
     }
     if let Some(ref model) = config.reasoning_model {
@@ -361,7 +361,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
                 .is_err()
             {
-                tracing::warn!("⚠️ Config reload already in progress (SIGHUP skipped)");
+                tracing::warn!("[WARN] Config reload already in progress (SIGHUP skipped)");
                 continue;
             }
             let reload_path = reload_config.load().config_path.clone();
@@ -454,11 +454,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
         loop {
             tokio::select! {
-                // New Modify event arrived → reset debounce timer
+                // New Modify event arrived -> reset debounce timer
                 _ = rx.recv() => {
                     debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
                 }
-                // Debounce expired → proceed with reload pipeline
+                // Debounce expired -> proceed with reload pipeline
                 _ = debounce_sleep.as_mut() => {
                     // S11: Skip if server is draining
                     if IS_DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
@@ -494,7 +494,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
                         .is_err()
                     {
-                        tracing::warn!("⚠️ Config reload already in progress (watcher skipped)");
+                        tracing::warn!("[WARN] Config reload already in progress (watcher skipped)");
                         debounce_sleep.as_mut().reset(tokio::time::Instant::now() + debounce);
                         continue;
                     }
@@ -534,9 +534,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     // We use a dedicated CancellationToken for the server's graceful shutdown,
     // separate from SHUTDOWN_TOKEN (which cancels SSE streams). The flow is:
     // 1. Server is spawned — begins serving immediately
-    // 2. shutdown_signal() fires → sets IS_DRAINING, cancels SHUTDOWN_TOKEN
-    // 3. We then cancel server_shutdown_token → server stops accepting
-    // 4. Drain timeout starts → races against server task completing
+    // 2. shutdown_signal() fires -> sets IS_DRAINING, cancels SHUTDOWN_TOKEN
+    // 3. We then cancel server_shutdown_token -> server stops accepting
+    // 4. Drain timeout starts -> races against server task completing
     let server_shutdown_token = tokio_util::sync::CancellationToken::new();
     let server_ct_for_graceful = server_shutdown_token.clone();
     let server_handle = tokio::spawn(async move {
@@ -572,7 +572,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
         _ = tokio::time::sleep(drain_timeout) => {
             tracing::warn!(
-                "⏱️ Drain timeout ({}s) exceeded — forcing shutdown ({} active connections)",
+                "[TIMEOUT] Drain timeout ({}s) exceeded — forcing shutdown ({} active connections)",
                 drain_timeout_secs,
                 proxy::ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
             );
@@ -696,7 +696,7 @@ fn handle_scan(env: bool, launcher: bool, check: bool) -> anyhow::Result<()> {
                     &scan_result.binary_sha256[scan_result.binary_sha256.len() - 8..]
                 );
             } else {
-                println!("⚠️ CC binary UPDATED!");
+                println!("[WARN] CC binary UPDATED!");
                 println!(" Old: {}", old_scan.binary_sha256);
                 println!(" New: {}", scan_result.binary_sha256);
                 let new_models: Vec<&str> = scan_result
@@ -743,7 +743,7 @@ fn handle_scan(env: bool, launcher: bool, check: bool) -> anyhow::Result<()> {
 
 fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
     if !pid_file.exists() {
-        eprintln!("✗ PID file not found: {}", pid_file.display());
+        eprintln!("[FAIL] PID file not found: {}", pid_file.display());
         eprintln!(" Daemon is not running or PID file was removed");
         std::process::exit(1);
     }
@@ -758,7 +758,7 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
         let output = Command::new("kill").arg(pid.to_string()).output()?;
 
         if !output.status.success() {
-            eprintln!("✗ Failed to stop daemon (PID: {})", pid);
+            eprintln!("[FAIL] Failed to stop daemon (PID: {})", pid);
             eprintln!(" Process may have already exited");
             std::fs::remove_file(pid_file)?;
             std::process::exit(1);
@@ -777,14 +777,14 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
                 .unwrap_or(false);
             if !still_running {
                 eprintln!(
-                    "✓ Daemon stopped gracefully (PID: {}, elapsed: {:.1}s)",
+                    "[OK] Daemon stopped gracefully (PID: {}, elapsed: {:.1}s)",
                     pid,
                     start.elapsed().as_secs_f64()
                 );
                 break;
             }
             if start.elapsed() > max_wait {
-                eprintln!("⚠️ Daemon did not exit after 30s — sending SIGKILL...");
+                eprintln!("[WARN] Daemon did not exit after 30s — sending SIGKILL...");
                 let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
                 break;
             }
@@ -795,7 +795,7 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
 
     #[cfg(not(unix))]
     {
-        eprintln!("✗ Daemon stop is only supported on Unix systems");
+        eprintln!("[FAIL] Daemon stop is only supported on Unix systems");
         std::process::exit(1);
     }
 
@@ -804,7 +804,7 @@ fn stop_daemon(pid_file: &std::path::Path) -> anyhow::Result<()> {
 
 fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
     if !pid_file.exists() {
-        eprintln!("✗ Daemon is not running");
+        eprintln!("[FAIL] Daemon is not running");
         eprintln!(" PID file not found: {}", pid_file.display());
         std::process::exit(1);
     }
@@ -819,10 +819,10 @@ fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
         let output = Command::new("ps").arg("-p").arg(pid.to_string()).output()?;
 
         if output.status.success() {
-            eprintln!("✓ Daemon is running (PID: {})", pid);
+            eprintln!("[OK] Daemon is running (PID: {})", pid);
             eprintln!(" PID file: {}", pid_file.display());
         } else {
-            eprintln!("✗ Daemon is not running");
+            eprintln!("[FAIL] Daemon is not running");
             eprintln!(" Stale PID file found: {} (PID: {})", pid_file.display(), pid);
             std::process::exit(1);
         }
@@ -830,7 +830,7 @@ fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
 
     #[cfg(not(unix))]
     {
-        eprintln!("✗ Daemon status check is only supported on Unix systems");
+        eprintln!("[FAIL] Daemon status check is only supported on Unix systems");
         std::process::exit(1);
     }
 

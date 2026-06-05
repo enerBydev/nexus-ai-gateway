@@ -213,7 +213,7 @@ fn calibration_starts_at_1() {
 #[test]
 fn calibration_adjusts_with_feedback() {
     let cal = CalibrationFactors::new();
-    // tiktoken says 1000, NIM says 1100 → observed ratio = 1.1
+    // tiktoken says 1000, NIM says 1100 -> observed ratio = 1.1
     cal.update("test-model", 1000, 1100);
 
     let factor = cal.get("test-model");
