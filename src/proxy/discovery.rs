@@ -72,7 +72,7 @@ pub(crate) async fn probe_model_limit(
 ) -> Option<u32> {
     // FASE 3.6: Check if probing is disabled
     if probing_disabled() {
-        tracing::info!("[TODO] Probing disabled via DISABLE_PROBING");
+        tracing::info!("[SCAN] Probing disabled via DISABLE_PROBING");
         return None;
     }
 
@@ -115,7 +115,7 @@ pub async fn get_context_limit(
 ) -> u32 {
     // FASE 3.6: Check MODEL_LIMIT_OVERRIDES first
     if let Some(override_limit) = get_model_limit_override(model) {
-        tracing::info!("[TODO] Model limit override for {}: {}", model, override_limit);
+        tracing::info!("[SCAN] Model limit override for {}: {}", model, override_limit);
         return override_limit;
     }
 

@@ -12,23 +12,6 @@
 use std::path::Path;
 use tokio::fs;
 
-/// Unicode <-> ASCII mapping table for fuzzy matching.
-/// Must stay in sync with scripts/sanitize-unicode.sh
-#[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
-const UNICODE_MAP: &[(&str, &str)] = &[
-    ("\u{2192}", "->"),         // ->
-    ("[TIMEOUT]", "[TIMEOUT]"), // Skip: multi-char replacements are bidirectional below
-    ("[WARN]", "[WARN]"),
-    ("[OK]", "[OK]"),
-    ("[FAIL]", "[FAIL]"),
-    ("[SCAN]", "[SCAN]"),
-    ("[CALIB]", "[CALIB]"),
-    ("[GUARD]", "[GUARD]"),
-    ("[TODO]", "[TODO]"),
-    ("[LAUNCH]", "[LAUNCH]"),
-    ("[PIN]", "[PIN]"),
-];
-
 // Note: Since the Unicode sanitizer already ran (P1), source files should
 // only have ASCII. This module helps when:
 // 1. CC normalizes \uXXXX escapes in old_string (CC bug #52813)
@@ -101,6 +84,8 @@ pub async fn maybe_rescue_edit(
         return None;
     }
 
+    // Security: Restrict rescue to src/ directory only (conservative initial rollout).
+    // TODO: Consider expanding to tests/, examples/, etc. after validation (Issue #88).
     let file_path_str = file_path.to_str().unwrap_or("");
     if !file_path_str.starts_with("src/") && !file_path_str.starts_with("./src/") {
         tracing::warn!(

@@ -44,7 +44,7 @@ impl CCWatcher {
         };
 
         if current_sha256 != self.last_sha256 {
-            tracing::info!(
+            tracing::warn!(
                 "[WARN] CC binary updated!\n   Old: {}...{}\n   New: {}...{}",
                 &self.last_sha256[..8],
                 &self.last_sha256[self.last_sha256.len() - 8..],

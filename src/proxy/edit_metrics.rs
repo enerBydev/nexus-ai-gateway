@@ -79,8 +79,13 @@ pub fn classify_edit_error(error_msg: &str) -> EditFailureType {
         EditFailureType::NotUnique
     } else if error_msg.contains("String to replace not found") {
         // Check for Unicode-related mismatch indicators
+        // Look for escaped Unicode sequences (\uXXXX) which indicate
+        // Claude Code normalized Unicode in old_string.
+        // NOTE: Do NOT check for "->" here — it's too broad and matches
+        // normal Rust syntax (fn signatures, match arms, etc.).
+        // Nuanced detection of sanitized "->" vs "->" belongs in
+        // edit_rescue.rs during fuzzy matching, not here.
         let has_unicode_markers = error_msg.contains("\\u")
-            || error_msg.contains("->")
             || error_msg.contains("[TIMEOUT]")
             || error_msg.contains("[WARN]");
         if has_unicode_markers {
