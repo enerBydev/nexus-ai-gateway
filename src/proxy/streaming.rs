@@ -401,6 +401,9 @@ pub(crate) fn create_sse_stream(
                                         let reasoning_val = choice.delta.reasoning_content.as_ref()
                                             .or(choice.delta.reasoning.as_ref());
                                         if let Some(reasoning) = reasoning_val {
+                                            if reasoning.contains("<previous_reasoning") {
+                                                reasoning_poisoned = true;
+                                            }
                                             if !reasoning_poisoned {
                                                 let emit_text = if reasoning.contains("<previous_reasoning") {
                                                     let pos = reasoning.find("<previous_reasoning").unwrap_or(0);
@@ -577,16 +580,14 @@ pub(crate) fn create_sse_stream(
                                                         // FIX C10 (Issue #80): If arguments is None but tool_use is open and we
                                                         // already have previous arguments, emit empty input_json_delta to keep
                                                         // the block valid. Without this, the tool_use block stays open with no deltas.
-                                                        if !tool_call_args.is_empty() {
-                                                            let event = json!({
-                                                                "type": "content_block_delta",
-                                                                "index": content_index,
-                                                                "delta": { "type": "input_json_delta", "partial_json": "" }
-                                                            });
-                                                            let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
-                                                                serde_json::to_string(&event).unwrap_or_default());
-                                                            yield Ok(Bytes::from(sse_data));
-                                                        }
+                                                        let event = json!({
+                                                            "type": "content_block_delta",
+                                                            "index": content_index,
+                                                            "delta": { "type": "input_json_delta", "partial_json": "" }
+                                                        });
+                                                        let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
+                                                            serde_json::to_string(&event).unwrap_or_default());
+                                                        yield Ok(Bytes::from(sse_data));
                                                     }
                                                 }
                                             }

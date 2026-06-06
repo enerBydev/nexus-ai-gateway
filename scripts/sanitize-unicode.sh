@@ -66,7 +66,7 @@ while IFS= read -r -d '' file; do
     if [ "$FILE_HAD_CHANGE" -eq 1 ] && [ "$CHECK_ONLY" = false ] && [ "$DRY_RUN" = false ]; then
         CHANGED=1
     fi
-done < <(find src -name "*.rs" -print0)
+done < <(git ls-files -z '*.rs')
 
 if [ "$CHECK_ONLY" = true ]; then
     if [ "$CHANGED" -eq 1 ]; then

@@ -1,7 +1,7 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Test: 429 rate limit → retry with exponential backoff
+/// Test: 429 rate limit -> retry with exponential backoff
 #[tokio::test]
 async fn test_retry_on_429() {
     let mock_server = MockServer::start().await;
@@ -52,7 +52,7 @@ async fn test_retry_on_429() {
     assert!(mock_server.uri().starts_with("http://"));
 }
 
-/// Test: 400 max_tokens overflow → auto-clamp and retry
+/// Test: 400 max_tokens overflow -> auto-clamp and retry
 #[tokio::test]
 async fn test_max_tokens_clamping() {
     let mock_server = MockServer::start().await;

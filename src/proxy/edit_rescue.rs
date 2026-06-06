@@ -92,12 +92,42 @@ pub async fn maybe_rescue_edit(
 
     // Security: Only allow edits within the project directory
     // (prevent path traversal)
-    let canonical_path = fs::canonicalize(file_path).await.ok()?;
+    // Check the original path before canonicalization to prevent symlink attacks
+    if edit_params.file_path.contains("..") {
+        tracing::warn!(
+            "Edit rescue rejected: path contains '..' traversal: {}",
+            edit_params.file_path
+        );
+        return None;
+    }
+
+    let file_path_str = file_path.to_str().unwrap_or("");
+    if !file_path_str.starts_with("src/") && !file_path_str.starts_with("./src/") {
+        tracing::warn!(
+            "Edit rescue rejected: path outside src directory: {}",
+            edit_params.file_path
+        );
+        return None;
+    }
+
+    let canonical_path = match fs::canonicalize(file_path).await {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::debug!(
+                "Edit rescue: failed to canonicalize path {}: {}",
+                edit_params.file_path,
+                e
+            );
+            return None;
+        }
+    };
+
     let cwd = std::env::current_dir().ok()?;
     if !canonical_path.starts_with(&cwd) {
         tracing::warn!(
-            "Edit rescue rejected: path outside project directory: {}",
-            edit_params.file_path
+            "Edit rescue rejected: canonicalized path outside project directory: {} -> {:?}",
+            edit_params.file_path,
+            canonical_path
         );
         return None;
     }

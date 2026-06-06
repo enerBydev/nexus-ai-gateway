@@ -153,9 +153,10 @@ pub(crate) async fn resilient_send(
             }
             ErrorClass::Fixable { reason } => {
                 // Issue #63/#88: Tool schema format mismatch — strip tools and retry
-                if (reason.contains("missing field")
-                    || reason.contains("deserialize")
-                    || reason.contains("schema"))
+                let error_msg = upstream_err.message.to_lowercase();
+                if (error_msg.contains("missing field")
+                    || error_msg.contains("deserialize")
+                    || error_msg.contains("schema"))
                     && attempt <= MAX_RETRIES
                 {
                     tracing::warn!(
@@ -396,9 +397,10 @@ pub(crate) async fn resilient_send_raw(
             }
             ErrorClass::Fixable { reason } => {
                 // Issue #63/#88: Tool schema format mismatch — strip tools and retry
-                if (reason.contains("missing field")
-                    || reason.contains("deserialize")
-                    || reason.contains("schema"))
+                let error_msg = upstream_err.message.to_lowercase();
+                if (error_msg.contains("missing field")
+                    || error_msg.contains("deserialize")
+                    || error_msg.contains("schema"))
                     && attempt <= MAX_RETRIES
                 {
                     tracing::warn!(
