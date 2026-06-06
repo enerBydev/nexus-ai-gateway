@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_chat_template_kwargs_per_route_nim_default_anthropic_bigmodel() {
-        // Global=NIM but bigmodel=Anthropic → request to bigmodel should NOT have chat_template_kwargs
+        // Global=NIM but bigmodel=Anthropic -> request to bigmodel should NOT have chat_template_kwargs
         let mut config = test_config_with_model_map();
         // Set bigmodel upstream to Anthropic type
         config

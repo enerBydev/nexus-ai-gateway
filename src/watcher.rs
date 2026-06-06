@@ -38,14 +38,14 @@ impl CCWatcher {
         let current_sha256 = match scan::compute_sha256(&self.binary_path) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("⚠️ Cannot compute CC binary SHA256: {}", e);
+                tracing::warn!("[WARN] Cannot compute CC binary SHA256: {}", e);
                 return false;
             }
         };
 
         if current_sha256 != self.last_sha256 {
-            tracing::info!(
-                "⚠️ CC binary updated!\n   Old: {}...{}\n   New: {}...{}",
+            tracing::warn!(
+                "[WARN] CC binary updated!\n   Old: {}...{}\n   New: {}...{}",
                 &self.last_sha256[..8],
                 &self.last_sha256[self.last_sha256.len() - 8..],
                 &current_sha256[..8],
@@ -83,7 +83,7 @@ impl CCWatcher {
 
                     // Save state
                     if let Err(e) = self.save_state() {
-                        tracing::warn!("⚠️ Cannot save scan state: {}", e);
+                        tracing::warn!("[WARN] Cannot save scan state: {}", e);
                     }
 
                     true

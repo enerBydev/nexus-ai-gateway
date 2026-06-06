@@ -123,7 +123,7 @@ pub fn estimate_from_openai_request(req: &OpenAIRequest) -> u32 {
     match serde_json::to_value(req) {
         Ok(val) => estimate_input_tokens(&val),
         Err(_) => {
-            tracing::warn!("⚠️ Failed to serialize OpenAIRequest for token estimation");
+            tracing::warn!("[WARN] Failed to serialize OpenAIRequest for token estimation");
             1
         }
     }
@@ -144,7 +144,7 @@ pub fn estimate_from_openai_request(req: &OpenAIRequest) -> u32 {
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-/// Per-model correction factor for tiktoken → NIM calibration.
+/// Per-model correction factor for tiktoken -> NIM calibration.
 ///
 /// Starts at 1.0 (no correction) and self-adjusts with each request.
 /// Thread-safe via `Arc<RwLock<>>` for concurrent access from async handlers.
@@ -221,7 +221,7 @@ impl CalibrationFactors {
         entry.observations += 1;
 
         tracing::debug!(
-            "📐 Calibration [{}]: {:.4} → {:.4} (observed: {:.4}, tiktoken={}, nim={}, n={})",
+            "[CALIB] Calibration [{}]: {:.4} -> {:.4} (observed: {:.4}, tiktoken={}, nim={}, n={})",
             model,
             old_factor,
             entry.factor,

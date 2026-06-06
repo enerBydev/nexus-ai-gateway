@@ -300,7 +300,7 @@ fn extract_safe_max_tokens_nim_format() {
     let safe = extract_safe_max_tokens_from_error(msg);
     assert!(safe.is_some(), "Should extract safe max from NIM format");
     let val = safe.unwrap();
-    // 131072 - 130000 - 256 = 816 → clamped to MIN_CLAMP_TOKENS (4096)
+    // 131072 - 130000 - 256 = 816 -> clamped to MIN_CLAMP_TOKENS (4096)
     assert_eq!(val, MIN_CLAMP_TOKENS);
 }
 

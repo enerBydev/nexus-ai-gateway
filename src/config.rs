@@ -218,7 +218,7 @@ impl Config {
             .unwrap_or(false);
 
         if base_url.ends_with("/v1") {
-            eprintln!("⚠️ WARNING: UPSTREAM_BASE_URL ends with '/v1'");
+            eprintln!("[WARN] WARNING: UPSTREAM_BASE_URL ends with '/v1'");
             eprintln!("   This will result in URLs like: {}/v1/chat/completions", base_url);
             eprintln!("   Consider removing '/v1' from UPSTREAM_BASE_URL");
             eprintln!("   Correct: https://openrouter.ai/api");
@@ -295,9 +295,14 @@ impl Config {
                 if let Some(type_val) = Self::get_from_map(data, &type_key) {
                     if let Ok(t) = type_val.parse::<UpstreamType>() {
                         upstream.upstream_type = Some(t);
-                        tracing::info!("📍 Upstream '{}' type set to {} via {}", name, t, type_key);
+                        tracing::info!(
+                            "[PIN] Upstream '{}' type set to {} via {}",
+                            name,
+                            t,
+                            type_key
+                        );
                     } else {
-                        tracing::warn!("⚠️ Invalid {}: '{}'", type_key, type_val);
+                        tracing::warn!("[WARN] Invalid {}: '{}'", type_key, type_val);
                     }
                 }
             }
@@ -316,7 +321,7 @@ impl Config {
                             target_model: target.to_string(),
                         },
                     );
-                    eprintln!(" 📍 Model map: {} → {}:{}", model_id, upstream, target);
+                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, target);
                 }
             }
         }
@@ -450,13 +455,13 @@ impl Config {
                 if let Some(upstream) = upstreams.get(&route.upstream_name) {
                     if upstream.upstream_type.is_none() {
                         tracing::warn!(
-                        "⚠️ Model '{}' routes to upstream '{}' but no UPSTREAM_{}_TYPE configured — using global type '{}'",
+                        "[WARN] Model '{}' routes to upstream '{}' but no UPSTREAM_{}_TYPE configured — using global type '{}'",
                         model_id, route.upstream_name, route.upstream_name.to_uppercase(), upstream_type
                     );
                     }
                 } else {
                     tracing::warn!(
-                    "⚠️ Model '{}' routes to upstream '{}' which is not configured — will fall back to 'default'",
+                    "[WARN] Model '{}' routes to upstream '{}' which is not configured — will fall back to 'default'",
                     model_id, route.upstream_name
                 );
                 }
@@ -503,7 +508,7 @@ impl Config {
             if path.exists() && dotenvy::from_path(&path).is_ok() {
                 return Some(path);
             }
-            eprintln!("⚠️ WARNING: Custom config file not found: {}", path.display());
+            eprintln!("[WARN] WARNING: Custom config file not found: {}", path.display());
         }
 
         if let Ok(path) = dotenvy::dotenv() {
@@ -567,7 +572,7 @@ impl Config {
             env::var("VERBOSE").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
 
         if base_url.ends_with("/v1") {
-            eprintln!("⚠️ WARNING: UPSTREAM_BASE_URL ends with '/v1'");
+            eprintln!("[WARN] WARNING: UPSTREAM_BASE_URL ends with '/v1'");
             eprintln!("   This will result in URLs like: {}/v1/chat/completions", base_url);
             eprintln!("   Consider removing '/v1' from UPSTREAM_BASE_URL");
             eprintln!("   Correct: https://openrouter.ai/api");
@@ -642,9 +647,14 @@ impl Config {
                 if let Ok(type_val) = env::var(&type_key) {
                     if let Ok(t) = type_val.parse::<UpstreamType>() {
                         upstream.upstream_type = Some(t);
-                        tracing::info!("📍 Upstream '{}' type set to {} via {}", name, t, type_key);
+                        tracing::info!(
+                            "[PIN] Upstream '{}' type set to {} via {}",
+                            name,
+                            t,
+                            type_key
+                        );
                     } else {
-                        tracing::warn!("⚠️ Invalid {}: '{}'", type_key, type_val);
+                        tracing::warn!("[WARN] Invalid {}: '{}'", type_key, type_val);
                     }
                 }
             }
@@ -664,7 +674,7 @@ impl Config {
                             target_model: target.to_string(),
                         },
                     );
-                    eprintln!(" 📍 Model map: {} → {}:{}", model_id, upstream, target);
+                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, target);
                 }
             }
         }
@@ -788,13 +798,13 @@ impl Config {
                 if let Some(upstream) = upstreams.get(&route.upstream_name) {
                     if upstream.upstream_type.is_none() {
                         tracing::warn!(
-                        "⚠️ Model '{}' routes to upstream '{}' but no UPSTREAM_{}_TYPE configured — using global type '{}'",
+                        "[WARN] Model '{}' routes to upstream '{}' but no UPSTREAM_{}_TYPE configured — using global type '{}'",
                         model_id, route.upstream_name, route.upstream_name.to_uppercase(), upstream_type
                     );
                     }
                 } else {
                     tracing::warn!(
-                    "⚠️ Model '{}' routes to upstream '{}' which is not configured — will fall back to 'default'",
+                    "[WARN] Model '{}' routes to upstream '{}' which is not configured — will fall back to 'default'",
                     model_id, route.upstream_name
                 );
                 }
@@ -1005,7 +1015,7 @@ mod tests {
         map.insert("MODEL_MAP_CLAUDE_OPUS_4_6".to_string(), "bigmodel:some-model".to_string());
         let config = Config::from_map(&map).unwrap();
         // Config should still load successfully (warnings, not errors)
-        // Env var MODEL_MAP_CLAUDE_OPUS_4_6 → key "claude-opus-4-6" (underscores→hyphens, lowercase)
+        // Env var MODEL_MAP_CLAUDE_OPUS_4_6 -> key "claude-opus-4-6" (underscores->hyphens, lowercase)
         assert!(config.model_map.contains_key("claude-opus-4-6"));
     }
 
@@ -1036,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_per_route_type_anthropic_with_global_nim() {
-        // Global=NIM, bigmodel=Anthropic → model_map routing to bigmodel uses type Anthropic
+        // Global=NIM, bigmodel=Anthropic -> model_map routing to bigmodel uses type Anthropic
         let mut map = make_test_map();
         map.insert("UPSTREAM_BIGMODEL_BASE_URL".to_string(), "http://bigmodel:11434".to_string());
         map.insert("UPSTREAM_BIGMODEL_TYPE".to_string(), "anthropic".to_string());
@@ -1063,7 +1073,7 @@ mod tests {
     fn test_unknown_upstream_name_in_get_type() {
         let map = make_test_map();
         let config = Config::from_map(&map).unwrap();
-        // Completely unknown upstream → falls back to global
+        // Completely unknown upstream -> falls back to global
         assert_eq!(config.get_upstream_type("nonexistent"), UpstreamType::NIM);
     }
 }

@@ -115,7 +115,7 @@ pub async fn execute_fetch(
 
     // v0.11.0 (CR-05): SSRF protection — block internal/metadata IPs
     if !is_url_safe(url) {
-        tracing::warn!("🛡️ SSRF blocked: {}", url);
+        tracing::warn!("[GUARD] SSRF blocked: {}", url);
         return Err(ProxyError::WebFetch(format!(
             "URL blocked by security policy (internal/metadata address): {}",
             url
@@ -167,7 +167,7 @@ pub async fn execute_fetch(
     // Si es HTML, strip tags
     let text = strip_html_tags(&body);
     let truncated = truncate_content(&text);
-    tracing::info!("[WebFetch] HTML→text: {} → {} chars", body.len(), truncated.len());
+    tracing::info!("[WebFetch] HTML->text: {} -> {} chars", body.len(), truncated.len());
     Ok(truncated)
 }
 

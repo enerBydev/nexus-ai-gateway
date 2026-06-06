@@ -12,6 +12,8 @@
 pub mod classify;
 pub mod concurrency;
 pub mod discovery;
+pub mod edit_metrics;
+pub mod edit_rescue;
 pub mod error_types;
 pub mod headers;
 pub mod non_streaming;
@@ -130,7 +132,7 @@ pub(crate) fn resolve_raw_cc_context_window(model_id: &str, config: &Config) -> 
     // 1. Per-model mapping (CC_MODEL_CONTEXT_WINDOWS env var)
     if let Some(&window) = config.cc_model_context_windows.get(model_id).filter(|&&w| w > 0) {
         tracing::debug!(
-            "📐 CC context window from per-model mapping: {} → {}K",
+            "[CALIB] CC context window from per-model mapping: {} -> {}K",
             model_id,
             window / 1000
         );
@@ -144,7 +146,7 @@ pub(crate) fn resolve_raw_cc_context_window(model_id: &str, config: &Config) -> 
         .filter(|&w| w > 0)
     {
         tracing::debug!(
-            "📐 CC context window from CLAUDE_CODE_AUTO_COMPACT_WINDOW: {}K",
+            "[CALIB] CC context window from CLAUDE_CODE_AUTO_COMPACT_WINDOW: {}K",
             window / 1000
         );
         return window;
@@ -154,12 +156,12 @@ pub(crate) fn resolve_raw_cc_context_window(model_id: &str, config: &Config) -> 
     if let Some(window) =
         std::env::var("CC_CONTEXT_WINDOW").ok().and_then(|v| v.parse().ok()).filter(|&w| w > 0)
     {
-        tracing::debug!("📐 CC context window from CC_CONTEXT_WINDOW: {}K", window / 1000);
+        tracing::debug!("[CALIB] CC context window from CC_CONTEXT_WINDOW: {}K", window / 1000);
         return window;
     }
 
     // 4. Default: 200K (standard for Claude Sonnet/Opus/Haiku)
-    tracing::debug!("📐 CC context window: default 200K");
+    tracing::debug!("[CALIB] CC context window: default 200K");
     200_000
 }
 
@@ -279,7 +281,7 @@ pub async fn proxy_handler(
         let safe_output =
             context_limit.saturating_sub(estimated_input).saturating_sub(256).clamp(1024, 64000);
         tracing::warn!(
-            "⚠️ Pre-check: ~{}tok + {}tok > {}tok (model={}, tiktoken). Clamping → {}",
+            "[WARN] Pre-check: ~{}tok + {}tok > {}tok (model={}, tiktoken). Clamping -> {}",
             estimated_input,
             requested_output,
             context_limit,

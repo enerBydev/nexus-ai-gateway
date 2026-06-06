@@ -63,7 +63,7 @@ fn get_model_limit_override(model_id: &str) -> Option<u32> {
 }
 
 /// Probe NIM to discover a model's max_total_tokens.
-/// Technique: send max_tokens=999999 → NIM returns error revealing real limit.
+/// Technique: send max_tokens=999999 -> NIM returns error revealing real limit.
 pub(crate) async fn probe_model_limit(
     client: &Client,
     base_url: &str,
@@ -72,7 +72,7 @@ pub(crate) async fn probe_model_limit(
 ) -> Option<u32> {
     // FASE 3.6: Check if probing is disabled
     if probing_disabled() {
-        tracing::info!("📋 Probing disabled via DISABLE_PROBING");
+        tracing::info!("[SCAN] Probing disabled via DISABLE_PROBING");
         return None;
     }
 
@@ -101,7 +101,7 @@ pub(crate) async fn probe_model_limit(
     let caps = probe_regexes().max_total_tokens.captures(&body)?;
     let limit: u32 = caps.get(1)?.as_str().parse().ok()?;
 
-    tracing::info!("🔍 Probed model '{}': max_total_tokens = {}", model, limit);
+    tracing::info!("[SCAN] Probed model '{}': max_total_tokens = {}", model, limit);
     Some(limit)
 }
 
@@ -115,7 +115,7 @@ pub async fn get_context_limit(
 ) -> u32 {
     // FASE 3.6: Check MODEL_LIMIT_OVERRIDES first
     if let Some(override_limit) = get_model_limit_override(model) {
-        tracing::info!("📋 Model limit override for {}: {}", model, override_limit);
+        tracing::info!("[SCAN] Model limit override for {}: {}", model, override_limit);
         return override_limit;
     }
 
@@ -147,6 +147,10 @@ pub async fn get_context_limit(
         return limit;
     }
 
-    tracing::warn!("⚠️ Could not probe model '{}', using default {}", model, DEFAULT_CONTEXT_LIMIT);
+    tracing::warn!(
+        "[WARN] Could not probe model '{}', using default {}",
+        model,
+        DEFAULT_CONTEXT_LIMIT
+    );
     DEFAULT_CONTEXT_LIMIT
 }

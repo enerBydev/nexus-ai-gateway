@@ -181,7 +181,7 @@ pub fn classify_client_type(headers: &HeaderMap) -> ClientType {
 }
 
 /// Extract IP prefix for fingerprinting.
-/// - IPv4: first 3 octets (e.g., "192.168.1.5" → "192.168.1")
+/// - IPv4: first 3 octets (e.g., "192.168.1.5" -> "192.168.1")
 /// - IPv6: first segment (simplified — first 4 hex groups)
 /// - Loopback: "loopback"
 /// - Unspecified: "unknown"
@@ -461,7 +461,7 @@ mod tests {
         let addr2: std::net::SocketAddr = "10.0.1.99:8315".parse().unwrap();
         let fp1 = fingerprint_ip(&addr1, secret);
         let fp2 = fingerprint_ip(&addr2, secret);
-        // Same /24 prefix → same fingerprint
+        // Same /24 prefix -> same fingerprint
         assert_eq!(fp1, fp2, "IPs in same /24 prefix must produce same fingerprint");
     }
 
@@ -498,7 +498,7 @@ mod tests {
         let headers2 = header_map_with(&[("x-api-key", "sk-ant-a3-second-key-here")]);
         let fp1 = fingerprint_api_key(&headers1, secret);
         let fp2 = fingerprint_api_key(&headers2, secret);
-        // Both keys start with "sk-ant-a" (8 chars) → same fingerprint
+        // Both keys start with "sk-ant-a" (8 chars) -> same fingerprint
         assert_eq!(fp1, fp2, "API keys with same 8-char prefix must produce same fingerprint");
     }
 

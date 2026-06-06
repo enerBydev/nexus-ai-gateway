@@ -92,7 +92,7 @@ pub async fn send_beacon(config: &BeaconConfig, stats: &DailyStatsEntry) -> Resu
     if status.is_success() {
         tracing::info!("📡 Telemetry beacon sent (status: {status})");
     } else {
-        tracing::warn!("⚠️ Telemetry beacon failed (status: {status})");
+        tracing::warn!("[WARN] Telemetry beacon failed (status: {status})");
     }
 
     Ok(())

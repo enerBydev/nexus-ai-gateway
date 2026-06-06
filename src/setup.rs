@@ -435,7 +435,7 @@ fn phase5_generate_env(
     if env_path.exists() {
         let backup_path = env_path.with_extension("env.bak");
         fs::copy(&env_path, &backup_path)?;
-        eprintln!("  {} Backed up existing .env to .env.bak", style("📋").dim());
+        eprintln!("  {} Backed up existing .env to .env.bak", style("[TODO]").dim());
     }
 
     let mut env_content = String::new();
@@ -468,7 +468,7 @@ fn phase5_generate_env(
     env_content.push('\n');
 
     // Model mappings section
-    env_content.push_str("# ─── Model Mappings (ClaudeID → upstream:NIMmodel) ─\n");
+    env_content.push_str("# ─── Model Mappings (ClaudeID -> upstream:NIMmodel) ─\n");
     for mapping in mappings {
         let env_key = mapping.claude_id.replace('-', "_");
         env_content.push_str(&format!(
@@ -532,7 +532,7 @@ fn phase6_install_verify(port: u16, _env_path: &std::path::Path) -> Result<()> {
             _ => {
                 eprintln!(
                     "  {} Failed to restart service — you may need to restart manually",
-                    style("⚠️").yellow()
+                    style("[WARN]").yellow()
                 );
             }
         }
@@ -556,7 +556,7 @@ fn phase6_install_verify(port: u16, _env_path: &std::path::Path) -> Result<()> {
         Ok(resp) => {
             eprintln!(
                 "  {} Proxy responded with {} — may need restart",
-                style("⚠️").yellow(),
+                style("[WARN]").yellow(),
                 resp.status()
             );
         }

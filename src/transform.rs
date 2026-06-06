@@ -18,7 +18,7 @@ pub struct CacheMarker {
     pub cache_control_value: serde_json::Value,
 }
 
-/// Result of Anthropic → OpenAI transformation with cache metadata
+/// Result of Anthropic -> OpenAI transformation with cache metadata
 #[derive(Debug)]
 pub struct TransformResult {
     /// The transformed OpenAI request
@@ -38,7 +38,7 @@ pub(crate) fn resolve_model_and_upstream(
     // 1. Check Model Map first (highest priority)
     if let Some(route) = config.model_map.get(req_model) {
         tracing::info!(
-            "📍 Model map hit: {} → {}:{}",
+            "[PIN] Model map hit: {} -> {}:{}",
             req_model,
             route.upstream_name,
             route.target_model
@@ -50,7 +50,7 @@ pub(crate) fn resolve_model_and_upstream(
         if has_thinking { config.reasoning_model.clone() } else { config.completion_model.clone() }
             .unwrap_or_else(|| req_model.to_string());
 
-    tracing::info!("📍 Model fallback: {} → default:{}", req_model, model);
+    tracing::info!("[PIN] Model fallback: {} -> default:{}", req_model, model);
     (model, "default".to_string())
 }
 
@@ -79,7 +79,7 @@ pub fn anthropic_to_openai(
 
     // Add system message if present
     // NOTE: Some NIM models (e.g. Qwen3.5) only accept ONE system message.
-    // CC sends system as array of blocks → we consolidate into a single message.
+    // CC sends system as array of blocks -> we consolidate into a single message.
     // PHASE 15: Extract cache markers from system prompts before processing
     if let Some(anthropic::SystemPrompt::Multiple(ref messages)) = req.system {
         for m in messages {
@@ -136,7 +136,7 @@ pub fn anthropic_to_openai(
                             cache_control_value: cc.clone(),
                         });
                     }
-                    // Nested Text blocks inside ToolResult → ToolResultContent::Blocks
+                    // Nested Text blocks inside ToolResult -> ToolResultContent::Blocks
                     anthropic::ContentBlock::ToolResult {
                         content: anthropic::ToolResultContent::Blocks(tool_blocks),
                         ..
@@ -177,6 +177,12 @@ pub fn anthropic_to_openai(
         if filtered.is_empty() {
             None
         } else {
+            // Determine the tool format based on upstream type
+            let tool_format = match config.get_upstream_type(upstream_name) {
+                crate::config::UpstreamType::Anthropic => openai::ToolFormat::Anthropic,
+                _ => openai::ToolFormat::OpenAI,
+            };
+
             Some(
                 filtered
                     .into_iter()
@@ -190,13 +196,17 @@ pub fn anthropic_to_openai(
                         } else {
                             ensure_valid_schema(clean_schema(t.input_schema))
                         };
-                        openai::Tool {
-                            tool_type: "function".to_string(),
-                            function: openai::Function {
-                                name: t.name,
-                                description: t.description,
-                                parameters,
+
+                        openai::ToolSpec {
+                            name: t.name,
+                            description: t.description,
+                            schema: parameters,
+                            anthropic_type: if tool_format == openai::ToolFormat::Anthropic {
+                                t.tool_type
+                            } else {
+                                None
                             },
+                            tool_format: tool_format.clone(),
                         }
                     })
                     .collect(),
@@ -398,7 +408,7 @@ fn ensure_valid_schema(mut schema: Value) -> Value {
             obj.insert("properties".to_string(), json!({}));
         }
     } else {
-        // schema is null, empty, or non-object → replace entirely
+        // schema is null, empty, or non-object -> replace entirely
         schema = json!({"type": "object", "properties": {}});
     }
     schema

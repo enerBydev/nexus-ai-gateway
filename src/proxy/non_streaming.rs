@@ -97,7 +97,7 @@ pub(crate) async fn handle_non_streaming(
         let context_threshold = cc_context_window * context_threshold_pct / 100;
         if scaled_input_tokens > context_threshold {
             tracing::warn!(
-                "⚠️ Context nearly full ({} scaled tokens = {}% of {}K, threshold={}%) — returning ContextOverflow",
+                "[WARN] Context nearly full ({} scaled tokens = {}% of {}K, threshold={}%) — returning ContextOverflow",
                 scaled_input_tokens,
                 scaled_input_tokens * 100 / cc_context_window,
                 cc_context_window / 1000,
