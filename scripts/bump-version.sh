@@ -46,12 +46,13 @@ if [ -f src/lib.rs ]; then
     echo "   ✅ src/lib.rs updated"
 fi
 
-# 4. Update CHANGELOG.md — move [Unreleased] to [new_version]
+# 4. Update CHANGELOG.md — populate from conventional commits (Issue #44)
 if [ -f CHANGELOG.md ]; then
-    TODAY=$(date +%Y-%m-%d)
-    # Replace [Unreleased] header with the new version + date, and add new empty Unreleased
-    sed -i "s/## \[Unreleased\]/## [Unreleased]\n\n### Added\n\n### Changed\n\n### Fixed\n\n---\n\n## [$NEW_VERSION] - $TODAY/" CHANGELOG.md
-    echo "   ✅ CHANGELOG.md updated ([$NEW_VERSION] - $TODAY)"
+    if "$(dirname "$0")/update-changelog.sh" "$NEW_VERSION"; then
+        echo "   ✅ CHANGELOG.md updated ([$NEW_VERSION])"
+    else
+        echo "   ⚠️  CHANGELOG.md update skipped (continuing)"
+    fi
 fi
 
 # 5. Verify all 3 sources match
