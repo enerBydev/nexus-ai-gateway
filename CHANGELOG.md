@@ -5,25 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-04-09
-
-### Added
-- Initial release of NEXUS-AI-Gateway
-- High-performance Anthropic API proxy to OpenAI-compatible endpoints
-- Support for streaming responses
-- Rate limiting and retry mechanisms
-- Environment-based configuration
-- Daemon mode support
-- Comprehensive observability with tracing
-
-### Changed
-- Renamed project from `nexus-brain` to `nexus-ai-gateway`
-- Updated binary name in Cargo.toml
-
-### Security
-- Added security scanning to CI pipeline
-- Implemented proper error handling
-
 ## [Unreleased]
 
 ### Added
@@ -36,161 +17,188 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.19.1] - 2026-06-06
 
-### Added
-
 ### Changed
+- Add .repo identity file to .gitignore
+- Upgrade Rust toolchain to 1.96, update dependencies
 
 ### Fixed
+- Address CodeRabbit Round 2 feedback — 1 Major + 1 Minor + 3 outside-diff
+- Address CodeRabbit feedback — 3 Major + 2 Minor issues (PR #89)
+- Global fix for Issues #63, #74, #80, #60 — 11 interconnected bugs (Issue #88)
 
 ---
 
 ## [0.19.0] - 2026-06-04
 
 ### Added
-
-### Changed
-
-### Fixed
+- Telemetry always-on by default with obfstr protection
 
 ---
 
 ## [0.18.2] - 2026-06-04
 
-### Added
-
-### Changed
-
-### Fixed
+_No release notes recorded._
 
 ---
 
 ## [0.18.1] - 2026-06-03
 
-### Added
-
-### Changed
-
-### Fixed
+_No release notes recorded._
 
 ---
 
 ## [0.18.0] - 2026-06-03
 
 ### Added
-
-### Changed
+- Wire telemetry beacon — daily POST to configured endpoint
+- Expand ClientType detection — classify Cline, Aider, Continue, Codex, Cursor, Windsurf, Copilot
+- Add privacy-first telemetry module for anonymous usage statistics
+- Feat(#85): implement 3-layer autonomous git sync system
 
 ### Fixed
+- Remove no-op .git/hooks/ entries from .gitignore
+- Remove stale #[allow(dead_code)] on telemetry_beacon_url
+- Actualizar .gitignore para incluir nuevos patrones de archivos temporales
+- Telemetry Phase 0 bug fixes — gauge update, disabled reason, gitignore
+- Honor explicit telemetry paths when $HOME is unset
+- Address CodeRabbit review — 5 telemetry safety and correctness fixes
+- Fix(#85): address CodeRabbit review — 6 safety and correctness fixes
 
 ---
 
 ## [0.17.4] - 2026-05-30
 
-### Added
-
 ### Changed
+- Chore(#52): trigger CodeRabbit re-review
+- Chore(deps): bump the cargo-minor-patch group across 1 directory with 6 updates
 
 ### Fixed
+- Fix(#52): address CodeRabbit feedback — preserve config_path in reload()
+- Fix(#52): eliminate file watcher infinite reload loop with 5-layer protection
 
 ---
 
 ## [0.17.3] - 2026-05-29
 
-### Added
-
-### Changed
-
 ### Fixed
+- CodeRabbit review — 3 fixes for PR #82
+- Fix(headers): Issue #35 — Anthropic header handling (6 bugs)
+- Fix(stream): CR1-CR4 — eliminate stream timeout errors
 
 ---
 
 ## [0.17.2] - 2026-05-28
 
-### Added
-
-### Changed
-
 ### Fixed
+- Fix(classify): Issue #34 — redesign error classification with status-code guards
+- Fix(emergency): P0 timeout 300s + P2 x-should-retry headers
 
 ---
 
 ## [0.17.1] - 2026-05-04
 
-### Added
-
 ### Changed
+- Reorder TokenScalingParams + clarify output=0 calls
+- Extract token_scaling module + fix P1-P5 (Issue #33)
+- Chore(deps): bump the cargo-minor-patch group with 2 updates
+- Ignore wiremock >=0.6.5 in dependabot + add scheduled deps monitor workflow
 
 ### Fixed
+- Resolve 3 audit findings from PR #50 forensic review
+
+### Security
+- Resolve 3 audit findings from PR #50 forensic review
 
 ---
 
 ## [0.17.0] - 2026-04-30
 
 ### Added
-
-### Changed
+- Implement graceful shutdown (Issue #30) — close all 12 gaps
 
 ### Fixed
+- Address CodeRabbit round-2 review — server spawn, portable PID check, cancellable backoff
+- Address all 7 CodeRabbit review gaps for graceful shutdown (Issue #30)
 
 ---
 
 ## [0.16.1] - 2026-04-28
 
-### Added
-
-### Changed
-
 ### Fixed
+- Sync Cargo.lock + add post-merge hook + refactor pre-push deploy
 
 ---
 
 ## [0.16.0] - 2026-04-27
 
 ### Added
-
-### Changed
+- Dynamic context window sync between Claude Code and upstream models (#31)
+- Dynamic context window sync between Claude Code and upstream models
 
 ### Fixed
+- Address CodeRabbit nitpick feedback — defensive zero filter, warn on invalid config, clarify priority docs
+- Fix(test): address CodeRabbit review — RAII EnvGuard + poison-safe mutex
 
 ---
 
 ## [0.15.1] - 2026-04-27
 
-### Added
-
 ### Changed
+- Add llms.txt for AI assistant context discovery
+- Update CLAUDE.md with current architecture and conventions
+- Rewrite README.md from scratch + refactor transform.rs cache extraction
 
 ### Fixed
+- Fix(deps): pin wiremock to 0.6.4 — 0.6.5 requires unstable let_chains
 
 ---
 
 ## [0.15.0] - 2026-04-27
 
 ### Added
+- Feat(circuit-breaker): implement CB_ENABLED, CB_THRESHOLD, CB_RECOVERY_SECS env vars
 
 ### Changed
+- Chore(deps): bump dialoguer 0.12, console 0.16, metrics-exporter-prometheus 0.18
+- Ci(dependabot): improve config — groups, limits, labels, reviewers
+- Chore(deps): bump all dependencies — rand 0.10, notify 8, wiremock 0.6, indicatif 0.18, CI actions v5-v6
 
 ### Fixed
+- Fix(deploy): replace cp+chmod with install -m 0755 to avoid ETXTBSY
+- Fix(ci): address CodeRabbit review — Taskfile YAML, deploy --locked, CI version-verify
+- Fix(deploy): add binary freshness checks to prevent stale binary bug
+- Address CodeRabbit review — remove deprecated reviewers, clamp CB params
+- Fix(test): add test-only mutex to prevent overflow_tracker race condition
+- Fix(circuit-breaker): move record_failure to only Retryable branch + exhausted retries
 
 ---
 
 ## [0.14.0] - 2026-04-26
 
-### Added
-
-### Changed
-
 ### Fixed
-
----
-
-## [0.13.0] - 2026-04-23
+- **FIX 4**: Overflow loop detector — tracks consecutive overflow events per model; 3+ identical overflows (within 5% token variation) force `ContextOverflow` error, breaking infinite retry loops
+- **FIX 5**: Configurable `ContextOverflow` threshold — `CC_OVERFLOW_THRESHOLD_PCT` env var (default 80%, range 50-95). Replaces hardcoded 90% that was unreachable at 139K tokens with GLM5
+- **FIX 6**: Non-streaming `scale_tokens` — mirrors streaming.rs token scaling logic in `non_streaming.rs`, ensuring consistent overflow detection across both request paths
 
 ### Added
+- `src/proxy/overflow_tracker.rs` — OnceLock+Mutex HashMap-based overflow loop tracking (7 unit tests)
+- `get_overflow_threshold_pct()` — configurable threshold with validation (4 unit tests)
+- Overflow loop detection in both `resilient_send` (non-streaming) and `resilient_send_raw` (streaming) retry paths
 
 ### Changed
+- `ContextOverflow` threshold default: 90% → **80%** (CC_OVERFLOW_THRESHOLD_PCT)
+- `non_streaming.rs` now receives `context_limit` parameter for token scaling parity
+- Both streaming and non-streaming paths now use `scale_tokens` + configurable threshold
 
-### Fixed
+### Testing
+- 11 new unit tests for FIX 4/5/6
+- All 43 existing tests passing
+- `cargo clippy -- -D warnings` clean
+
+### Addresses
+- Auditoria_v12 C2: Overflow Loop Pattern (CRITICAL)
+- Auditoria_v12 FIX 4, 5, 6 requirements
+- Cross-validation with Auditoria_v11 root causes RC#1 and RC#2
 
 ---
 
@@ -232,11 +240,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.12.1] - 2026-04-21
 
-### Added
-
-### Changed
-
 ### Fixed
+- Fix(ci): auto-version workflow fallback when tag missing
 
 ---
 
@@ -251,6 +256,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WebSearch null schema handling with default valid schema (F3)
 
 ### Changed
+- **Circuit Breaker ships disabled by default** (opt-in). It is introduced in this release but stays inactive unless `CB_ENABLED=1` is set, so existing deployments are unaffected. Tunable via `CB_THRESHOLD` (default 10) and `CB_RECOVERY_SECS`.
 - HTTP connection pool increased from 10 to 50 for multi-agent scenarios
 - HTTP/2 changed from prior knowledge to ALPN negotiation (HTTP/1.1 compatible)
 - Added tcp_nodelay and tcp_keepalive for connection health
@@ -276,133 +282,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.11.1] - 2026-04-18
 
 ### Added
+- Stream timeout (120s) + buffer limit (10MB) + graceful shutdown
+- SSRF protection (RFC1918/metadata blocklist)
+- Context window scaling for CC auto-compact (Kimi 131K→200K)
+- StreamTimeout/BufferOverflow error variants
+- 10 new tests (42 total)
 
 ### Changed
+- OnceLock regex cache (~90% faster HTML stripping)
+- Unified CalibrationEntry struct (single lock)
+- Auto-rebuild binary after version bump in auto-version.sh
 
 ### Fixed
+- RwLock poison recovery (5 sites)
+- AtomicBool reload guard (SIGHUP/watcher race)
+- Thinking signature field for Anthropic protocol
+- Overflow retry safety margin (NIM re-tokenization death spiral)
+- HTTP 408 extracted from Fatal → Retryable
 
 ---
 
 ## [0.11.0] - 2026-04-18
 
-### Added
-
-### Changed
-
-### Fixed
+_No release notes recorded._
 
 ---
 
 ## [0.10.4] - 2026-04-16
 
-### Added
-
 ### Changed
-
-### Fixed
+- Perf(proxy): fix 3 performance regressions from v10.0-v10.2 update
 
 ---
 
 ## [0.10.3] - 2026-04-15
 
-### Added
-
-### Changed
-
 ### Fixed
+- Fix(deps): upgrade rustls-webpki 0.103.10→0.103.12 (RUSTSEC-2026-0098/0099)
+- Fix(proxy): auto-clamp max_tokens on input_tokens overflow instead of fatal error
 
 ---
 
 ## [0.10.2] - 2026-04-15
 
-### Added
-
 ### Changed
+- Comprehensive README rewrite for v0.10.0
 
 ### Fixed
+- Fix(proxy): sanitize content blocks for </previous_reasoning> XML leakage
 
 ---
 
 ## [0.10.1] - 2026-04-15
 
-### Added
-
-### Changed
-
 ### Fixed
+- Fix(cli): pass -c config path to config/setup subcommands + make scan flags mutually exclusive
 
 ---
 
 ## [0.10.0] - 2026-04-15
 
 ### Added
+- Setup wizard, config commands, and Option B concurrency refactor
+- Feat(config): add config show/set/test subcommands
+- Feat(setup): implement interactive setup wizard (6 phases)
+- Feat(cli): add Setup and Config subcommands with stub modules
+- Feat(config): make MAX_CONCURRENT_PER_MODEL and PERMIT_TIMEOUT_SECS configurable via .env
 
 ### Changed
+- Add dialoguer, console, indicatif deps for setup wizard
+- Add CLAUDE.md to .gitignore
 
 ### Fixed
+- Fix(config): change default PORT from 3000 to 8315
 
 ---
 
 ## [0.9.0] - 2026-04-14
 
 ### Added
+- Feat(installer): auto-configure claude --effort max wrapper in bashrc
+- Feat(logging): capture CC thinking/effort params for forensic analysis
 
 ### Changed
+- Update Cargo.lock from release build
+- Ci(hooks): auto-pull after push to sync GitHub Actions version bumps
 
 ### Fixed
+- Fix(installer): cleanup claude wrapper from bashrc on uninstall
 
 ---
 
 ## [0.8.0] - 2026-04-13
 
 ### Added
-
-### Changed
-
-### Fixed
+- Feat(calibration): dynamic per-model token calibration + auto-deploy via systemd [v8.0]
 
 ---
 
 ## [0.7.0] - 2026-04-13
 
 ### Added
-
-### Changed
-
-### Fixed
+- Feat(tokenizer): inject tiktoken-estimated input_tokens in message_start [v7.0]
 
 ---
 
 ## [0.6.2] - 2026-04-13
 
-### Added
-
 ### Changed
+- Add CLAUDE.md project context and update Cargo.lock
 
 ### Fixed
+- Fix(proxy): merge reasoning sanitization and auto-deploy
+- Sanitize NIM reasoning_content to prevent XML tool call leakage
 
 ---
 
 ## [0.6.1] - 2026-04-12
 
-### Added
-
 ### Changed
+- Rewrite README with complete LOC-by-LOC architecture documentation
+- Match release notes format to v0.5.0 Keep a Changelog style
+- Upgrade to Node.js 24 actions and professional release notes
 
 ### Fixed
+- Remove legacy nexus-brain references and fix tracing filter module name
 
 ---
 
 ## [0.6.0] - 2026-04-12
 
 ### Added
+- Auto-versioning system based on conventional commits (`feat→minor`, `fix→patch`)
+- Auto Version & Release GitHub Actions workflow for automated releases
+- Portable git hooks in `scripts/hooks/` with `core.hooksPath` configuration
+- Post-commit hook showing pending version bump preview
+- Pre-push validation hook with version sync, tests, and security audit
+- Version sync integration tests (`tests/version_sync.rs`)
+- Setup automation (`task setup`, `task setup-hooks`)
+- systemd user service installer with log rotation
+- Taskfile commands: `auto-version`, `version-check`, `full-release`
 
 ### Changed
-
-### Deprecated
-
-### Removed
+- Upgraded GitHub Actions from `actions-rs/toolchain@v1` to `dtolnay/rust-toolchain@stable`
+- Upgraded `actions/cache` from v3 to v4
+- Enhanced `bump-version.sh` with CHANGELOG integration and 3-way verification
+- Consolidated cache paths in CI pipeline
 
 ### Fixed
+- Re-applied deferred `message_delta` (Fix 4) lost in previous commit
+- Resolved clippy errors and stream cutoff bug
+- Fixed CI cache key typo (`argo-index` → `cargo-index`)
 
 ### Security
+- Updated dependencies to fix security vulnerabilities
+- Added `cargo audit` to pre-push hook validation
+- Non-blocking security scan in CI pipeline
+
+---
+
+## [0.5.0] - 2026-04-09
+
+### Added
+- Initial release of NEXUS-AI-Gateway
+- High-performance Anthropic API proxy to OpenAI-compatible endpoints
+- Support for streaming responses
+- Rate limiting and retry mechanisms
+- Environment-based configuration
+- Daemon mode support
+- Comprehensive observability with tracing
+
+### Changed
+- Renamed project from `nexus-brain` to `nexus-ai-gateway`
+- Updated binary name in Cargo.toml
+
+### Security
+- Added security scanning to CI pipeline
+- Implemented proper error handling
+
+---
