@@ -415,3 +415,37 @@ fn cooldown_duration_is_15s_and_greater_than_debounce() {
 }
 
 use std::sync::Arc;
+
+// ---------------------------------------------------------------------------
+// #45 regression: a custom --config path must survive hot-reload
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reload_preserves_custom_config_path() {
+    // Regression for #45: when launched with `--config /custom.env`, the SIGHUP
+    // handler and the file watcher both call Config::reload(.., config_path).
+    // reload MUST preserve that custom path in the returned config so the *next*
+    // reload keeps using it instead of silently reverting to the default
+    // ~/.nexus-ai-gateway.env (the original bug: the path was discarded forever).
+    use crate::config::Config;
+    use std::io::Write;
+
+    // A minimal valid env file at a non-default custom path.
+    let path = std::env::temp_dir().join(format!("nexus45-{}-{}.env", std::process::id(), line!()));
+    {
+        let mut f = std::fs::File::create(&path).expect("create temp env file");
+        writeln!(f, "UPSTREAM_BASE_URL=http://localhost:11434").unwrap();
+        writeln!(f, "UPSTREAM_API_KEY=test-key").unwrap();
+    }
+
+    let cfg = Config::reload(false, false, None, Some(path.clone()))
+        .expect("reload with a custom config path should succeed");
+
+    assert_eq!(
+        cfg.config_path,
+        Some(path.clone()),
+        "reload must preserve the custom --config path for subsequent SIGHUP/watcher reloads (#45)"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
