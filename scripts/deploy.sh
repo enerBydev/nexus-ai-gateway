@@ -251,10 +251,13 @@ if [[ ! -x "${BUILT_BINARY}" ]]; then
 fi
 ok "Built binary: ${BUILT_BINARY}"
 
-# --- Install binary ---
+# --- Install binary (copy build output; no redundant cargo install rebuild) ---
+# Issue #41: `cargo install --locked --path .` recompiles the whole crate in a
+# separate target dir, doubling build time. Install by copying the binary we
+# already built above — same result, no second compile.
 echo ""
-info "Installing binary (cargo install --locked --path .)..."
-if ! cargo install --locked --path .; then
+info "Installing binary to ~/.cargo/bin/${BINARY_NAME}..."
+if ! install -m 0755 "${BUILT_BINARY}" "${HOME}/.cargo/bin/${BINARY_NAME}"; then
     err "Installation failed"
     exit 1
 fi
@@ -267,8 +270,8 @@ SOURCE_MD5=$(md5sum "${BUILT_BINARY}" | awk '{print $1}')
 
 if [[ "${CARGO_MD5}" != "${SOURCE_MD5}" ]]; then
   err "CRITICAL: Binary at ~/.cargo/bin/${BINARY_NAME} does NOT match the just-built binary!"
-  warn "This should never happen with cargo install. The systemd service may run an OLD version."
-  warn "cargo install md5: ${CARGO_MD5}"
+  warn "The install copy did not match the build output. The systemd service may run an OLD version."
+  warn "installed md5:    ${CARGO_MD5}"
   warn "build output md5: ${SOURCE_MD5}"
   err "DO NOT RESTART SERVICE until this is resolved!"
   exit 1
