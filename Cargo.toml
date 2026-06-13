@@ -95,8 +95,8 @@ obfstr = "0.4"
 wiremock = "0.6" # Pinned: 0.6.5 uses unstable let_chains (nightly-only)
 
 [profile.release]
-opt-level = "z"        # Optimize for size
-lto = true             # Enable Link Time Optimization
-codegen-units = 1      # Better optimization
-strip = true           # Strip symbols for smaller binary
-panic = "abort"        # Smaller binary
+opt-level = "z"        # size-optimized proxy binary
+lto = "thin"           # thin LTO: bajo pico de RAM (cabe en 13GB) + ~95% del beneficio de fat LTO — soluciona el OOM
+codegen-units = 1      # menor tamano de binario
+strip = true           # quitar simbolos
+panic = "abort"        # binario mas pequeno, sin unwinding

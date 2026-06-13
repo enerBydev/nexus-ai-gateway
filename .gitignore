@@ -63,3 +63,14 @@ CLAUDE.md
 # Codex auto-generated (do not track)
 AGENTS.md
 
+# Local test/dev environment (entorno de pruebas aislado — setup NEXUS-094)
+# CARGO_TARGET_DIR aislado para pruebas (el watcher nunca dispara)
+/target-test/
+# hooks locales seguros (sin deployers de prod)
+.githooks-local/
+# cache de checksums de go-task
+.task/
+# runtime local de orquestación
+.omo/
+# Nota: .env.test ya está cubierto por ".env.*" arriba
+
