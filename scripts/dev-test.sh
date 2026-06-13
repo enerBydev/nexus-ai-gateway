@@ -23,6 +23,15 @@ cd "$ROOT"
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target-test}"
 
+# Safety: never build into the production-watched target dir. The systemd watcher
+# monitors target/release/nexus-ai-gateway, so building there would restart prod.
+case "${CARGO_TARGET_DIR%/}" in
+  target | ./target | "${ROOT}/target")
+    echo "🚨 CARGO_TARGET_DIR='${CARGO_TARGET_DIR}' is the production-watched dir. Refusing to build there." >&2
+    exit 1
+    ;;
+esac
+
 if [ ! -f .env.test ]; then
   echo "❌ Falta .env.test (config de pruebas). Cópialo de .env.example y ajusta UPSTREAM_*."
   exit 1
@@ -46,6 +55,13 @@ if [ -z "${UPSTREAM_BASE_URL:-}" ]; then
 fi
 
 MODE="${1:-debug}"
+case "$MODE" in
+  debug | release) ;;
+  *)
+    echo "❌ Modo inválido: '$MODE' (usa: debug | release)" >&2
+    exit 1
+    ;;
+esac
 echo "🧪 NEXUS TEST  ·  target=$CARGO_TARGET_DIR  ·  port=$PORT  ·  mode=$MODE   (producción :8315 intacta)"
 
 if [ "$MODE" = "release" ]; then

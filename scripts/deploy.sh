@@ -257,6 +257,7 @@ ok "Built binary: ${BUILT_BINARY}"
 # already built above — same result, no second compile.
 echo ""
 info "Installing binary to ~/.cargo/bin/${BINARY_NAME}..."
+mkdir -p "${HOME}/.cargo/bin"
 if ! install -m 0755 "${BUILT_BINARY}" "${HOME}/.cargo/bin/${BINARY_NAME}"; then
     err "Installation failed"
     exit 1

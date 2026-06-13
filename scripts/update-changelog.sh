@@ -33,7 +33,12 @@ TMP="$(mktemp)"
 trap 'rm -f "$ENTRIES" "$TMP"' EXIT
 
 if [ -n "$FROM_REF" ]; then
-  "$HERE/generate-changelog-entries.sh" "$FROM_REF" HEAD "$ENTRIES" || true
+  # Fail loudly on an invalid baseline ref instead of silently using the fallback.
+  if ! git rev-parse --verify --quiet "${FROM_REF}^{commit}" >/dev/null; then
+    echo "update-changelog: invalid from_ref '${FROM_REF}'" >&2
+    exit 1
+  fi
+  "$HERE/generate-changelog-entries.sh" "$FROM_REF" HEAD "$ENTRIES"
 fi
 # Fallback when there are no classifiable commits.
 if [ ! -s "$ENTRIES" ]; then
