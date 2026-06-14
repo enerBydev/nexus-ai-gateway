@@ -11,6 +11,7 @@ mod setup;
 mod str_utils;
 mod telemetry;
 mod tokenizer;
+mod tool_id;
 mod transform;
 mod watcher;
 mod web_fetch;

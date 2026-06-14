@@ -525,7 +525,10 @@ pub(crate) fn create_sse_stream(
                                                         yield Ok(Bytes::from(sse_data));
                                                         content_index += 1;
                                                     }
-                                                    tool_call_id = Some(id.clone());
+                                                    // Issue #90: sanitize at the source so both the
+                                                    // emitted tool_use.id and the web_fetch buffer are valid.
+                                                    tool_call_id =
+                                                        Some(crate::tool_id::sanitize_tool_id(id, content_index as usize));
                                                     tool_call_args.clear();
                                                     tool_calls_emitted = true;
                                                 }
@@ -547,7 +550,7 @@ pub(crate) fn create_sse_stream(
                                                                 "index": content_index,
                                                                 "content_block": {
                                                                     "type": "tool_use",
-                                                                    "id": tool_call_id.clone().unwrap_or_default(),
+                                                                    "id": tool_call_id.clone().unwrap_or_else(|| format!("toolu_{content_index}")),
                                                                     "name": name
                                                                 }
                                                             });
