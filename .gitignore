@@ -66,8 +66,8 @@ AGENTS.md
 # Local test/dev environment (entorno de pruebas aislado — setup NEXUS-094)
 # CARGO_TARGET_DIR aislado para pruebas (el watcher nunca dispara)
 /target-test/
-# hooks locales seguros (sin deployers de prod)
-.githooks-local/
+# hooks locales: symlinks curados a scripts/hooks/ (tracked para persistir across clones)
+# Requiere: git config core.hooksPath .githooks-local
 # cache de checksums de go-task
 .task/
 # runtime local de orquestación
