@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.0] - 2026-06-14
+
+### Added
+- Sanitize cross-backend tool_use ids (Issue #90 Part A)
+
+### Changed
+- Address CodeRabbit review on #91 (injection, mkdir, dev-test guards, changelog errors)
+- Thin-LTO release profile + isolated dev-test environment
+- Backfill CHANGELOG.md from GitHub Releases + document CB default-off (#44, #36)
+- Fix release pipeline — sync Cargo.lock on bump + populate CHANGELOG from commits (#44)
+- Remove redundant cargo install rebuild in deploy.sh (#41)
+
+### Fixed
+- Wire edit-rescue + edit-metrics into request pipeline (Issue #93)
+
+---
+
 ## [0.19.1] - 2026-06-06
 
 ### Changed
