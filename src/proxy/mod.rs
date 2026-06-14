@@ -187,7 +187,7 @@ pub async fn proxy_handler(
     Extension(telemetry_ctx): Extension<Option<crate::telemetry::TelemetryContext>>,
     headers: HeaderMap, // Issue #35 F4: Extract client headers for forwarding
     ConnectInfo(client_addr): ConnectInfo<std::net::SocketAddr>,
-    Json(req): Json<anthropic::AnthropicRequest>,
+    Json(mut req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
     // S3: Track active connections
     let _conn_guard = ConnectionGuard::new();
@@ -255,6 +255,12 @@ pub async fn proxy_handler(
             serde_json::to_string_pretty(&req).unwrap_or_default()
         );
     }
+
+    // Issue #88 P6 / #93: rescue Edit failures caused by CC Unicode normalization
+    // before forwarding upstream — rewrites a unique fuzzy match on disk (guarded to
+    // src/ within cwd) and turns the failing tool_result into success so the model
+    // does not loop on an already-corrected file.
+    crate::proxy::edit_rescue::rescue_request_edits(&mut req).await;
 
     // Issue #35 F9: Pre-resolve upstream_name for conditional chat_template_kwargs
     let (_, upstream_name_pre) = transform::resolve_model_and_upstream(&req.model, true, &config);
