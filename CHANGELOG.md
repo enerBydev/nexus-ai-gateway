@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.1] - 2026-06-14
+
+### Fixed
+- Track local hook symlinks for post-merge auto-install
+
+---
+
 ## [0.20.0] - 2026-06-14
 
 ### Added
