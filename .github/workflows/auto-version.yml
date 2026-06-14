@@ -81,6 +81,7 @@ jobs:
 
           echo "bump=$BUMP" >> $GITHUB_OUTPUT
           echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
           echo "tag_exists=${TAG_EXISTS:-false}" >> $GITHUB_OUTPUT
           echo "total=$TOTAL" >> $GITHUB_OUTPUT
           echo "feat=$FEAT" >> $GITHUB_OUTPUT
@@ -136,16 +137,21 @@ jobs:
 
       - name: Apply version bump
         if: steps.version.outputs.new != ''
+        env:
+          BASE_TAG: ${{ steps.analyze.outputs.base_tag }}
         run: |
           NEW=${{ steps.version.outputs.new }}
           echo "$NEW" > VERSION
           sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
           [ -f src/lib.rs ] && sed -i "s/pub const VERSION: \&str = \".*\";/pub const VERSION: \&str = \"$NEW\";/" src/lib.rs
-          if [ -f CHANGELOG.md ]; then
-            TODAY=$(date +%Y-%m-%d)
-            sed -i "s/## \[Unreleased\]/## [Unreleased]\n\n### Added\n\n### Changed\n\n### Fixed\n\n---\n\n## [$NEW] - $TODAY/" CHANGELOG.md
-          fi
-          git add VERSION Cargo.toml src/lib.rs CHANGELOG.md
+          # Refresh Cargo.lock so the workspace package version matches Cargo.toml.
+          # Without this, Cargo.lock stays at the old version and every local `cargo`
+          # command rewrites it, producing a perpetual uncommitted `M Cargo.lock`.
+          cargo update --workspace
+          # Populate CHANGELOG.md from conventional commits (Issue #44 — single source of truth)
+          chmod +x scripts/generate-changelog-entries.sh scripts/update-changelog.sh
+          ./scripts/update-changelog.sh "$NEW" "$BASE_TAG" || echo "::warning::CHANGELOG update skipped"
+          git add VERSION Cargo.toml src/lib.rs CHANGELOG.md Cargo.lock
           git commit -m "chore: bump version to $NEW [skip ci]"
           git tag -a "v$NEW" -m "Release v$NEW"
           git push origin main --tags
@@ -157,61 +163,16 @@ jobs:
       - name: Generate release notes
         id: notes
         if: steps.version.outputs.new != ''
+        env:
+          BASE_TAG: ${{ steps.analyze.outputs.base_tag }}
         run: |
-          NEW=${{ steps.version.outputs.new }}
-          CURRENT=${{ steps.analyze.outputs.current }}
-
-          # Extract commit subjects, strip conventional commit prefix for clean descriptions
-          FEAT_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^feat" || true)
-          FIX_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^fix" || true)
-          REFACTOR_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^(refactor|perf)" || true)
-          SECURITY_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -iE "security|audit|vulnerabilit" || true)
-          OTHER_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^(chore|ci|docs|build|style|test)" || true)
-
-          {
-            # === Added section (from feat commits) ===
-            if [ -n "$FEAT_RAW" ]; then
-              echo "### Added"
-              echo "$FEAT_RAW" | while IFS= read -r line; do
-                # Strip prefix: "feat(scope): msg" → "msg" or "feat: msg" → "msg"
-                CLEAN=$(echo "$line" | sed 's/^feat\([^)]*\)\?: //')
-                echo "- ${CLEAN^}"
-              done
-              echo ""
-            fi
-
-            # === Changed section (from refactor/perf/chore commits) ===
-            CHANGED_RAW=$(git log "v${CURRENT}..HEAD~1" --format="%s" | grep -E "^(refactor|perf|chore|ci|docs)" || true)
-            if [ -n "$CHANGED_RAW" ]; then
-              echo "### Changed"
-              echo "$CHANGED_RAW" | while IFS= read -r line; do
-                CLEAN=$(echo "$line" | sed 's/^[a-z]*\([^)]*\)\?: //')
-                echo "- ${CLEAN^}"
-              done
-              echo ""
-            fi
-
-            # === Fixed section (from fix commits) ===
-            if [ -n "$FIX_RAW" ]; then
-              echo "### Fixed"
-              echo "$FIX_RAW" | while IFS= read -r line; do
-                CLEAN=$(echo "$line" | sed 's/^fix\([^)]*\)\?: //')
-                echo "- ${CLEAN^}"
-              done
-              echo ""
-            fi
-
-            # === Security section ===
-            if [ -n "$SECURITY_RAW" ]; then
-              echo "### Security"
-              echo "$SECURITY_RAW" | while IFS= read -r line; do
-                CLEAN=$(echo "$line" | sed 's/^[a-z]*\([^)]*\)\?: //')
-                echo "- ${CLEAN^}"
-              done
-              echo ""
-            fi
-          } > /tmp/release_notes.md
-
+          # Issue #44: reuse the shared classifier so GitHub Release notes and
+          # CHANGELOG.md are generated from the exact same logic (single source of truth).
+          # HEAD~1 excludes the version-bump commit created in the previous step.
+          chmod +x scripts/generate-changelog-entries.sh
+          ./scripts/generate-changelog-entries.sh "$BASE_TAG" "HEAD~1" /tmp/release_notes.md
+          # GitHub Releases require a non-empty body
+          [ -s /tmp/release_notes.md ] || printf 'Maintenance release.\n' > /tmp/release_notes.md
           echo "body_path=/tmp/release_notes.md" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
