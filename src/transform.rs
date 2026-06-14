@@ -288,7 +288,8 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                     }
                     anthropic::ContentBlock::ToolUse { id, name, input } => {
                         tool_calls.push(openai::ToolCall {
-                            id,
+                            // Issue #90: idempotent defense-in-depth on the request path.
+                            id: crate::tool_id::sanitize_tool_id(&id, 0),
                             call_type: "function".to_string(),
                             function: openai::FunctionCall {
                                 name,
@@ -324,7 +325,7 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             role: "tool".to_string(),
                             content: Some(openai::MessageContent::Text(text_content)),
                             tool_calls: None,
-                            tool_call_id: Some(tool_use_id),
+                            tool_call_id: Some(crate::tool_id::sanitize_tool_id(&tool_use_id, 0)),
                             name: None,
                         });
                     }
@@ -495,13 +496,14 @@ pub fn openai_to_anthropic(
 
     // Add tool calls if present
     if let Some(tool_calls) = &choice.message.tool_calls {
-        for tool_call in tool_calls {
+        for (i, tool_call) in tool_calls.iter().enumerate() {
             let input: Value =
                 serde_json::from_str(&tool_call.function.arguments).unwrap_or_else(|_| json!({}));
 
             content.push(anthropic::ResponseContent::ToolUse {
                 content_type: "tool_use".to_string(),
-                id: tool_call.id.clone(),
+                // Issue #90: sanitize ids like `functions.Bash:0` to Anthropic's ^[A-Za-z0-9_-]+$.
+                id: crate::tool_id::sanitize_tool_id(&tool_call.id, i),
                 name: tool_call.function.name.clone(),
                 input,
             });

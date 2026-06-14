@@ -8,7 +8,6 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Outcome of an Edit tool operation
-#[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
 #[derive(Debug, Clone)]
 pub enum EditOutcome {
     Success,
@@ -17,7 +16,6 @@ pub enum EditOutcome {
 }
 
 /// Classification of Edit failure types
-#[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
 #[derive(Debug, Clone)]
 pub enum EditFailureType {
     StringNotFound,
@@ -29,7 +27,6 @@ pub enum EditFailureType {
 }
 
 impl EditFailureType {
-    #[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::StringNotFound => "string_not_found",
@@ -43,7 +40,6 @@ impl EditFailureType {
 }
 
 /// Records an Edit outcome with Prometheus metrics.
-#[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
 pub fn record_edit_outcome(result: &EditOutcome, file_path: &str, latency: Duration) {
     let file_basename =
         Path::new(file_path).file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
@@ -67,13 +63,11 @@ pub fn record_edit_outcome(result: &EditOutcome, file_path: &str, latency: Durat
 }
 
 /// Records an Edit rescue attempt outcome.
-#[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
 pub fn record_edit_rescue_outcome(outcome: &str) {
     counter!("nexus_edit_rescue_total", "result" => outcome.to_string()).increment(1);
 }
 
 /// Classifies an Edit error message into its failure type.
-#[allow(dead_code)] // TODO: Wire into streaming.rs pipeline (Issue #88)
 pub fn classify_edit_error(error_msg: &str) -> EditFailureType {
     if error_msg.contains("not unique") {
         EditFailureType::NotUnique
