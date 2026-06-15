@@ -87,7 +87,7 @@ metrics-exporter-prometheus = "0.18"
 
 # Telemetry (privacy-first analytics)
 rusqlite = { version = "0.34", features = ["bundled"] }
-hmac = "0.12"
+hmac = "0.13"
 hostname = "0.4"
 obfstr = "0.4"
 
