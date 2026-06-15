@@ -50,7 +50,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Server utilities
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.7", features = ["trace", "cors"] }
 
 # Async streams
 async-stream = "0.3"
