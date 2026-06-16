@@ -226,6 +226,36 @@ mod tests {
     }
 
     #[test]
+    fn test_durable_mode_emits_text_not_thinking() {
+        use crate::models::anthropic::ResponseContent;
+        use crate::reasoning::signature::{is_nexus_provenance, SignatureMode};
+        use crate::transform::reasoning_response_block;
+
+        // Issue #90-B (F5): durable transports reasoning as visible <thinking> text —
+        // no thinking block, so Anthropic-direct never rejects it (no strip-retry).
+        match reasoning_response_block("my reasoning".to_string(), SignatureMode::Durable) {
+            ResponseContent::Text { text, .. } => {
+                assert!(text.contains("<thinking>") && text.contains("my reasoning"));
+            }
+            _ => panic!("durable mode must emit Text, not a thinking block"),
+        }
+
+        // self: thinking block carrying a nexus:v1: provenance signature.
+        match reasoning_response_block("my reasoning".to_string(), SignatureMode::SelfProvenance) {
+            ResponseContent::Thinking { signature, .. } => {
+                assert!(is_nexus_provenance(&signature.expect("self mode signs")));
+            }
+            _ => panic!("self mode must emit a thinking block"),
+        }
+
+        // omit: thinking block, no signature.
+        match reasoning_response_block("my reasoning".to_string(), SignatureMode::Omit) {
+            ResponseContent::Thinking { signature, .. } => assert_eq!(signature, None),
+            _ => panic!("omit mode must emit a thinking block"),
+        }
+    }
+
+    #[test]
     fn test_no_cache_markers_without_cache_control() {
         // Build a request without any cache_control fields
         let content_block = ContentBlock::Text {

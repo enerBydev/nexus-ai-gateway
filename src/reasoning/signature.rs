@@ -78,17 +78,22 @@ pub fn is_nexus_provenance(sig: &str) -> bool {
     sig.starts_with(PROV_PREFIX)
 }
 
-/// Signature to attach to a NEXUS-synthesized thinking block per the configured mode.
-/// `None` means "emit no signature": `Omit`, `Durable` (transported as text elsewhere),
-/// or empty thinking.
-pub fn reasoning_signature(thinking: &str) -> Option<String> {
+/// Signature for a synthesized thinking block under an explicit `mode` (pure; the
+/// env-reading `reasoning_signature` delegates here). `None` for `Omit` / `Durable`
+/// (transported as text elsewhere) / empty thinking.
+pub fn signature_for_mode(thinking: &str, mode: SignatureMode) -> Option<String> {
     if thinking.trim().is_empty() {
         return None;
     }
-    match SignatureMode::from_env() {
+    match mode {
         SignatureMode::SelfProvenance => Some(self_provenance(thinking)),
         SignatureMode::Omit | SignatureMode::Durable => None,
     }
+}
+
+/// Signature to attach to a NEXUS-synthesized thinking block per the configured mode.
+pub fn reasoning_signature(thinking: &str) -> Option<String> {
+    signature_for_mode(thinking, SignatureMode::from_env())
 }
 
 #[cfg(test)]

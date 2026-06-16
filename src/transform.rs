@@ -424,6 +424,29 @@ fn ensure_valid_schema(mut schema: Value) -> Value {
     schema
 }
 
+/// Build the response content for synthesized NIM reasoning (Issue #90-B F5 · ARB L4):
+/// in `durable` mode the reasoning is transported as visible `<thinking>` text (no
+/// thinking block — 100% cross-backend safe, never rejected by Anthropic-direct);
+/// otherwise it is a thinking block carrying the provenance signature for the mode.
+pub(crate) fn reasoning_response_block(
+    clean: String,
+    mode: crate::reasoning::signature::SignatureMode,
+) -> anthropic::ResponseContent {
+    use crate::reasoning::signature::SignatureMode;
+    if mode == SignatureMode::Durable {
+        anthropic::ResponseContent::Text {
+            content_type: "text".to_string(),
+            text: format!("<thinking>\n{clean}\n</thinking>"),
+        }
+    } else {
+        anthropic::ResponseContent::Thinking {
+            signature: crate::reasoning::signature::signature_for_mode(&clean, mode),
+            content_type: "thinking".to_string(),
+            thinking: clean,
+        }
+    }
+}
+
 /// Transform OpenAI response to Anthropic format
 /// Phase 6: Now receives original_model to preserve ClaudeModelID in response
 pub fn openai_to_anthropic(
@@ -445,14 +468,8 @@ pub fn openai_to_anthropic(
     if let Some(reasoning) = reasoning_val {
         let clean = crate::reasoning::transducer::normalize_full(reasoning);
         if !clean.is_empty() {
-            // Issue #90-B (ARB L4): attach a NEXUS provenance signature per the
-            // configured mode (default `self`), computed before `clean` is moved.
-            let signature = crate::reasoning::signature::reasoning_signature(&clean);
-            content.push(anthropic::ResponseContent::Thinking {
-                content_type: "thinking".to_string(),
-                thinking: clean,
-                signature,
-            });
+            let mode = crate::reasoning::signature::SignatureMode::from_env();
+            content.push(reasoning_response_block(clean, mode));
         }
     }
 
