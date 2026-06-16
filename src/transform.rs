@@ -1,4 +1,4 @@
-use crate::config::{Config, UpstreamType};
+use crate::config::Config;
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use crate::prompt_cache::{CacheLocation, PromptCache};
@@ -61,12 +61,13 @@ pub fn anthropic_to_openai(
     config: &Config,
     upstream_name: &str, // Issue #35 F9: for conditional chat_template_kwargs
 ) -> ProxyResult<TransformResult> {
-    // v5.0: Force thinking (effort max) for ALL models globally.
-    // CC defaults to effort=medium which sends thinking.type="adaptive".
-    // NIM models produce better output with enable_thinking=true.
-    // This ensures all models (Sonnet, Haiku, GLM4.7, Kimi, Qwen, etc.)
-    // receive proper thinking configuration, not just Opus.
-    let has_thinking = true;
+    // Issue #90-B (ARB Eje A): reasoning activation is now policy-driven (`global_max`),
+    // decoupled from the Claude model id and translated to the upstream's mechanism. The
+    // default reproduces the prior behavior (force thinking; enable_thinking kwargs for
+    // NIM only). Replaces the former hardcoded `has_thinking = true` + inline kwargs.
+    let activation =
+        crate::reasoning::activation::activate(config.get_upstream_type(upstream_name));
+    let has_thinking = activation.has_thinking;
 
     // Initialize cache markers vector for PHASE 15
     let mut cache_markers: Vec<CacheMarker> = Vec::new();
@@ -231,18 +232,9 @@ pub fn anthropic_to_openai(
             },
             tools,
             tool_choice: None,
-            // Issue #35 Bug E: chat_template_kwargs only valid for NIM upstreams.
-            // Anthropic/OpenAI/OpenRouter don't recognize this field.
-            chat_template_kwargs: if has_thinking
-                && config.get_upstream_type(upstream_name) == UpstreamType::NIM
-            {
-                Some(json!({
-                    "enable_thinking": true,
-                    "clear_thinking": false
-                }))
-            } else {
-                None
-            },
+            // Issue #35 Bug E / #90-B: chat_template_kwargs is only valid for NIM
+            // upstreams; the activation policy (ARB Eje A) resolves it NIM-only.
+            chat_template_kwargs: activation.chat_template_kwargs.clone(),
         },
         upstream_name: upstream_name.to_string(),
         cache_markers,

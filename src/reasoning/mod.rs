@@ -7,5 +7,6 @@
 //! and deterministically reconcilable; the cryptographic signature is the only hard
 //! boundary (not forgeable) and is handled by self-provenance + CC's strip-retry.
 
+pub mod activation;
 pub mod signature;
 pub mod transducer;
