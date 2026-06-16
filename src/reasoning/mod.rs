@@ -8,3 +8,4 @@
 //! boundary (not forgeable) and is handled by self-provenance + CC's strip-retry.
 
 pub mod signature;
+pub mod transducer;
