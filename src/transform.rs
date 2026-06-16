@@ -1,4 +1,4 @@
-use crate::config::{Config, UpstreamType};
+use crate::config::Config;
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use crate::prompt_cache::{CacheLocation, PromptCache};
@@ -61,12 +61,13 @@ pub fn anthropic_to_openai(
     config: &Config,
     upstream_name: &str, // Issue #35 F9: for conditional chat_template_kwargs
 ) -> ProxyResult<TransformResult> {
-    // v5.0: Force thinking (effort max) for ALL models globally.
-    // CC defaults to effort=medium which sends thinking.type="adaptive".
-    // NIM models produce better output with enable_thinking=true.
-    // This ensures all models (Sonnet, Haiku, GLM4.7, Kimi, Qwen, etc.)
-    // receive proper thinking configuration, not just Opus.
-    let has_thinking = true;
+    // Issue #90-B (ARB Eje A): reasoning activation is now policy-driven (`global_max`),
+    // decoupled from the Claude model id and translated to the upstream's mechanism. The
+    // default reproduces the prior behavior (force thinking; enable_thinking kwargs for
+    // NIM only). Replaces the former hardcoded `has_thinking = true` + inline kwargs.
+    let activation =
+        crate::reasoning::activation::activate(config.get_upstream_type(upstream_name));
+    let has_thinking = activation.has_thinking;
 
     // Initialize cache markers vector for PHASE 15
     let mut cache_markers: Vec<CacheMarker> = Vec::new();
@@ -231,18 +232,9 @@ pub fn anthropic_to_openai(
             },
             tools,
             tool_choice: None,
-            // Issue #35 Bug E: chat_template_kwargs only valid for NIM upstreams.
-            // Anthropic/OpenAI/OpenRouter don't recognize this field.
-            chat_template_kwargs: if has_thinking
-                && config.get_upstream_type(upstream_name) == UpstreamType::NIM
-            {
-                Some(json!({
-                    "enable_thinking": true,
-                    "clear_thinking": false
-                }))
-            } else {
-                None
-            },
+            // Issue #35 Bug E / #90-B: chat_template_kwargs is only valid for NIM
+            // upstreams; the activation policy (ARB Eje A) resolves it NIM-only.
+            chat_template_kwargs: activation.chat_template_kwargs.clone(),
         },
         upstream_name: upstream_name.to_string(),
         cache_markers,
@@ -329,9 +321,26 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             name: None,
                         });
                     }
-                    anthropic::ContentBlock::Thinking { thinking, .. } => {
-                        // Phase 8: Preserve thinking as context for the model
+                    anthropic::ContentBlock::Thinking { thinking, signature } => {
+                        // Phase 8 / Issue #90-B (ARB L5 reconciliation ρ): prior reasoning is
+                        // lowered to <previous_reasoning> text for OpenAI/NIM upstreams, which
+                        // have no native thinking block. `is_nexus_provenance` distinguishes
+                        // NEXUS-synthesized blocks (nexus:v1:) or unsigned ones — always safe to
+                        // revert — from real Anthropic signatures. We DROP (never rewrite) the
+                        // signature here, so the vercel/ai#9351 overwrite bug cannot occur;
+                        // preserving a real signature verbatim is only meaningful for Anthropic
+                        // upstreams and is handled on that path, not this OpenAI conversion.
                         if !thinking.is_empty() {
+                            let synthetic = signature
+                                .as_deref()
+                                .map(crate::reasoning::signature::is_nexus_provenance)
+                                .unwrap_or(true);
+                            if !synthetic {
+                                tracing::trace!(
+                                    target: "nexus::reasoning",
+                                    "real Anthropic thinking lowered to context for OpenAI-compatible upstream"
+                                );
+                            }
                             current_content_parts.push(openai::ContentPart::Text {
                                 text: format!(
                                     "<previous_reasoning>\n{}\n</previous_reasoning>",
@@ -415,45 +424,27 @@ fn ensure_valid_schema(mut schema: Value) -> Value {
     schema
 }
 
-/// Sanitize reasoning_content from NIM models that embed tool calls
-/// inside the reasoning block.
-///
-/// GLM5 uses: "actual reasoning</previous_reasoning><tool_call>XML</tool_call>"
-/// Kimi K2.5 uses: clean format (no sanitization needed)
-///
-/// This function:
-/// 1. Cuts everything after </previous_reasoning> (if present)
-/// 2. Removes any <tool_call>...</tool_call> blocks
-/// 3. Cleans stray XML tags from NIM
-pub fn sanitize_reasoning(raw: &str) -> String {
-    let mut clean = raw.to_string();
-
-    // 1. Cut at </previous_reasoning> delimiter
-    if let Some(pos) = clean.find("</previous_reasoning>") {
-        clean = clean[..pos].to_string();
-    }
-
-    // 2. Remove <tool_call>...</tool_call> blocks
-    while let Some(start) = clean.find("<tool_call>") {
-        if let Some(end) = clean.find("</tool_call>") {
-            let end_pos = end + "</tool_call>".len();
-            clean = format!("{}{}", &clean[..start], &clean[end_pos..]);
-        } else {
-            // Opening tag without close — truncate from there
-            clean = clean[..start].to_string();
-            break;
+/// Build the response content for synthesized NIM reasoning (Issue #90-B F5 · ARB L4):
+/// in `durable` mode the reasoning is transported as visible `<thinking>` text (no
+/// thinking block — 100% cross-backend safe, never rejected by Anthropic-direct);
+/// otherwise it is a thinking block carrying the provenance signature for the mode.
+pub(crate) fn reasoning_response_block(
+    clean: String,
+    mode: crate::reasoning::signature::SignatureMode,
+) -> anthropic::ResponseContent {
+    use crate::reasoning::signature::SignatureMode;
+    if mode == SignatureMode::Durable {
+        anthropic::ResponseContent::Text {
+            content_type: "text".to_string(),
+            text: format!("<thinking>\n{clean}\n</thinking>"),
+        }
+    } else {
+        anthropic::ResponseContent::Thinking {
+            signature: crate::reasoning::signature::signature_for_mode(&clean, mode),
+            content_type: "thinking".to_string(),
+            thinking: clean,
         }
     }
-
-    // 3. Clean stray XML tags common in NIM reasoning output
-    clean = clean
-        .replace("<previous_reasoning>", "")
-        .replace("<arg_key>", "")
-        .replace("</arg_key>", "")
-        .replace("<arg_value>", "")
-        .replace("</arg_value>", "");
-
-    clean.trim().to_string()
 }
 
 /// Transform OpenAI response to Anthropic format
@@ -475,12 +466,10 @@ pub fn openai_to_anthropic(
     let reasoning_val =
         choice.message.reasoning_content.as_ref().or(choice.message.reasoning.as_ref());
     if let Some(reasoning) = reasoning_val {
-        let clean = sanitize_reasoning(reasoning);
+        let clean = crate::reasoning::transducer::normalize_full(reasoning);
         if !clean.is_empty() {
-            content.push(anthropic::ResponseContent::Thinking {
-                content_type: "thinking".to_string(),
-                thinking: clean,
-            });
+            let mode = crate::reasoning::signature::SignatureMode::from_env();
+            content.push(reasoning_response_block(clean, mode));
         }
     }
 

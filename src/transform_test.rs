@@ -5,7 +5,8 @@ mod tests {
         AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt,
     };
     use crate::prompt_cache::CacheLocation;
-    use crate::transform::{anthropic_to_openai, sanitize_reasoning};
+    use crate::reasoning::transducer::normalize_full;
+    use crate::transform::anthropic_to_openai;
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -182,6 +183,79 @@ mod tests {
     }
 
     #[test]
+    fn test_thinking_block_reconciled_to_previous_reasoning() {
+        // Issue #90-B (F4 · ARB L5): a thinking block in the request is lowered to
+        // <previous_reasoning> text for the OpenAI/NIM upstream, whether it carries a
+        // real Anthropic signature, a NEXUS nexus:v1: provenance token, or none.
+        for signature in [
+            Some("EqMBrealAnthropicSignaturePayload0123456789".to_string()),
+            Some(crate::reasoning::signature::self_provenance("prior reasoning")),
+            None,
+        ] {
+            let message = Message {
+                role: "assistant".to_string(),
+                content: MessageContent::Blocks(vec![ContentBlock::Thinking {
+                    thinking: "prior reasoning".to_string(),
+                    signature,
+                }]),
+                extra: json!({}),
+            };
+            let req = AnthropicRequest {
+                model: "claude-sonnet-4-6".to_string(),
+                messages: vec![message],
+                max_tokens: 4096,
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                stop_sequences: None,
+                stream: None,
+                tools: None,
+                system: None,
+                metadata: None,
+                extra: json!({}),
+            };
+            let config = test_config();
+            let result =
+                anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+            let body = serde_json::to_string(&result.request).expect("serialize request");
+            assert!(
+                body.contains("<previous_reasoning>") && body.contains("prior reasoning"),
+                "thinking must be reconciled to <previous_reasoning> text"
+            );
+        }
+    }
+
+    #[test]
+    fn test_durable_mode_emits_text_not_thinking() {
+        use crate::models::anthropic::ResponseContent;
+        use crate::reasoning::signature::{is_nexus_provenance, SignatureMode};
+        use crate::transform::reasoning_response_block;
+
+        // Issue #90-B (F5): durable transports reasoning as visible <thinking> text —
+        // no thinking block, so Anthropic-direct never rejects it (no strip-retry).
+        match reasoning_response_block("my reasoning".to_string(), SignatureMode::Durable) {
+            ResponseContent::Text { text, .. } => {
+                assert!(text.contains("<thinking>") && text.contains("my reasoning"));
+            }
+            _ => panic!("durable mode must emit Text, not a thinking block"),
+        }
+
+        // self: thinking block carrying a nexus:v1: provenance signature.
+        match reasoning_response_block("my reasoning".to_string(), SignatureMode::SelfProvenance) {
+            ResponseContent::Thinking { signature, .. } => {
+                assert!(is_nexus_provenance(&signature.expect("self mode signs")));
+            }
+            _ => panic!("self mode must emit a thinking block"),
+        }
+
+        // omit: thinking block, no signature.
+        match reasoning_response_block("my reasoning".to_string(), SignatureMode::Omit) {
+            ResponseContent::Thinking { signature, .. } => assert_eq!(signature, None),
+            _ => panic!("omit mode must emit a thinking block"),
+        }
+    }
+
+    #[test]
     fn test_no_cache_markers_without_cache_control() {
         // Build a request without any cache_control fields
         let content_block = ContentBlock::Text {
@@ -353,64 +427,64 @@ mod tests {
     }
 
     // =========================================================================
-    // Original sanitize_reasoning tests
+    // Reasoning normalization tests (normalize_full, formerly sanitize_reasoning)
     // =========================================================================
 
     #[test]
     fn test_clean_reasoning_passes_through() {
         let input = "Let me analyze this code structure and understand the architecture.";
-        assert_eq!(sanitize_reasoning(input), input);
+        assert_eq!(normalize_full(input), input);
     }
 
     #[test]
     fn test_kimi_clean_reasoning() {
         let input = "I need to check the configuration files first, then analyze the proxy logic for any issues.";
-        assert_eq!(sanitize_reasoning(input), input);
+        assert_eq!(normalize_full(input), input);
     }
 
     #[test]
     fn test_glm5_previous_reasoning_with_tool_calls() {
         let input = r#"Let me check that docs file and also look at the service file to see </previous_reasoning><tool_call>Read<arg_key>file</arg_key></tool_call>"#;
         let expected = "Let me check that docs file and also look at the service file to see";
-        assert_eq!(sanitize_reasoning(input), expected);
+        assert_eq!(normalize_full(input), expected);
     }
 
     #[test]
     fn test_tool_call_without_previous_reasoning() {
         let input = "Some reasoning text<tool_call>Read<arg_key>file</arg_key></tool_call>";
         let expected = "Some reasoning text";
-        assert_eq!(sanitize_reasoning(input), expected);
+        assert_eq!(normalize_full(input), expected);
     }
 
     #[test]
     fn test_unclosed_tool_call() {
         let input = "Valid reasoning here<tool_call>Read<arg_key>file";
         let expected = "Valid reasoning here";
-        assert_eq!(sanitize_reasoning(input), expected);
+        assert_eq!(normalize_full(input), expected);
     }
 
     #[test]
     fn test_stray_xml_tags() {
         let input = "<previous_reasoning>Some thinking with <arg_key>stray</arg_key> tags";
         let expected = "Some thinking with stray tags";
-        assert_eq!(sanitize_reasoning(input), expected);
+        assert_eq!(normalize_full(input), expected);
     }
 
     #[test]
     fn test_empty_reasoning_after_sanitization() {
         let input = "</previous_reasoning><tool_call>Read</tool_call>";
-        assert_eq!(sanitize_reasoning(input), "");
+        assert_eq!(normalize_full(input), "");
     }
 
     #[test]
     fn test_empty_input() {
-        assert_eq!(sanitize_reasoning(""), "");
+        assert_eq!(normalize_full(""), "");
     }
 
     #[test]
     fn test_preserves_normal_angle_brackets() {
         let input = "The value should be x > 5 and y < 10";
-        assert_eq!(sanitize_reasoning(input), input);
+        assert_eq!(normalize_full(input), input);
     }
 
     // =========================================================================

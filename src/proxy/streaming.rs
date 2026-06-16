@@ -25,6 +25,24 @@ use crate::web_fetch;
 /// Interval for anthropic.keep-alive SSE events (prevents CC timeout on slow upstreams)
 pub(crate) const KEEPALIVE_INTERVAL_SECS: u64 = 30;
 
+/// Build the `signature_delta` SSE event for a completed NEXUS thinking block, per the
+/// configured signature mode. Returns `None` when no signature should be emitted (mode
+/// `omit`/`durable`, or empty thinking). Issue #90-B (ARB L3/L4): completes the thinking
+/// sub-protocol that NEXUS previously skipped (it emitted `signature:""` and never a
+/// `signature_delta`).
+fn signature_delta_sse(thinking: &str, index: i32) -> Option<Bytes> {
+    let sig = crate::reasoning::signature::reasoning_signature(thinking)?;
+    let ev = json!({
+        "type": "content_block_delta",
+        "index": index,
+        "delta": { "type": "signature_delta", "signature": sig }
+    });
+    Some(Bytes::from(format!(
+        "event: content_block_delta\ndata: {}\n\n",
+        serde_json::to_string(&ev).unwrap_or_default()
+    )))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_streaming(
     config: Arc<Config>,
@@ -145,6 +163,9 @@ pub(crate) fn create_sse_stream(
         let mut accumulated_output_tokens: u32 = 0;
         let mut saved_stop_reason: Option<String> = None;
         let mut reasoning_poisoned = false;
+        // Issue #90-B (ARB L4): accumulate the emitted thinking so a `signature_delta`
+        // (provenance token) can be emitted before the thinking block closes.
+        let mut accumulated_thinking = String::new();
 
         tokio::pin!(stream);
 
@@ -430,6 +451,8 @@ pub(crate) fn create_sse_stream(
                                                         current_block_type = Some("thinking".to_string());
                                                     }
 
+                                                    // Issue #90-B: accumulate for the closing signature_delta.
+                                                    accumulated_thinking.push_str(&text_to_emit);
                                                     let event = json!({
                                                         "type": "content_block_delta",
                                                         "index": content_index,
@@ -479,6 +502,13 @@ pub(crate) fn create_sse_stream(
                                                 if let Some(clean_content) = sanitized_content {
                                                     if current_block_type.as_deref() != Some("text") {
                                                         if current_block_type.is_some() {
+                                                            // Issue #90-B: close the thinking sub-protocol with a signature_delta.
+                                                            if current_block_type.as_deref() == Some("thinking") {
+                                                                if let Some(b) = signature_delta_sse(&accumulated_thinking, content_index) {
+                                                                    yield Ok(b);
+                                                                }
+                                                                accumulated_thinking.clear();
+                                                            }
                                                             let event = json!({"type": "content_block_stop", "index": content_index});
                                                             let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
                                                                 serde_json::to_string(&event).unwrap_or_default());
@@ -519,6 +549,13 @@ pub(crate) fn create_sse_stream(
                                             for tool_call in tool_calls {
                                                 if let Some(id) = &tool_call.id {
                                                     if current_block_type.is_some() && !is_intercepting_fetch {
+                                                        // Issue #90-B: close the thinking sub-protocol with a signature_delta.
+                                                        if current_block_type.as_deref() == Some("thinking") {
+                                                            if let Some(b) = signature_delta_sse(&accumulated_thinking, content_index) {
+                                                                yield Ok(b);
+                                                            }
+                                                            accumulated_thinking.clear();
+                                                        }
                                                         let event = json!({"type": "content_block_stop", "index": content_index});
                                                         let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
                                                             serde_json::to_string(&event).unwrap_or_default());
@@ -639,6 +676,13 @@ pub(crate) fn create_sse_stream(
                                                     // FIX C11 (Issue #80): Close any prior tool_use block that might be
                                                     // open (from another tool_call in the same chunk) before emitting text.
                                                     if current_block_type.is_some() {
+                                                        // Issue #90-B: close the thinking sub-protocol with a signature_delta.
+                                                        if current_block_type.as_deref() == Some("thinking") {
+                                                            if let Some(b) = signature_delta_sse(&accumulated_thinking, content_index) {
+                                                                yield Ok(b);
+                                                            }
+                                                            accumulated_thinking.clear();
+                                                        }
                                                         let event = json!({"type": "content_block_stop", "index": content_index});
                                                         let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
                                                             serde_json::to_string(&event).unwrap_or_default());
@@ -676,6 +720,13 @@ pub(crate) fn create_sse_stream(
                                             }
 
                                             if current_block_type.is_some() {
+                                                // Issue #90-B: close the thinking sub-protocol with a signature_delta.
+                                                if current_block_type.as_deref() == Some("thinking") {
+                                                    if let Some(b) = signature_delta_sse(&accumulated_thinking, content_index) {
+                                                        yield Ok(b);
+                                                    }
+                                                    accumulated_thinking.clear();
+                                                }
                                                 let event = json!({"type": "content_block_stop", "index": content_index});
                                                 let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
                                                     serde_json::to_string(&event).unwrap_or_default());
