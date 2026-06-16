@@ -329,9 +329,26 @@ fn convert_message(msg: anthropic::Message) -> ProxyResult<Vec<openai::Message>>
                             name: None,
                         });
                     }
-                    anthropic::ContentBlock::Thinking { thinking, .. } => {
-                        // Phase 8: Preserve thinking as context for the model
+                    anthropic::ContentBlock::Thinking { thinking, signature } => {
+                        // Phase 8 / Issue #90-B (ARB L5 reconciliation ρ): prior reasoning is
+                        // lowered to <previous_reasoning> text for OpenAI/NIM upstreams, which
+                        // have no native thinking block. `is_nexus_provenance` distinguishes
+                        // NEXUS-synthesized blocks (nexus:v1:) or unsigned ones — always safe to
+                        // revert — from real Anthropic signatures. We DROP (never rewrite) the
+                        // signature here, so the vercel/ai#9351 overwrite bug cannot occur;
+                        // preserving a real signature verbatim is only meaningful for Anthropic
+                        // upstreams and is handled on that path, not this OpenAI conversion.
                         if !thinking.is_empty() {
+                            let synthetic = signature
+                                .as_deref()
+                                .map(crate::reasoning::signature::is_nexus_provenance)
+                                .unwrap_or(true);
+                            if !synthetic {
+                                tracing::trace!(
+                                    target: "nexus::reasoning",
+                                    "real Anthropic thinking lowered to context for OpenAI-compatible upstream"
+                                );
+                            }
                             current_content_parts.push(openai::ContentPart::Text {
                                 text: format!(
                                     "<previous_reasoning>\n{}\n</previous_reasoning>",

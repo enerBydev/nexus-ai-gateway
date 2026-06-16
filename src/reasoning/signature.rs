@@ -74,7 +74,6 @@ pub fn self_provenance(thinking: &str) -> String {
 
 /// `true` if `sig` was synthesized by NEXUS (carries the `nexus:v1:` prefix). Real
 /// Anthropic signatures never match, so L5 reconciliation never reverts them.
-#[allow(dead_code)] // TODO(F4): wired into request-side reconciliation ρ (transform.rs)
 pub fn is_nexus_provenance(sig: &str) -> bool {
     sig.starts_with(PROV_PREFIX)
 }

@@ -183,6 +183,49 @@ mod tests {
     }
 
     #[test]
+    fn test_thinking_block_reconciled_to_previous_reasoning() {
+        // Issue #90-B (F4 · ARB L5): a thinking block in the request is lowered to
+        // <previous_reasoning> text for the OpenAI/NIM upstream, whether it carries a
+        // real Anthropic signature, a NEXUS nexus:v1: provenance token, or none.
+        for signature in [
+            Some("EqMBrealAnthropicSignaturePayload0123456789".to_string()),
+            Some(crate::reasoning::signature::self_provenance("prior reasoning")),
+            None,
+        ] {
+            let message = Message {
+                role: "assistant".to_string(),
+                content: MessageContent::Blocks(vec![ContentBlock::Thinking {
+                    thinking: "prior reasoning".to_string(),
+                    signature,
+                }]),
+                extra: json!({}),
+            };
+            let req = AnthropicRequest {
+                model: "claude-sonnet-4-6".to_string(),
+                messages: vec![message],
+                max_tokens: 4096,
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                stop_sequences: None,
+                stream: None,
+                tools: None,
+                system: None,
+                metadata: None,
+                extra: json!({}),
+            };
+            let config = test_config();
+            let result =
+                anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+            let body = serde_json::to_string(&result.request).expect("serialize request");
+            assert!(
+                body.contains("<previous_reasoning>") && body.contains("prior reasoning"),
+                "thinking must be reconciled to <previous_reasoning> text"
+            );
+        }
+    }
+
+    #[test]
     fn test_no_cache_markers_without_cache_control() {
         // Build a request without any cache_control fields
         let content_block = ContentBlock::Text {
