@@ -1,5 +1,9 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # post-merge hook — Auto-sync after git pull that brings merge commits
+#
+# Shebang is bash (not /bin/sh): this hook uses bash parameter expansion such as
+# ${CARGO_MD5:0:8}. Under dash (/bin/sh) that raised "Bad substitution" on every
+# deploy (cosmetic — it only broke a confirmation echo, since there is no `set -e`).
 #
 # This hook fires AFTER "git pull" completes a merge (fast-forward or merge commit).
 # It solves the gap where:
