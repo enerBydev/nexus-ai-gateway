@@ -160,6 +160,10 @@ pub enum ResponseContent {
         #[serde(rename = "type")]
         content_type: String,
         thinking: String,
+        // Issue #90-B (ARB L4): NEXUS-synthesized provenance token (`nexus:v1:…`) or a
+        // real Anthropic signature when passed through. Omitted when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 }
 

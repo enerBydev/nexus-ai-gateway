@@ -477,9 +477,13 @@ pub fn openai_to_anthropic(
     if let Some(reasoning) = reasoning_val {
         let clean = sanitize_reasoning(reasoning);
         if !clean.is_empty() {
+            // Issue #90-B (ARB L4): attach a NEXUS provenance signature per the
+            // configured mode (default `self`), computed before `clean` is moved.
+            let signature = crate::reasoning::signature::reasoning_signature(&clean);
             content.push(anthropic::ResponseContent::Thinking {
                 content_type: "thinking".to_string(),
                 thinking: clean,
+                signature,
             });
         }
     }

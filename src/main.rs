@@ -6,6 +6,7 @@ mod error;
 mod models;
 mod prompt_cache;
 mod proxy;
+mod reasoning;
 mod scan;
 mod setup;
 mod str_utils;
