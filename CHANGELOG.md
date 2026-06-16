@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.21.0] - 2026-06-16
+
+### Added
+- Durable reasoning mode transports thinking as text (#90-B F5)
+- Policy-driven reasoning activation, decoupled from model id (#90-B F3+EjeA)
+- Distinguish synthetic vs real thinking signatures (#90-B F4)
+- FST reasoning transducer + fix sanitize DoS loop (#90-B F2)
+- Emit thinking signature_delta with nexus:v1 provenance (#90-B F1)
+
+---
+
 ## [0.20.1] - 2026-06-14
 
 ### Fixed
