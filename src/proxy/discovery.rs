@@ -28,7 +28,25 @@ pub struct ModelCapabilities {
 /// Cache for model capabilities, populated by probing NIM
 pub type ModelCache = Arc<AsyncRwLock<HashMap<String, ModelCapabilities>>>;
 
-pub(crate) const DEFAULT_CONTEXT_LIMIT: u32 = 131_072;
+/// Fallback context window used when runtime probing of a model fails.
+///
+/// Configurable via `PROBE_FALLBACK_CONTEXT_LIMIT` (default 200_000). The default
+/// MUST be >= CC's context window (`CC_CONTEXT_WINDOW`, default 200_000) so that
+/// `scale_token_usage` takes Branch 2 (report REAL tokens) instead of inflating
+/// them. The previous fixed default of 131_072 was SMALLER than CC's effective
+/// window (~180_000), so a probe failure forced a ~1.37x token inflation
+/// (180_000 / 131_072) that made CC's context appear to fill within seconds and
+/// fired a premature synthetic "context window full" error. Modern NIM models
+/// (qwen, glm, deepseek, kimi) are >= 256K, so assuming 128K on a probe failure
+/// was both wrong and harmful. Pin genuinely smaller models via
+/// `MODEL_LIMIT_OVERRIDES` instead of lowering this fallback.
+pub(crate) fn default_context_limit() -> u32 {
+    std::env::var("PROBE_FALLBACK_CONTEXT_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(200_000)
+}
 
 // FASE 3.6: Environment-variable configurable probe settings
 fn cache_ttl_secs() -> u64 {
@@ -147,10 +165,50 @@ pub async fn get_context_limit(
         return limit;
     }
 
+    let fallback = default_context_limit();
     tracing::warn!(
-        "[WARN] Could not probe model '{}', using default {}",
+        "[WARN] Could not probe model '{}', using fallback {} (tune via PROBE_FALLBACK_CONTEXT_LIMIT)",
         model,
-        DEFAULT_CONTEXT_LIMIT
+        fallback
     );
-    DEFAULT_CONTEXT_LIMIT
+    fallback
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::default_context_limit;
+
+    /// Save/restore the single (uniquely-named) env var this module touches so the
+    /// test is order-independent. Only this test reads/writes this key, so there is
+    /// no cross-test race on the process-wide environment.
+    fn with_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let key = "PROBE_FALLBACK_CONTEXT_LIMIT";
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        let out = f();
+        match prev {
+            Some(p) => std::env::set_var(key, p),
+            None => std::env::remove_var(key),
+        }
+        out
+    }
+
+    #[test]
+    fn probe_fallback_default_and_overrides() {
+        // Default 200_000 and >= CC's effective window (~180K) so a probe failure
+        // never pushes scale_token_usage into its inflating Branch 1 — the root of
+        // the "context fills in 2 seconds" bug. Modern NIM models are >= 256K, so
+        // the old 128K default was both wrong and harmful.
+        let d = with_env(None, default_context_limit);
+        assert_eq!(d, 200_000, "default fallback should be 200_000");
+        assert!(d >= 180_000, "fallback must be >= CC effective window (no inflation)");
+        // Env override is honoured.
+        assert_eq!(with_env(Some("262144"), default_context_limit), 262_144);
+        // Invalid values fall back to the default.
+        assert_eq!(with_env(Some("0"), default_context_limit), 200_000);
+        assert_eq!(with_env(Some("garbage"), default_context_limit), 200_000);
+    }
 }
