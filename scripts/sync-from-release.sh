@@ -173,7 +173,11 @@ if ! systemctl --user restart "$SERVICE"; then
   exit 1
 fi
 sleep 3
-PORT="$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
+PORT="$(grep -E '^PORT=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+PORT="${PORT%\"}"
+PORT="${PORT#\"}" # strip surrounding double quotes (PORT="8315")
+PORT="${PORT%\'}"
+PORT="${PORT#\'}" # strip surrounding single quotes (PORT='8315')
 PORT="${PORT:-8315}"
 if [ "$(curl -s --max-time 5 "http://localhost:${PORT}/health" 2>/dev/null)" = "OK" ]; then
   echo "✅ Deploy complete — v$LATEST_VER healthy on :$PORT"

@@ -41,11 +41,24 @@ pub type ModelCache = Arc<AsyncRwLock<HashMap<String, ModelCapabilities>>>;
 /// was both wrong and harmful. Pin genuinely smaller models via
 /// `MODEL_LIMIT_OVERRIDES` instead of lowering this fallback.
 pub(crate) fn default_context_limit() -> u32 {
-    std::env::var("PROBE_FALLBACK_CONTEXT_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(200_000)
+    const FALLBACK: u32 = 200_000;
+    match std::env::var("PROBE_FALLBACK_CONTEXT_LIMIT") {
+        // Unset is the normal case — silently use the default.
+        Err(_) => FALLBACK,
+        Ok(raw) => match raw.parse::<u32>() {
+            Ok(v) if v > 0 => v,
+            // Present but invalid (non-numeric or <= 0): warn so a misconfigured env
+            // var is debuggable instead of silently masked, then use the default.
+            _ => {
+                tracing::warn!(
+                    "[WARN] Invalid PROBE_FALLBACK_CONTEXT_LIMIT='{}' (expected positive integer) — using default {}",
+                    raw,
+                    FALLBACK
+                );
+                FALLBACK
+            }
+        },
+    }
 }
 
 // FASE 3.6: Environment-variable configurable probe settings
