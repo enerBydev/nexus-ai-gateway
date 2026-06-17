@@ -112,6 +112,36 @@ fn m7_429_unauthorized_in_body_is_retryable_not_fatal() {
     );
 }
 
+#[test]
+fn rate_limit_with_token_words_in_body_is_retryable_not_fixable() {
+    // Regression (stream-death bug): NIM's 429/529 body incidentally mentions
+    // "max_tokens"/"token limit", which used to match FIXABLE_PATTERNS and route the rate
+    // limit into the no-backoff clamp path — 3 instant retries that all hit the limit and
+    // the stream dies ("exhausted 3 retries — giving up" in <1s). A rate limit / overload
+    // must back off (Retryable), matching Anthropic's backend.
+    for status in [429u16, 502, 503, 529] {
+        let err = make_error(status, "rate limit exceeded; reduce max_tokens or token limit");
+        let class = classify_error(&err);
+        assert!(
+            matches!(class, ErrorClass::Retryable { .. }),
+            "status {status} + token words in body must be Retryable (backoff), got {:?}",
+            class
+        );
+    }
+}
+
+#[test]
+fn genuine_500_token_overflow_stays_fixable() {
+    // The refine is preserved for TRUE server errors: a token overflow wrapped in a 500
+    // (not a rate limit) is still Fixable (clamp).
+    let err = make_error(500, "internal error: maximum context length exceeded");
+    assert!(
+        matches!(classify_error(&err), ErrorClass::Fixable { .. }),
+        "500 + token-overflow body should remain Fixable, got {:?}",
+        classify_error(&err)
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // M8: L0 multi-provider error_type matching
 // ═══════════════════════════════════════════════════════════════
@@ -349,12 +379,23 @@ fn l2_429_reduced_retries() {
 
 #[test]
 fn fixable_within_retryable_status() {
-    // A 502 wrapping a token overflow should be Fixable
+    // Updated: the FIXABLE refine within a retryable status applies only to TRUE server
+    // errors (500/504), NOT to rate-limit/overload statuses (429/502/503/529). A 502 is
+    // commonly NIM wrapping a 429 — clamping max_tokens does not fix a rate limit and the
+    // Fixable path skips the backoff, killing the stream. So 502 + a token-word body must
+    // back off (Retryable). Genuine token overflows arrive as 400 (handled elsewhere).
     let err = make_error(502, "maximum context length exceeded");
     let class = classify_error(&err);
     assert!(
-        matches!(class, ErrorClass::Fixable { .. }),
-        "502 + fixable pattern should be Fixable, got {:?}",
+        matches!(class, ErrorClass::Retryable { .. }),
+        "502 + fixable pattern must be Retryable (rate-limit/overload backoff), got {:?}",
         class
+    );
+
+    // The refine is still active for a true server error (500).
+    let err500 = make_error(500, "maximum context length exceeded");
+    assert!(
+        matches!(classify_error(&err500), ErrorClass::Fixable { .. }),
+        "500 + fixable pattern should remain Fixable"
     );
 }

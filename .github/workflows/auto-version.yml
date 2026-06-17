@@ -17,7 +17,13 @@ permissions:
 
 jobs:
   auto-version:
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (glibc 2.35) — NOT ubuntu-latest. ubuntu-latest is now 24.04
+    # (glibc 2.39), which produces a release binary that fails with
+    # "GLIBC_2.39 not found" on glibc < 2.39 hosts (Ubuntu/Pop!_OS 22.04, Debian 12,
+    # the prod deploy target). Building on 22.04 yields a binary that runs on
+    # glibc >= 2.35 (22.04 and everything newer), so the published Release asset is
+    # actually portable and the deploy can install it instead of rebuilding locally.
+    runs-on: ubuntu-22.04
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
 
     steps:
