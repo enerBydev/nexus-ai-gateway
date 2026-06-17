@@ -180,13 +180,25 @@ pub(crate) fn classify_error(upstream: &UpstreamError) -> ErrorClass {
             };
         }
 
-        // Within retryable status, L1 FIXABLE patterns CAN refine
-        // (e.g., a 502 wrapping a token overflow should be Fixable)
-        for pattern in FIXABLE_PATTERNS {
-            if lower.contains(pattern) {
-                return ErrorClass::Fixable {
-                    reason: "fixable pattern in retryable status (L1+guard)",
-                };
+        // Within retryable status, L1 FIXABLE patterns CAN refine a TRUE server error
+        // (e.g., a 500/504 wrapping a token overflow should be Fixable).
+        //
+        // EXCEPT rate-limit / overload statuses (429, 502, 503, 529): a rate limit is
+        // NEVER fixed by clamping max_tokens, and the Fixable path retries WITHOUT
+        // backoff — 3 instant retries all hit the limit and the stream dies. NIM's 429
+        // body incidentally contains "max_tokens"/"token limit", which used to match
+        // FIXABLE_PATTERNS and mis-route the rate limit into the clamp path. These must
+        // back off (Retryable), matching Anthropic's backend: CC retries 429/5xx with
+        // Retry-After (`x-should-retry` is already set in error.rs). (Fix: streams dying
+        // on every NIM rate limit — "exhausted 3 retries — giving up" in <1s.)
+        let is_rate_or_overload = matches!(status, 429 | 502 | 503 | 529);
+        if !is_rate_or_overload {
+            for pattern in FIXABLE_PATTERNS {
+                if lower.contains(pattern) {
+                    return ErrorClass::Fixable {
+                        reason: "fixable pattern in retryable status (L1+guard)",
+                    };
+                }
             }
         }
 
