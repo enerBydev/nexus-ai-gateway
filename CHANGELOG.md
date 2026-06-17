@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.21.2] - 2026-06-17
+
+### Changed
+- Address CodeRabbit nitpicks — log invalid fallback env, strip PORT quotes
+
+### Fixed
+- Build release on ubuntu-22.04 + add glibc-safe sync-from-release deploy script
+- Probe-fail fallback 200K (not 128K) — stop token inflation that filled context in seconds
+- Rate-limit/overload statuses always back off, never clamp (stream death)
+
+---
+
 ## [0.21.1] - 2026-06-17
 
 ### Fixed
