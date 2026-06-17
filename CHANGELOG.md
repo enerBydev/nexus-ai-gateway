@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.21.1] - 2026-06-17
+
+### Fixed
+- Post-merge hook shebang to bash (Bad substitution on deploy)
+
+---
+
 ## [0.21.0] - 2026-06-16
 
 ### Added
