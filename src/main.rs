@@ -336,18 +336,24 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .layer(cors);
 
     // Issue #78 (Solution B): optional IP allowlist (defense-in-depth).
-    // Read directly from env, mirroring the CORS pattern above. Opt-in: when
-    // ALLOWED_IPS is empty the middleware is not mounted (the bind address governs
-    // exposure). When set, it becomes the outermost layer so non-allowed IPs are
-    // rejected before any other processing. Loopback is always permitted.
-    let allowlist =
-        access_control::IpAllowlist::parse(&std::env::var("ALLOWED_IPS").unwrap_or_default());
-    let app = if allowlist.is_empty() {
+    // Read directly from env, mirroring the CORS pattern above. The opt-in is based on
+    // whether ALLOWED_IPS is *set*, not on whether it parses to entries: if it is set but
+    // yields no valid entries, we FAIL CLOSED (mount the middleware -> loopback-only)
+    // rather than silently allowing everyone. When unset, the bind address governs.
+    let raw_allowed_ips = std::env::var("ALLOWED_IPS").unwrap_or_default();
+    let allowlist = access_control::IpAllowlist::parse(&raw_allowed_ips);
+    let allowlist_configured = !raw_allowed_ips.trim().is_empty();
+    let app = if !allowlist_configured {
         tracing::info!(
             "Access control: ALLOWED_IPS not set — all client IPs allowed (bind address governs exposure)"
         );
         app
     } else {
+        if allowlist.is_empty() {
+            tracing::warn!(
+                "Access control: ALLOWED_IPS is set but no valid CIDR/IP entries parsed — enforcing loopback-only until fixed"
+            );
+        }
         tracing::info!(
             "Access control: ALLOWED_IPS active — {} network(s) permitted (loopback always allowed)",
             allowlist.len()
@@ -359,13 +365,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     };
 
     // Issue #78: bind to the configured address (default 127.0.0.1, opt-in 0.0.0.0)
-    // instead of the previously hardcoded 0.0.0.0 (v0.11.0 CR-04).
-    let bind_addr = config.load().bind_addr.clone();
-    let addr = format!("{}:{}", bind_addr, config.load().port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    // instead of the previously hardcoded 0.0.0.0 (v0.11.0 CR-04). Build a typed
+    // SocketAddr so IPv6 binds (e.g. [::1]) are formatted correctly.
+    let addr = {
+        let cfg = config.load();
+        Config::resolve_socket_addr(&cfg.bind_addr, cfg.port)?
+    };
+    let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Issue #78: warn loudly when reachable beyond localhost so exposure is never silent.
-    if bind_addr.parse::<std::net::IpAddr>().map(|ip| !ip.is_loopback()).unwrap_or(false) {
+    if !addr.ip().is_loopback() {
         tracing::warn!(
             "[WARN]  NEXUS is bound to {addr} — reachable beyond localhost. Configure your \
              firewall and/or ALLOWED_IPS to restrict who can reach this proxy."

@@ -204,4 +204,12 @@ mod http_tests {
     async fn loopback_passes_even_when_not_listed() {
         assert_eq!(status_from(test_app("192.168.1.0/24"), "127.0.0.1").await, StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn empty_allowlist_mounted_fails_closed() {
+        // CodeRabbit #109: when ALLOWED_IPS is set but parses to no valid entries, main
+        // mounts the middleware anyway (fail closed) -> only loopback may pass.
+        assert_eq!(status_from(test_app(""), "8.8.8.8").await, StatusCode::FORBIDDEN);
+        assert_eq!(status_from(test_app(""), "127.0.0.1").await, StatusCode::OK);
+    }
 }

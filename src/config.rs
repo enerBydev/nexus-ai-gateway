@@ -173,6 +173,16 @@ impl Config {
         }
     }
 
+    /// Build the listener `SocketAddr` from a bind address string and port (Issue #78).
+    /// Uses typed `SocketAddr::new` so IPv6 addresses render correctly (e.g. `[::1]:8315`),
+    /// which plain `format!("{addr}:{port}")` cannot do (it would yield `::1:8315`).
+    pub(crate) fn resolve_socket_addr(bind_addr: &str, port: u16) -> Result<std::net::SocketAddr> {
+        let ip = bind_addr
+            .parse::<std::net::IpAddr>()
+            .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", bind_addr, e))?;
+        Ok(std::net::SocketAddr::new(ip, port))
+    }
+
     /// Resolve the listener bind address (Issue #78).
     /// Precedence: `BIND_ADDR` > safe default `127.0.0.1`.
     /// The legacy `HOST` variable is deprecated and intentionally ignored; if it is
@@ -1207,5 +1217,34 @@ mod tests {
         // Invalid -> safe fallback.
         assert_eq!(Config::normalize_bind_addr("garbage"), "127.0.0.1");
         assert_eq!(Config::normalize_bind_addr(""), "127.0.0.1");
+    }
+
+    // resolve_socket_addr (CodeRabbit #109): typed SocketAddr, correct IPv6 formatting.
+
+    #[test]
+    fn test_resolve_socket_addr_ipv4() {
+        let sa = Config::resolve_socket_addr("127.0.0.1", 8315).unwrap();
+        assert_eq!(sa.to_string(), "127.0.0.1:8315");
+        assert!(sa.ip().is_loopback());
+    }
+
+    #[test]
+    fn test_resolve_socket_addr_ipv6_is_bracketed() {
+        // Regression guard: plain format!("{}:{}") would yield the invalid "::1:8315".
+        let sa = Config::resolve_socket_addr("::1", 8315).unwrap();
+        assert_eq!(sa.to_string(), "[::1]:8315");
+        assert!(sa.ip().is_loopback());
+    }
+
+    #[test]
+    fn test_resolve_socket_addr_all_interfaces() {
+        let sa = Config::resolve_socket_addr("0.0.0.0", 8316).unwrap();
+        assert_eq!(sa.to_string(), "0.0.0.0:8316");
+        assert!(!sa.ip().is_loopback());
+    }
+
+    #[test]
+    fn test_resolve_socket_addr_invalid_errors() {
+        assert!(Config::resolve_socket_addr("not-an-ip", 8315).is_err());
     }
 }
