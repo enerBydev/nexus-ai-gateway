@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.1] - 2026-06-18
+
+### Fixed
+- Make bind/HOST config warnings visible at startup (OSS UX)
+
+### Security
+- Make bind/HOST config warnings visible at startup (OSS UX)
+
+---
+
 ## [0.22.0] - 2026-06-18
 
 ### Added
