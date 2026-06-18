@@ -512,6 +512,7 @@ mod context_window_tests {
     fn make_minimal_config() -> Config {
         Config {
             port: 8315,
+            bind_addr: "127.0.0.1".to_string(),
             base_url: "https://test.example.com".to_string(),
             api_key: Some("test-key".to_string()),
             reasoning_model: None,

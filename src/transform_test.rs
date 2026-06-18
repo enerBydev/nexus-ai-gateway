@@ -14,6 +14,7 @@ mod tests {
     fn test_config() -> Config {
         Config {
             port: 8315,
+            bind_addr: "127.0.0.1".to_string(),
             base_url: "http://localhost:11434".to_string(),
             api_key: None,
             reasoning_model: None,

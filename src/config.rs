@@ -56,6 +56,9 @@ pub struct ModelRoute {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
+    /// Listener bind address (Issue #78). Default `127.0.0.1` (loopback-only).
+    /// Set `BIND_ADDR=0.0.0.0` (or `--bind 0.0.0.0`) to expose on all interfaces — opt-in.
+    pub bind_addr: String,
     pub base_url: String,
     pub api_key: Option<String>,
     pub reasoning_model: Option<String>,
@@ -153,6 +156,41 @@ impl Config {
         map.get(key).cloned()
     }
 
+    /// Validate and normalize a bind address (Issue #78).
+    /// Parses the value as an `IpAddr`; on failure logs a warning and falls back
+    /// to the safe loopback default `127.0.0.1` (parse, don't validate).
+    pub(crate) fn normalize_bind_addr(raw: &str) -> String {
+        let trimmed = raw.trim();
+        match trimmed.parse::<std::net::IpAddr>() {
+            Ok(_) => trimmed.to_string(),
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid BIND_ADDR='{}' — not a valid IP address. Falling back to 127.0.0.1 (loopback-only).",
+                    trimmed
+                );
+                "127.0.0.1".to_string()
+            }
+        }
+    }
+
+    /// Resolve the listener bind address (Issue #78).
+    /// Precedence: `BIND_ADDR` > safe default `127.0.0.1`.
+    /// The legacy `HOST` variable is deprecated and intentionally ignored; if it is
+    /// present without `BIND_ADDR`, warn the operator (it never controlled the bind).
+    fn resolve_bind_addr(bind_addr_raw: Option<String>, host_raw: Option<String>) -> String {
+        if bind_addr_raw.is_none() && host_raw.is_some() {
+            tracing::warn!(
+                "HOST is deprecated and ignored — it never controlled the listener. \
+                 Use BIND_ADDR instead (defaulting to 127.0.0.1). \
+                 Set BIND_ADDR=0.0.0.0 to expose on all interfaces."
+            );
+        }
+        match bind_addr_raw {
+            Some(raw) => Self::normalize_bind_addr(&raw),
+            None => "127.0.0.1".to_string(),
+        }
+    }
+
     /// Parse CC_MODEL_CONTEXT_WINDOWS env var into a HashMap.
     /// Format: "claude-opus-4-6:200000,claude-sonnet-4-6:200000"
     fn parse_model_context_windows(value: &str) -> HashMap<String, u32> {
@@ -191,6 +229,12 @@ impl Config {
     /// Create Config from a HashMap (used for thread-safe reload)
     fn from_map(data: &HashMap<String, String>) -> Result<Self> {
         let port = Self::get_from_map(data, "PORT").and_then(|p| p.parse().ok()).unwrap_or(8315);
+
+        // Issue #78: configurable bind address, default 127.0.0.1 (loopback-only).
+        let bind_addr = Self::resolve_bind_addr(
+            Self::get_from_map(data, "BIND_ADDR"),
+            Self::get_from_map(data, "HOST"),
+        );
 
         let base_url = Self::get_from_map(data, "UPSTREAM_BASE_URL").ok_or_else(|| {
             anyhow::anyhow!(
@@ -470,6 +514,7 @@ impl Config {
 
         Ok(Config {
             port,
+            bind_addr,
             base_url,
             api_key,
             reasoning_model,
@@ -546,6 +591,9 @@ impl Config {
         }
 
         let port = env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8315);
+
+        // Issue #78: configurable bind address, default 127.0.0.1 (loopback-only).
+        let bind_addr = Self::resolve_bind_addr(env::var("BIND_ADDR").ok(), env::var("HOST").ok());
 
         let base_url = env::var("UPSTREAM_BASE_URL").map_err(|_| {
             anyhow::anyhow!(
@@ -813,6 +861,7 @@ impl Config {
 
         let config = Config {
             port,
+            bind_addr,
             base_url,
             api_key,
             reasoning_model,
@@ -886,6 +935,7 @@ impl Config {
         cli_debug: bool,
         cli_verbose: bool,
         cli_port: Option<u16>,
+        cli_bind: Option<String>,
         config_path: Option<PathBuf>,
     ) -> Result<Self> {
         let env_map = Self::load_env_to_map(config_path.clone())?;
@@ -901,6 +951,12 @@ impl Config {
         }
         if let Some(port) = cli_port {
             config.port = port;
+        }
+        // Issue #78: the listener is bound once at startup and cannot be re-bound on
+        // reload; preserve the startup-resolved bind_addr so the reported config
+        // matches reality (mirrors the cli_port override behavior).
+        if let Some(bind) = cli_bind {
+            config.bind_addr = bind;
         }
         Ok(config)
     }
@@ -1075,5 +1131,81 @@ mod tests {
         let config = Config::from_map(&map).unwrap();
         // Completely unknown upstream -> falls back to global
         assert_eq!(config.get_upstream_type("nonexistent"), UpstreamType::NIM);
+    }
+
+    // =========================================================================
+    // Issue #78: bind address configuration tests
+    // =========================================================================
+
+    #[test]
+    fn test_bind_addr_defaults_to_loopback() {
+        let map = make_test_map();
+        let config = Config::from_map(&map).unwrap();
+        // Secure default: loopback-only, NOT 0.0.0.0.
+        assert_eq!(config.bind_addr, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_bind_addr_override_from_env() {
+        let mut map = make_test_map();
+        map.insert("BIND_ADDR".to_string(), "0.0.0.0".to_string());
+        let config = Config::from_map(&map).unwrap();
+        // Explicit opt-in to expose on all interfaces.
+        assert_eq!(config.bind_addr, "0.0.0.0");
+    }
+
+    #[test]
+    fn test_bind_addr_ipv6_loopback_accepted() {
+        let mut map = make_test_map();
+        map.insert("BIND_ADDR".to_string(), "::1".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert_eq!(config.bind_addr, "::1");
+    }
+
+    #[test]
+    fn test_bind_addr_whitespace_trimmed() {
+        let mut map = make_test_map();
+        map.insert("BIND_ADDR".to_string(), "  192.168.1.50  ".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert_eq!(config.bind_addr, "192.168.1.50");
+    }
+
+    #[test]
+    fn test_bind_addr_invalid_falls_back_to_loopback() {
+        let mut map = make_test_map();
+        map.insert("BIND_ADDR".to_string(), "not-an-ip".to_string());
+        let config = Config::from_map(&map).unwrap();
+        // Parse, don't validate: invalid input degrades to the safe default.
+        assert_eq!(config.bind_addr, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_host_alone_is_ignored_dead_config() {
+        // HOST=0.0.0.0 with NO BIND_ADDR must NOT expose the listener.
+        // HOST is legacy dead config — it never controlled the bind.
+        let mut map = make_test_map();
+        map.insert("HOST".to_string(), "0.0.0.0".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert_eq!(config.bind_addr, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_bind_addr_takes_precedence_over_host() {
+        let mut map = make_test_map();
+        map.insert("HOST".to_string(), "0.0.0.0".to_string());
+        map.insert("BIND_ADDR".to_string(), "127.0.0.1".to_string());
+        let config = Config::from_map(&map).unwrap();
+        // BIND_ADDR wins; HOST is ignored entirely.
+        assert_eq!(config.bind_addr, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_normalize_bind_addr_helper() {
+        assert_eq!(Config::normalize_bind_addr("0.0.0.0"), "0.0.0.0");
+        assert_eq!(Config::normalize_bind_addr("127.0.0.1"), "127.0.0.1");
+        assert_eq!(Config::normalize_bind_addr("::1"), "::1");
+        // Invalid -> safe fallback.
+        assert_eq!(Config::normalize_bind_addr("garbage"), "127.0.0.1");
+        assert_eq!(Config::normalize_bind_addr(""), "127.0.0.1");
     }
 }

@@ -30,6 +30,11 @@ pub struct Cli {
     #[arg(short, long, value_name = "PORT")]
     pub port: Option<u16>,
 
+    /// Bind address to listen on (overrides BIND_ADDR env var).
+    /// Default: 127.0.0.1 (loopback-only). Use 0.0.0.0 to expose on all interfaces (opt-in).
+    #[arg(long, value_name = "ADDR")]
+    pub bind: Option<String>,
+
     /// Run as background daemon
     #[arg(long)]
     pub daemon: bool,
