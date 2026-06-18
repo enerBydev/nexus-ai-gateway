@@ -157,15 +157,17 @@ impl Config {
     }
 
     /// Validate and normalize a bind address (Issue #78).
-    /// Parses the value as an `IpAddr`; on failure logs a warning and falls back
-    /// to the safe loopback default `127.0.0.1` (parse, don't validate).
+    /// Parses the value as an `IpAddr`; on failure warns and falls back to the safe
+    /// loopback default `127.0.0.1` (parse, don't validate).
+    /// Uses `eprintln!` (not `tracing`) because this runs during config construction,
+    /// before the tracing subscriber is initialized — otherwise the warning is lost.
     pub(crate) fn normalize_bind_addr(raw: &str) -> String {
         let trimmed = raw.trim();
         match trimmed.parse::<std::net::IpAddr>() {
             Ok(_) => trimmed.to_string(),
             Err(_) => {
-                tracing::warn!(
-                    "Invalid BIND_ADDR='{}' — not a valid IP address. Falling back to 127.0.0.1 (loopback-only).",
+                eprintln!(
+                    "[WARN] Invalid BIND_ADDR='{}' is not a valid IP address; falling back to 127.0.0.1 (loopback-only).",
                     trimmed
                 );
                 "127.0.0.1".to_string()
@@ -189,8 +191,10 @@ impl Config {
     /// present without `BIND_ADDR`, warn the operator (it never controlled the bind).
     fn resolve_bind_addr(bind_addr_raw: Option<String>, host_raw: Option<String>) -> String {
         if bind_addr_raw.is_none() && host_raw.is_some() {
-            tracing::warn!(
-                "HOST is deprecated and ignored — it never controlled the listener. \
+            // eprintln! (not tracing): emitted during config construction, before the
+            // tracing subscriber exists. OSS users migrating with HOST set must see this.
+            eprintln!(
+                "[WARN] HOST is deprecated and ignored; it never controlled the listener. \
                  Use BIND_ADDR instead (defaulting to 127.0.0.1). \
                  Set BIND_ADDR=0.0.0.0 to expose on all interfaces."
             );

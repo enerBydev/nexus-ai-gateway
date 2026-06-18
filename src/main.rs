@@ -374,11 +374,19 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Issue #78: warn loudly when reachable beyond localhost so exposure is never silent.
+    // The warning escalates when no ALLOWED_IPS is configured (fully open proxy).
     if !addr.ip().is_loopback() {
-        tracing::warn!(
-            "[WARN]  NEXUS is bound to {addr} — reachable beyond localhost. Configure your \
-             firewall and/or ALLOWED_IPS to restrict who can reach this proxy."
-        );
+        if allowlist_configured {
+            tracing::warn!(
+                "[WARN]  NEXUS is bound to {addr} (reachable beyond localhost); access restricted by ALLOWED_IPS."
+            );
+        } else {
+            tracing::warn!(
+                "[WARN]  NEXUS is bound to {addr} with NO ALLOWED_IPS set - ANY host that can reach this \
+                 address may use the proxy (and spend your upstream API credits). Set ALLOWED_IPS and/or add \
+                 a firewall rule (scripts/harden-firewall.sh)."
+            );
+        }
     }
 
     tracing::info!("Listening on {}", addr);
