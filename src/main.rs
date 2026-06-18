@@ -1,3 +1,4 @@
+mod access_control;
 mod circuit_breaker;
 mod cli;
 mod config;
@@ -123,6 +124,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     }
     if let Some(port) = cli.port {
         config.port = port;
+    }
+    // Issue #78: --bind overrides BIND_ADDR env (validated; invalid -> loopback).
+    if let Some(bind) = cli.bind.clone() {
+        config.bind_addr = Config::normalize_bind_addr(&bind);
     }
 
     let log_level = if config.verbose {
@@ -283,6 +288,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let cli_debug = config.debug;
     let cli_verbose = config.verbose;
     let cli_port = Some(config.port);
+    // Issue #78: preserve the startup-resolved bind across reloads (socket is bound once).
+    let cli_bind = Some(config.bind_addr.clone());
 
     let config: SharedConfig = Arc::new(arc_swap::ArcSwap::from(Arc::new(config)));
 
@@ -328,8 +335,51 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .layer(Extension(telemetry_ctx.clone()))
         .layer(cors);
 
-    let addr = format!("0.0.0.0:{}", config.clone().load().port); // v0.11.0 (CR-04)
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    // Issue #78 (Solution B): optional IP allowlist (defense-in-depth).
+    // Read directly from env, mirroring the CORS pattern above. The opt-in is based on
+    // whether ALLOWED_IPS is *set*, not on whether it parses to entries: if it is set but
+    // yields no valid entries, we FAIL CLOSED (mount the middleware -> loopback-only)
+    // rather than silently allowing everyone. When unset, the bind address governs.
+    let raw_allowed_ips = std::env::var("ALLOWED_IPS").unwrap_or_default();
+    let allowlist = access_control::IpAllowlist::parse(&raw_allowed_ips);
+    let allowlist_configured = !raw_allowed_ips.trim().is_empty();
+    let app = if !allowlist_configured {
+        tracing::info!(
+            "Access control: ALLOWED_IPS not set — all client IPs allowed (bind address governs exposure)"
+        );
+        app
+    } else {
+        if allowlist.is_empty() {
+            tracing::warn!(
+                "Access control: ALLOWED_IPS is set but no valid CIDR/IP entries parsed — enforcing loopback-only until fixed"
+            );
+        }
+        tracing::info!(
+            "Access control: ALLOWED_IPS active — {} network(s) permitted (loopback always allowed)",
+            allowlist.len()
+        );
+        app.layer(axum::middleware::from_fn_with_state(
+            allowlist,
+            access_control::ip_allowlist_middleware,
+        ))
+    };
+
+    // Issue #78: bind to the configured address (default 127.0.0.1, opt-in 0.0.0.0)
+    // instead of the previously hardcoded 0.0.0.0 (v0.11.0 CR-04). Build a typed
+    // SocketAddr so IPv6 binds (e.g. [::1]) are formatted correctly.
+    let addr = {
+        let cfg = config.load();
+        Config::resolve_socket_addr(&cfg.bind_addr, cfg.port)?
+    };
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Issue #78: warn loudly when reachable beyond localhost so exposure is never silent.
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            "[WARN]  NEXUS is bound to {addr} — reachable beyond localhost. Configure your \
+             firewall and/or ALLOWED_IPS to restrict who can reach this proxy."
+        );
+    }
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Proxy ready to accept requests");
@@ -348,6 +398,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let reload_in_progress = Arc::new(AtomicBool::new(false));
     let reload_flag_sighup = reload_in_progress.clone();
     let reload_flag_watcher = reload_in_progress.clone();
+    // Issue #78: per-closure clones of the startup-resolved bind for reload() calls.
+    let cli_bind_sighup = cli_bind.clone();
+    let cli_bind_watcher = cli_bind.clone();
     tokio::spawn(async move {
         let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
         loop {
@@ -367,7 +420,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 continue;
             }
             let reload_path = reload_config.load().config_path.clone();
-            match Config::reload(cli_debug, cli_verbose, cli_port, reload_path) {
+            match Config::reload(
+                cli_debug,
+                cli_verbose,
+                cli_port,
+                cli_bind_sighup.clone(),
+                reload_path,
+            ) {
                 Ok(new_config) => {
                     let old_maps = reload_config.load().model_map.len();
                     reload_config.store(Arc::new(new_config));
@@ -503,7 +562,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
                     tracing::info!("🔄 .env changed — auto-reloading config...");
                     let reload_path = watch_config.load().config_path.clone();
-                    match Config::reload(cli_debug, cli_verbose, cli_port, reload_path) {
+                    match Config::reload(
+                        cli_debug,
+                        cli_verbose,
+                        cli_port,
+                        cli_bind_watcher.clone(),
+                        reload_path,
+                    ) {
                         Ok(new_config) => {
                             let old_maps = watch_config.load().model_map.len();
                             watch_config.store(Arc::new(new_config));

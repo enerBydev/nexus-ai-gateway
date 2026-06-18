@@ -159,6 +159,8 @@ These behaviors are intentional and should not be changed:
 | `NEXUS_UPSTREAM_TYPE` | `nim` | Upstream type: `anthropic`, `nim`, `openai`, `openrouter` |
 | `UPSTREAM_<NAME>_TYPE` | (falls back to `NEXUS_UPSTREAM_TYPE`) | Per-upstream type override. `<NAME>` matches the upstream name (e.g., `UPSTREAM_BIGMODEL_TYPE=anthropic`). Overrides global `NEXUS_UPSTREAM_TYPE` for that upstream |
 | `PORT` | `8315` | Server port |
+| `BIND_ADDR` | `127.0.0.1` | Listener bind address (Issue #78). `0.0.0.0` exposes on all interfaces (opt-in; warns when non-loopback). Legacy `HOST` is deprecated/ignored. Overridable via `--bind` |
+| `ALLOWED_IPS` | (none) | Optional comma-separated CIDR/IP allowlist (defense-in-depth). Empty = allow all; loopback always allowed |
 | `DEBUG` | `false` | Enable debug logging |
 | `VERBOSE` | `false` | Full request/response logging |
 | `CC_CONTEXT_WINDOW` | `200000` | Context window size for auto-compact calibration |

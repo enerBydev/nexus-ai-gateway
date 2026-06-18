@@ -182,6 +182,8 @@ flowchart TB
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8315` | HTTP server port |
+| `BIND_ADDR` | `127.0.0.1` | Listener bind address (loopback-only by default). Set `0.0.0.0` to expose on all interfaces (opt-in). Also `--bind`. Legacy `HOST` is deprecated/ignored |
+| `ALLOWED_IPS` | — | Optional comma-separated CIDR/IP allowlist (defense-in-depth). Empty = allow all; loopback always allowed |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:8315` | Comma-separated allowed origins |
 
 #### Model Routing

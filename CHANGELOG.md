@@ -8,8 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `BIND_ADDR` env var + `--bind` CLI flag — configurable listener bind address (default `127.0.0.1`, loopback-only) (#108, #78)
+- `ALLOWED_IPS` env var — optional per-request IP allowlist middleware (defense-in-depth); loopback always allowed (#108)
+- `scripts/harden-firewall.sh` — idempotent explicit UFW rule for the proxy port (`--dry-run`, `--allow-lan <cidr>`) (#108)
+- systemd `RestrictAddressFamilies` network hardening in `scripts/nexus-ai-gateway.service` (#108)
 
 ### Changed
+- **Security (bind hardening):** the listener now defaults to `127.0.0.1` (loopback-only) instead of the previously hardcoded `0.0.0.0`. The proxy is no longer reachable from the LAN unless `BIND_ADDR=0.0.0.0` is set explicitly (opt-in), which also logs a warning. Mitigates unauthenticated LAN exposure (#78). The legacy `HOST` variable is deprecated and ignored (warns when set without `BIND_ADDR`).
 
 ### Fixed
 

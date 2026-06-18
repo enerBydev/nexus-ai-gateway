@@ -267,11 +267,14 @@ fn reload_accepts_config_path_parameter() {
     // this test won't compile, catching the regression early.
     // We can't call reload() without a valid env, but we verify
     // the function exists with the right parameter count by type-checking.
+    // The verbose fn-pointer type is the whole point of this assertion helper.
+    #[allow(clippy::type_complexity)]
     fn _assert_reload_signature(
         _f: fn(
             bool,
             bool,
             Option<u16>,
+            Option<String>,
             Option<std::path::PathBuf>,
         ) -> anyhow::Result<crate::config::Config>,
     ) {
@@ -292,6 +295,7 @@ fn config_has_config_path_field() {
     // Build a minimal config to verify config_path field exists
     let config = Config {
         port: 8315,
+        bind_addr: "127.0.0.1".to_string(),
         base_url: "http://localhost:11434".to_string(),
         api_key: None,
         reasoning_model: None,
@@ -338,6 +342,7 @@ fn config_path_defaults_to_none() {
 
     let config = Config {
         port: 8315,
+        bind_addr: "127.0.0.1".to_string(),
         base_url: "http://localhost:11434".to_string(),
         api_key: None,
         reasoning_model: None,
@@ -438,7 +443,7 @@ fn reload_preserves_custom_config_path() {
         writeln!(f, "UPSTREAM_API_KEY=test-key").unwrap();
     }
 
-    let cfg = Config::reload(false, false, None, Some(path.clone()))
+    let cfg = Config::reload(false, false, None, None, Some(path.clone()))
         .expect("reload with a custom config path should succeed");
 
     assert_eq!(
