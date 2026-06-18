@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.0] - 2026-06-18
+
+### Added
+- Default bind to 127.0.0.1 + optional IP allowlist (#108, #78)
+
+### Changed
+- Document BIND_ADDR/ALLOWED_IPS + network exposure model (#108, #78)
+- Systemd network hardening + explicit firewall script (#108)
+
+### Fixed
+- IPv6-safe bind + fail-closed ALLOWED_IPS (CodeRabbit #109)
+
+### Security
+- IPv6-safe bind + fail-closed ALLOWED_IPS (CodeRabbit #109)
+- Document BIND_ADDR/ALLOWED_IPS + network exposure model (#108, #78)
+- Systemd network hardening + explicit firewall script (#108)
+- Default bind to 127.0.0.1 + optional IP allowlist (#108, #78)
+
+---
+
 ## [0.21.2] - 2026-06-17
 
 ### Changed
