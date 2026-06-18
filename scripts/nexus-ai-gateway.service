@@ -38,5 +38,21 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/tmp %h/.local/share/nexus-ai-gateway
 
+# Network hardening (Issue #78)
+# Restrict socket families to IPv4/IPv6/Unix — blocks raw/packet/netlink sockets
+# while preserving normal TCP traffic and local DNS resolution (nss/resolved).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+#
+# NOTE: We deliberately DO NOT set `IPAddressDeny=any`. systemd IP address filtering
+# is bidirectional — it would also block this proxy's OUTBOUND connections to the
+# upstream API (e.g. NVIDIA NIM) and the telemetry beacon, breaking all traffic.
+# Inbound exposure is governed instead by:
+#   - BIND_ADDR (default 127.0.0.1, loopback-only)         — application layer
+#   - scripts/harden-firewall.sh (explicit UFW rule)        — host firewall
+#   - ALLOWED_IPS (optional per-request allowlist)          — middleware
+# If you pin a STATIC upstream IP you may additionally enable strict egress, e.g.:
+#   IPAddressDeny=any
+#   IPAddressAllow=localhost <upstream-cidr>
+
 [Install]
 WantedBy=default.target
