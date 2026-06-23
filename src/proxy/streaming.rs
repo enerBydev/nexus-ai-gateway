@@ -107,6 +107,8 @@ pub(crate) async fn handle_streaming(
         cc_context_window, // Issue #28: resolved dynamically
         _circuit_breaker,
         shutdown_token,
+        config.clone(),
+        client.clone(),
     );
 
     let mut headers = HeaderMap::new();
@@ -131,6 +133,10 @@ pub(crate) fn create_sse_stream(
     cc_context_window: u32, // Issue #28: resolved dynamically
     _circuit_breaker: &crate::proxy::concurrency::CircuitBreaker,
     shutdown_token: CancellationToken,
+    // Issue #64/#65 (Solution A): shared HTTP client + config so the streaming WebFetch
+    // interceptor can delegate to web_fetch::execute_fetch() (validated, UTF-8-safe).
+    config: Arc<Config>,
+    client: Client,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         tracing::debug!(
@@ -280,6 +286,39 @@ pub(crate) fn create_sse_stream(
                         for l in line.lines() {
                             if let Some(data) = l.strip_prefix("data: ") {
                                 if data.trim() == "[DONE]" {
+                                    // Issue #64/#65/A1: flush a pending WebFetch interception. With NIM the
+                                    // finish_reason branch is not reliably reached after a web_fetch tool_call,
+                                    // so without this the interception is abandoned and the model gets nothing
+                                    // (A1). Execute it here via execute_fetch (validated + UTF-8-safe) and emit
+                                    // the content as a self-contained text block. The is_intercepting_fetch
+                                    // guard makes this idempotent with the finish_reason path.
+                                    if is_intercepting_fetch {
+                                        let fetch_url = web_fetch::extract_url_from_raw(&fetch_args_buffer).unwrap_or_default();
+                                        let fetch_result = if fetch_url.is_empty() || !fetch_url.starts_with("http") {
+                                            "Error: Could not extract valid URL".to_string()
+                                        } else {
+                                            tracing::info!("[WebFetch/Stream] Executing fetch for: {} (flushed at [DONE])", fetch_url);
+                                            web_fetch::execute_fetch(&client, &fetch_url, &config)
+                                                .await
+                                                .unwrap_or_else(|e| format!("Error fetching {}: {}", fetch_url, e))
+                                        };
+                                        tracing::info!("[WebFetch/Stream] Fetched {} chars (flushed at [DONE])", fetch_result.len());
+                                        if current_block_type.is_some() {
+                                            let ev = json!({"type": "content_block_stop", "index": content_index});
+                                            yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                            content_index += 1;
+                                        }
+                                        let ev = json!({"type": "content_block_start", "index": content_index, "content_block": {"type": "text", "text": ""}});
+                                        yield Ok(Bytes::from(format!("event: content_block_start\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                        let ev = json!({"type": "content_block_delta", "index": content_index, "delta": {"type": "text_delta", "text": format!("[Fetched content from {}]\n\n{}", fetch_url, fetch_result)}});
+                                        yield Ok(Bytes::from(format!("event: content_block_delta\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                        let ev = json!({"type": "content_block_stop", "index": content_index});
+                                        yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                        content_index += 1;
+                                        current_block_type = None;
+                                        is_intercepting_fetch = false;
+                                        suppressed_block_start = false;
+                                    }
                                     if let Some(ref stop) = saved_stop_reason {
                                         let scaled_delta = scale_token_usage(accumulated_input_tokens, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
                                         let delta_event = json!({
@@ -561,6 +600,12 @@ pub(crate) fn create_sse_stream(
                                                             serde_json::to_string(&event).unwrap_or_default());
                                                         yield Ok(Bytes::from(sse_data));
                                                         content_index += 1;
+                                                        // A5 fix (Issue #64/#65 empirical): reset block state after
+                                                        // closing. Without this, current_block_type stays stale (e.g.
+                                                        // "thinking") and the subsequent WebFetch/text emit double-
+                                                        // closes this already-closed block, emitting an orphan
+                                                        // content_block_stop that CC rejects as "Content block not found".
+                                                        current_block_type = None;
                                                     }
                                                     // Issue #90: sanitize at the source so both the
                                                     // emitted tool_use.id and the web_fetch buffer are valid.
@@ -638,36 +683,18 @@ pub(crate) fn create_sse_stream(
                                                 let fetch_url = web_fetch::extract_url_from_raw(&fetch_args_buffer)
                                                     .unwrap_or_default();
 
+                                                // Issue #64 + #65 (Solution A): delegate to the shared, validated,
+                                                // UTF-8-safe execute_fetch() instead of an ad-hoc client. This
+                                                // inherits is_url_safe() + DNS-aware SSRF guard (no more #64 bypass)
+                                                // and safe_truncate() (no more #65 byte-slice panic), and honors
+                                                // config timeout / content-type handling — mirroring non_streaming.
                                                 let fetch_result = if fetch_url.is_empty() || !fetch_url.starts_with("http") {
                                                     "Error: Could not extract valid URL".to_string()
                                                 } else {
                                                     tracing::info!("[WebFetch/Stream] Executing fetch for: {}", fetch_url);
-                                                    let fetch_client = reqwest::Client::builder()
-                                                        .timeout(std::time::Duration::from_secs(15))
-                                                        .build()
-                                                        .unwrap_or_else(|_| reqwest::Client::new());
-
-                                                    match fetch_client
-                                                        .get(&fetch_url)
-                                                        .header("User-Agent", "Mozilla/5.0")
-                                                        .send()
+                                                    web_fetch::execute_fetch(&client, &fetch_url, &config)
                                                         .await
-                                                    {
-                                                        Ok(resp) => {
-                                                            match resp.text().await {
-                                                                Ok(body) => {
-                                                                    let text = web_fetch::strip_html_tags(&body);
-                                                                    if text.len() > 200_000 {
-                                                                        format!("{}\n\n[Content truncated]", &text[..200_000])
-                                                                    } else {
-                                                                        text
-                                                                    }
-                                                                }
-                                                                Err(e) => format!("Error reading response: {}", e),
-                                                            }
-                                                        }
-                                                        Err(e) => format!("Error fetching {}: {}", fetch_url, e),
-                                                    }
+                                                        .unwrap_or_else(|e| format!("Error fetching {}: {}", fetch_url, e))
                                                 };
 
                                                 tracing::info!("[WebFetch/Stream] Fetched {} chars", fetch_result.len());
