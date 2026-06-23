@@ -20,6 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.23.0] - 2026-06-23
+
+### Added
+- DNS-aware SSRF guard in WebFetch (Solution B, #64)
+
+### Changed
+- Bump quinn-proto 0.11.14 -> 0.11.15 (RUSTSEC-2026-0185)
+
+### Fixed
+- Address CodeRabbit review (PR #114)
+- Panic hook + effective systemd crash-loop limit (C, #72)
+- Converge WebFetch to execute_fetch + flush at [DONE] (#64/#65/A1/A5)
+
+### Security
+- Address CodeRabbit review (PR #114)
+- DNS-aware SSRF guard in WebFetch (Solution B, #64)
+
+---
+
 ## [0.22.1] - 2026-06-18
 
 ### Fixed
