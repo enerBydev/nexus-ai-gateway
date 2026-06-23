@@ -127,11 +127,17 @@ async fn verify_host_resolves_public(url: &str) -> Result<(), String> {
     }
 
     // Hostname: resolve and verify EVERY returned address is public.
+    // CodeRabbit: bound the DNS lookup so a slow/unresponsive authoritative nameserver
+    // (attacker-controlled, since fetches are model-driven) cannot stall the request path.
     let port = parsed.port_or_known_default().unwrap_or(80);
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| format!("DNS resolution failed for '{host}': {e}"))?
-        .collect();
+    let addrs: Vec<std::net::SocketAddr> = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| format!("DNS resolution timed out for '{host}'"))?
+    .map_err(|e| format!("DNS resolution failed for '{host}': {e}"))?
+    .collect();
     if addrs.is_empty() {
         return Err(format!("'{host}' resolved to no addresses"));
     }

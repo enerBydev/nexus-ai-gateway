@@ -318,6 +318,14 @@ pub(crate) fn create_sse_stream(
                                         current_block_type = None;
                                         is_intercepting_fetch = false;
                                         suppressed_block_start = false;
+                                        // CodeRabbit: when the finish_reason branch never ran (the common NIM
+                                        // web_fetch case), saved_stop_reason is None and the terminal
+                                        // message_delta (stop_reason + scaled usage) below would be skipped.
+                                        // Set it so the stream ends with a proper message_delta, matching the
+                                        // non-streaming contract.
+                                        if saved_stop_reason.is_none() {
+                                            saved_stop_reason = Some("end_turn".to_string());
+                                        }
                                     }
                                     if let Some(ref stop) = saved_stop_reason {
                                         let scaled_delta = scale_token_usage(accumulated_input_tokens, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
