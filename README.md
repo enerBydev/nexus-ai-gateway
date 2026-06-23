@@ -175,7 +175,14 @@ flowchart TB
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `UPSTREAM_BASE_URL` | — | OpenAI-compatible API endpoint |
-| `UPSTREAM_API_KEY` | — | Authentication key for upstream (or `OPENROUTER_API_KEY`) |
+| `UPSTREAM_API_KEY` | — | Authentication key for upstream (or `OPENROUTER_API_KEY`). Also loadable from a file via `UPSTREAM_API_KEY_FILE` |
+
+> **Secret from file (Issue #115):** any API-key variable accepts a `*_FILE` sibling
+> (`UPSTREAM_API_KEY_FILE`, `OPENROUTER_API_KEY_FILE`, `UPSTREAM_BIGMODEL_API_KEY_FILE`,
+> `UPSTREAM_CF_API_KEY_FILE`) pointing at a file whose trimmed contents are the secret —
+> ideal for Docker/Kubernetes secrets and systemd `LoadCredential=`. The direct value
+> wins when both are set; an empty/unreadable file is warned and ignored. See
+> [SECURITY.md](SECURITY.md#secret-management--_file-convention-issue-115).
 
 #### Server
 

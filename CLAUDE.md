@@ -150,12 +150,15 @@ These behaviors are intentional and should not be changed:
 
 12. **Telemetry always-on BY DESIGN** — Telemetry is enabled by default (v0.19.0+). Local SQLite analytics with HMAC-SHA256 fingerprinting (instance-specific secret) runs without configuration. Daily beacon to CF Worker sends only aggregated stats (zero PII). Users can disable with `TELEMETRY_ENABLED=false` or `TELEMETRY_BEACON_URL=""`.
 
+13. **`*_FILE` secret resolution BY DESIGN** (Issue #115) — `resolve_secret()` lets any API key (`UPSTREAM_API_KEY`, `OPENROUTER_API_KEY`, `UPSTREAM_BIGMODEL_API_KEY`, `UPSTREAM_CF_API_KEY`) be loaded from a file via a `*_FILE` sibling. Precedence: non-empty direct value > trimmed file contents > `None`. Empty/unreadable files warn and fall through (never abort — another source may cover). Both load paths (`from_map` hot-reload, `from_env_with_path` startup) call it, so behavior is identical on startup and reload. Uses `eprintln!` (config built before tracing exists) and never logs the secret — only the path.
+
 ## Key Environment Variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `UPSTREAM_BASE_URL` | (required) | Upstream API endpoint URL |
-| `UPSTREAM_API_KEY` | (required) | API key for upstream service |
+| `UPSTREAM_API_KEY` | (required) | API key for upstream service. Also loadable from a file via `UPSTREAM_API_KEY_FILE` (Issue #115) |
+| `<KEY>_FILE` | (none) | Load any API key from a file (trimmed contents). Applies to `UPSTREAM_API_KEY`, `OPENROUTER_API_KEY`, `UPSTREAM_BIGMODEL_API_KEY`, `UPSTREAM_CF_API_KEY`. Direct value wins when both set; empty/unreadable file warns and is ignored. Same behavior at startup and on hot-reload |
 | `NEXUS_UPSTREAM_TYPE` | `nim` | Upstream type: `anthropic`, `nim`, `openai`, `openrouter` |
 | `UPSTREAM_<NAME>_TYPE` | (falls back to `NEXUS_UPSTREAM_TYPE`) | Per-upstream type override. `<NAME>` matches the upstream name (e.g., `UPSTREAM_BIGMODEL_TYPE=anthropic`). Overrides global `NEXUS_UPSTREAM_TYPE` for that upstream |
 | `PORT` | `8315` | Server port |
