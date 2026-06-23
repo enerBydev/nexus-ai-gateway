@@ -3,16 +3,20 @@ Description=NEXUS-AI-Gateway — Anthropic-to-NIM Proxy
 Documentation=https://github.com/enerBydev/nexus-ai-gateway
 After=network-online.target
 Wants=network-online.target
+# Crash-loop protection (Issue #72): StartLimit* are honored ONLY in [Unit], not in
+# [Service] (systemd silently ignores them there). Stop restarting after 5 failed
+# starts within 300s instead of looping forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=%h/.cargo/bin/nexus-ai-gateway
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
-RestartSec=3
-# Prevent restart loops: 5 failures in 60s = stop trying
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# Issue #72: 10s recovery delay (was 3s) so a recurring crash trigger cannot spin a
+# tight restart loop. Pairs with StartLimit* in [Unit] above.
+RestartSec=10
 # Graceful shutdown: only kill main process, let it drain connections
 KillMode=process
 # Aligned with DRAIN_TIMEOUT_SECS=30 + 15s margin

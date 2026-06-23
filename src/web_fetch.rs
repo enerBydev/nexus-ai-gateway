@@ -79,22 +79,74 @@ fn is_url_safe(url: &str) -> bool {
     true
 }
 
-/// Check if an IP address is in RFC1918 private ranges
-#[allow(dead_code)]
+/// True if `ip` is loopback, unspecified, private (RFC1918/ULA), link-local/CGNAT, or
+/// otherwise unsafe to fetch from (SSRF guard, Issue #64). IPv4-mapped IPv6 (e.g.
+/// `::ffff:127.0.0.1`) is canonicalized to its IPv4 form first so it cannot bypass the check.
 fn is_private_ip(ip: IpAddr) -> bool {
-    let private_ranges: &[&str] = &[
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "127.0.0.0/8",
-        "169.254.0.0/16",
-        "::1/128",
-        "fc00::/7",
-        "fe80::/10",
+    // Canonicalize IPv4-mapped IPv6 to IPv4 (defeats `::ffff:<private>` bypass).
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    };
+    if ip.is_loopback() || ip.is_unspecified() {
+        return true;
+    }
+    const BLOCKED: &[&str] = &[
+        "0.0.0.0/8",      // "this network"
+        "10.0.0.0/8",     // RFC1918
+        "100.64.0.0/10",  // CGNAT (RFC6598)
+        "127.0.0.0/8",    // loopback
+        "169.254.0.0/16", // link-local / cloud metadata (AWS/GCP/Azure)
+        "172.16.0.0/12",  // RFC1918
+        "192.168.0.0/16", // RFC1918
+        "::1/128",        // IPv6 loopback
+        "fc00::/7",       // IPv6 unique local (ULA)
+        "fe80::/10",      // IPv6 link-local
     ];
-    private_ranges
-        .iter()
-        .any(|cidr| cidr.parse::<ipnet::IpNet>().is_ok_and(|net| net.contains(&ip)))
+    BLOCKED.iter().any(|cidr| cidr.parse::<ipnet::IpNet>().is_ok_and(|net| net.contains(&ip)))
+}
+
+/// DNS-aware SSRF defense (Issue #64): resolve the URL host and reject if any resolved
+/// address is private/loopback/link-local. Closes the DNS-rebinding and numeric-encoding
+/// bypasses that the string-prefix `is_url_safe()` cannot catch (e.g. a public domain that
+/// resolves to `127.0.0.1`, or `127-0-0-1.nip.io`).
+///
+/// Note: a strict TOCTOU gap remains between resolve and connect; for the proxy's threat
+/// model (model-driven fetches) this DNS check plus `is_url_safe()` is a strong mitigation.
+async fn verify_host_resolves_public(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    let host = parsed.host_str().ok_or_else(|| "URL has no host".to_string())?;
+
+    // Host is an IP literal (IPv4 or IPv6): validate directly, no DNS needed.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return if is_private_ip(ip) {
+            Err(format!("host is a private/loopback IP ({ip})"))
+        } else {
+            Ok(())
+        };
+    }
+
+    // Hostname: resolve and verify EVERY returned address is public.
+    // CodeRabbit: bound the DNS lookup so a slow/unresponsive authoritative nameserver
+    // (attacker-controlled, since fetches are model-driven) cannot stall the request path.
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<std::net::SocketAddr> = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| format!("DNS resolution timed out for '{host}'"))?
+    .map_err(|e| format!("DNS resolution failed for '{host}': {e}"))?
+    .collect();
+    if addrs.is_empty() {
+        return Err(format!("'{host}' resolved to no addresses"));
+    }
+    for addr in &addrs {
+        if is_private_ip(addr.ip()) {
+            return Err(format!("'{host}' resolves to private/loopback IP {}", addr.ip()));
+        }
+    }
+    Ok(())
 }
 
 /// Ejecuta HTTP GET y devuelve contenido como texto
@@ -113,11 +165,21 @@ pub async fn execute_fetch(
         )));
     }
 
-    // v0.11.0 (CR-05): SSRF protection — block internal/metadata IPs
+    // v0.11.0 (CR-05): SSRF protection — fast string pre-filter (internal/metadata hosts).
     if !is_url_safe(url) {
         tracing::warn!("[GUARD] SSRF blocked: {}", url);
         return Err(ProxyError::WebFetch(format!(
             "URL blocked by security policy (internal/metadata address): {}",
+            url
+        )));
+    }
+
+    // Issue #64: DNS-aware SSRF guard — resolve the host and reject private/loopback IPs.
+    // Closes DNS rebinding and numeric-encoding bypasses the string filter above misses.
+    if let Err(reason) = verify_host_resolves_public(url).await {
+        tracing::warn!("[GUARD] SSRF blocked ({}): {}", reason, url);
+        return Err(ProxyError::WebFetch(format!(
+            "URL blocked by security policy (resolves to internal address): {}",
             url
         )));
     }
@@ -402,5 +464,46 @@ mod tests {
         // Public IPs should be allowed
         assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+    }
+
+    // Issue #64: extended SSRF coverage — encodings, IPv6, IPv4-mapped, CGNAT, link-local.
+    #[test]
+    fn test_private_ip_extended_vectors() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        // Unspecified / "this network"
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        // Link-local / cloud metadata
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        // CGNAT
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+        // IPv6 ULA + link-local
+        assert!(is_private_ip("fc00::1".parse().unwrap()));
+        assert!(is_private_ip("fe80::1".parse().unwrap()));
+        // IPv4-mapped IPv6 of a loopback address must be caught (canonicalization)
+        assert!(is_private_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("::ffff:10.0.0.1".parse().unwrap()));
+        // Public IPv4-mapped is still public
+        assert!(!is_private_ip("::ffff:8.8.8.8".parse().unwrap()));
+        // Public IPv6
+        assert!(!is_private_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_verify_host_resolves_public_blocks_internal() {
+        // IP literals (no DNS)
+        assert!(verify_host_resolves_public("http://127.0.0.1/admin").await.is_err());
+        assert!(verify_host_resolves_public("http://169.254.169.254/latest/").await.is_err());
+        assert!(verify_host_resolves_public("http://[::1]:8080/").await.is_err());
+        assert!(verify_host_resolves_public("http://0.0.0.0/").await.is_err());
+        // Hostname that resolves to loopback (reliable via /etc/hosts, no external network)
+        assert!(verify_host_resolves_public("http://localhost:8899/poison").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_host_resolves_public_allows_public_ip_literals() {
+        // Public IP literals resolve fine without DNS.
+        assert!(verify_host_resolves_public("http://8.8.8.8/").await.is_ok());
+        assert!(verify_host_resolves_public("https://1.1.1.1/").await.is_ok());
     }
 }

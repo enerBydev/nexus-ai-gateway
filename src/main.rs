@@ -51,6 +51,24 @@ pub static SHUTDOWN_TOKEN: std::sync::LazyLock<CancellationToken> =
     std::sync::LazyLock::new(CancellationToken::new);
 
 fn main() -> anyhow::Result<()> {
+    // Issue #72/#65: log the panic payload + location before the process aborts.
+    // Cargo.toml sets panic="abort", so any panic kills the whole process with no
+    // diagnostic by default. eprintln! (not tracing) because the subscriber may not be
+    // initialized when the panic fires.
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        eprintln!("[PANIC] NEXUS panicked at {location}: {msg}");
+    }));
+
     let cli = Cli::parse();
 
     if let Some(command) = cli.command {
