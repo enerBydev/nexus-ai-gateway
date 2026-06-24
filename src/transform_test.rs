@@ -764,4 +764,80 @@ mod tests {
             "chat_template_kwargs should NOT be present when upstream is Anthropic even if global is NIM"
         );
     }
+
+    // ── Issue #105: model family fallback for unmapped newer CC ids ──
+    fn family_map() -> HashMap<String, ModelRoute> {
+        let mut m = HashMap::new();
+        m.insert(
+            "claude-opus-4-5".to_string(),
+            ModelRoute { upstream_name: "default".into(), target_model: "old/opus".into() },
+        );
+        m.insert(
+            "claude-opus-4-6".to_string(),
+            ModelRoute { upstream_name: "default".into(), target_model: "z-ai/glm-5.1".into() },
+        );
+        m.insert(
+            "claude-sonnet-4-6".to_string(),
+            ModelRoute {
+                upstream_name: "default".into(),
+                target_model: "moonshotai/kimi-k2.6".into(),
+            },
+        );
+        m
+    }
+
+    #[test]
+    fn model_tier_detects_known_families() {
+        use crate::transform::model_tier;
+        assert_eq!(model_tier("claude-opus-4-8"), Some("opus"));
+        assert_eq!(model_tier("claude-sonnet-4-5"), Some("sonnet"));
+        assert_eq!(model_tier("claude-haiku-4-5"), Some("haiku"));
+        assert_eq!(model_tier("claude-3-opus-20240229"), Some("opus"));
+        // Constrained to real claude ids (Issue #105 / CodeRabbit): no false positives.
+        assert_eq!(model_tier("gpt-4o"), None);
+        assert_eq!(model_tier("some-sonnet-engine"), None, "non-claude id must not reroute");
+        assert_eq!(model_tier("CLAUDE-OPUS-4-8"), Some("opus"), "case-insensitive");
+    }
+
+    #[test]
+    fn family_fallback_routes_unmapped_opus_to_newest_configured_opus() {
+        use crate::transform::best_family_match;
+        let map = family_map();
+        let (matched, route) =
+            best_family_match("claude-opus-4-8", &map).expect("opus family must match");
+        assert_eq!(matched, "claude-opus-4-6", "should prefer the lexically-newest opus");
+        assert_eq!(route.target_model, "z-ai/glm-5.1");
+    }
+
+    #[test]
+    fn family_fallback_routes_unmapped_sonnet_to_configured_sonnet() {
+        use crate::transform::best_family_match;
+        let map = family_map();
+        let (matched, route) =
+            best_family_match("claude-sonnet-4-5", &map).expect("sonnet family must match");
+        assert_eq!(matched, "claude-sonnet-4-6");
+        assert_eq!(route.target_model, "moonshotai/kimi-k2.6");
+    }
+
+    #[test]
+    fn family_fallback_none_for_unknown_tier() {
+        use crate::transform::best_family_match;
+        assert!(best_family_match("gpt-4o", &family_map()).is_none());
+    }
+
+    #[test]
+    fn family_fallback_prefers_clean_version_over_dated_snapshot() {
+        use crate::transform::best_family_match;
+        let mut map = HashMap::new();
+        map.insert(
+            "claude-opus-4-20250115".to_string(),
+            ModelRoute { upstream_name: "default".into(), target_model: "dated/opus".into() },
+        );
+        map.insert(
+            "claude-opus-4-6".to_string(),
+            ModelRoute { upstream_name: "default".into(), target_model: "z-ai/glm-5.1".into() },
+        );
+        let (matched, _) = best_family_match("claude-opus-4-8", &map).unwrap();
+        assert_eq!(matched, "claude-opus-4-6", "clean dotted version sorts above dated snapshot");
+    }
 }
