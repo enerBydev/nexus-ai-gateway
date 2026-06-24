@@ -53,16 +53,29 @@ pub static SHUTDOWN_TOKEN: std::sync::LazyLock<CancellationToken> =
 /// Format the crash diagnostic emitted by the panic hook (Issue #72). Kept as a pure
 /// function so it can be unit-tested — the hook itself cannot be, because Cargo.toml sets
 /// `panic="abort"`, which aborts the test process before any assertion runs.
-fn format_panic_report(location: &str, msg: &str, backtrace: &str) -> String {
-    format!("[PANIC] NEXUS panicked at {location}: {msg}\n[PANIC] backtrace:\n{backtrace}")
+///
+/// `backtrace` is `None` unless a trace was actually captured (see the hook), so the
+/// production binary logs a clean `location: message` line with no empty backtrace block.
+fn format_panic_report(location: &str, msg: &str, backtrace: Option<&str>) -> String {
+    match backtrace {
+        Some(bt) => {
+            format!("[PANIC] NEXUS panicked at {location}: {msg}\n[PANIC] backtrace:\n{bt}")
+        }
+        None => format!("[PANIC] NEXUS panicked at {location}: {msg}"),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
-    // Issue #72/#65: log the panic payload + location + backtrace before the process
-    // aborts. Cargo.toml sets panic="abort", so any panic kills the whole process with no
-    // diagnostic by default. eprintln! (not tracing) because the subscriber may not be
-    // initialized when the panic fires. force_capture() always captures a trace regardless
-    // of RUST_BACKTRACE, so a crash is never left unexplained.
+    // Issue #72/#65: log the panic payload + location (+ backtrace when available) before
+    // the process aborts. Cargo.toml sets panic="abort", so any panic kills the whole
+    // process with no diagnostic by default. eprintln! (not tracing) because the subscriber
+    // may not be initialized when the panic fires.
+    //
+    // The release binary is stripped (Cargo.toml: strip=true) for size, so symbolized
+    // backtrace frames only resolve in a debug build. We therefore use Backtrace::capture()
+    // (which honors RUST_BACKTRACE) and append the backtrace section only when one was
+    // actually captured — the panic location+message (a #[track_caller] literal) stays
+    // useful even in the stripped production binary, with no wall of "<unknown>" frames.
     std::panic::set_hook(Box::new(|info| {
         let location = info
             .location()
@@ -74,8 +87,10 @@ fn main() -> anyhow::Result<()> {
             .map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<non-string panic payload>".to_string());
-        let backtrace = std::backtrace::Backtrace::force_capture().to_string();
-        eprintln!("{}", format_panic_report(&location, &msg, &backtrace));
+        let backtrace = std::backtrace::Backtrace::capture();
+        let rendered = (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
+            .then(|| backtrace.to_string());
+        eprintln!("{}", format_panic_report(&location, &msg, rendered.as_deref()));
     }));
 
     let cli = Cli::parse();
@@ -949,18 +964,22 @@ mod panic_report_tests {
     use super::format_panic_report;
 
     #[test]
-    fn report_includes_location_message_and_backtrace() {
-        let out = format_panic_report("src/foo.rs:10:5", "boom", "0: alpha_frame\n1: beta_frame");
+    fn report_with_backtrace_appends_section() {
+        let out =
+            format_panic_report("src/foo.rs:10:5", "boom", Some("0: alpha_frame\n1: beta_frame"));
         assert!(out.contains("src/foo.rs:10:5"), "location missing: {out}");
         assert!(out.contains("boom"), "message missing: {out}");
-        assert!(out.contains("alpha_frame"), "backtrace missing: {out}");
+        assert!(out.contains("[PANIC] backtrace:"), "backtrace header missing: {out}");
+        assert!(out.contains("alpha_frame"), "backtrace body missing: {out}");
         assert!(out.starts_with("[PANIC] NEXUS panicked at"), "prefix missing: {out}");
     }
 
     #[test]
-    fn force_capture_backtrace_is_nonempty() {
-        // Proves the crash-diagnostic mechanism is available in this build profile.
-        let bt = std::backtrace::Backtrace::force_capture().to_string();
-        assert!(!bt.is_empty());
+    fn report_without_backtrace_is_single_line() {
+        // Production path (stripped binary, no RUST_BACKTRACE): location + message only,
+        // with no empty "backtrace:" block.
+        let out = format_panic_report("src/foo.rs:10:5", "boom", None);
+        assert_eq!(out, "[PANIC] NEXUS panicked at src/foo.rs:10:5: boom");
+        assert!(!out.contains("backtrace"), "should have no backtrace section: {out}");
     }
 }
