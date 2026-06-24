@@ -139,9 +139,39 @@ pub(crate) async fn resilient_send(
         let status = response.status();
 
         if status.is_success() {
+            // Issue #119: read the body first so a degenerate/empty 200 (which NIM returns
+            // when input+max_tokens leave no room) becomes a clear, non-retriable
+            // ContextOverflow (400 -> /compact) instead of an opaque
+            // "502 HTTP error: error decoding response body".
+            let body = response.bytes().await?;
+            let resp: openai::OpenAIResponse = serde_json::from_slice(&body).map_err(|e| {
+                let body_str = String::from_utf8_lossy(&body);
+                let preview = crate::str_utils::safe_truncate(&body_str, 300);
+                tracing::error!(
+                    "[DECODE] non-streaming 200 body undecodable: {e} | body: {preview}"
+                );
+                ProxyError::ContextOverflow(
+                    "Upstream returned an undecodable response (likely empty — the context is \
+                     too full to leave room for output). Use /compact to reduce context."
+                        .to_string(),
+                )
+            })?;
+            if resp.choices.is_empty() {
+                tracing::warn!(
+                    "[DECODE] non-streaming upstream returned empty choices (degenerate 200 — \
+                     context too full for model {})",
+                    openai_req.model
+                );
+                return Err(ProxyError::ContextOverflow(
+                    "Upstream returned an empty response (no choices) — the request left no room \
+                     for output. Use /compact to reduce context."
+                        .to_string(),
+                ));
+            }
+            // Only a genuinely usable body counts as success (Issue #119): record health and
+            // clear overflow history AFTER validation — never on a degenerate/empty 200.
             circuit_breaker.record_success(generation).await;
             OverflowLoopTracker::reset_tracker(&openai_req.model);
-            let resp: openai::OpenAIResponse = response.json().await?;
             if attempt > 1 {
                 tracing::info!("🔄 Request succeeded on attempt #{}", attempt);
             }

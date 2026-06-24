@@ -527,8 +527,9 @@ pub fn openai_to_anthropic(
         stop_reason,
         stop_sequence: None,
         usage: {
-            let raw_input = resp.usage.prompt_tokens;
-            let raw_output = resp.usage.completion_tokens;
+            // Issue #119: usage is now Option (degenerate NIM 200s omit it). Default to 0.
+            let raw_input = resp.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
+            let raw_output = resp.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0);
             if let Some(params) = scaling {
                 let scaled = crate::proxy::token_scaling::scale_token_usage(
                     raw_input,

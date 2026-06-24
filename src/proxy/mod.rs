@@ -122,6 +122,50 @@ pub(crate) fn get_overflow_threshold_pct() -> u32 {
         .unwrap_or(90)
 }
 
+/// Issue #107/#119: minimum output budget that makes a request worth sending. When the
+/// input leaves less than this inside the safe zone, the request is hopeless and is
+/// rejected early instead of being sent to fail expensively (or return a degenerate
+/// empty 200 that the non-streaming path can't decode).
+pub(crate) const MIN_USEFUL_OUTPUT: u32 = 8192;
+
+/// Outcome of the context pre-check.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PreCheck {
+    /// Request fits inside the safe zone as-is.
+    Ok,
+    /// Clamp `max_tokens` to this value (leaves headroom below the context limit).
+    Clamp { safe_output: u32, safe_zone: u32 },
+    /// Reject — input alone leaves less than `MIN_USEFUL_OUTPUT` inside the safe zone.
+    Reject { safe_zone: u32 },
+}
+
+/// Decide how to handle a request given its estimated input, requested output, the
+/// upstream context limit, and the overflow threshold percentage (Issue #107/#119).
+///
+/// The safe zone is `context_limit * pct%`. We clamp the output so `input + output` stays
+/// inside it (leaving headroom — NIM returns a degenerate empty 200 when the total reaches
+/// ~98%+ of the limit, verified empirically), and reject outright when the input is so
+/// large that no useful output budget remains.
+pub(crate) fn context_precheck(
+    estimated_input: u32,
+    requested_output: u32,
+    context_limit: u32,
+    threshold_pct: u32,
+) -> PreCheck {
+    let safe_zone = ((context_limit as u64 * threshold_pct as u64) / 100) as u32;
+    if estimated_input.saturating_add(MIN_USEFUL_OUTPUT) > safe_zone {
+        return PreCheck::Reject { safe_zone };
+    }
+    if estimated_input.saturating_add(requested_output) > safe_zone {
+        // max_fit >= MIN_USEFUL_OUTPUT here (otherwise we'd have rejected above), so the
+        // min/max chain never inverts and never panics like `clamp` would.
+        let safe_output =
+            safe_zone.saturating_sub(estimated_input).min(requested_output).max(MIN_USEFUL_OUTPUT);
+        return PreCheck::Clamp { safe_output, safe_zone };
+    }
+    PreCheck::Ok
+}
+
 /// Resolve the raw CC context window without system overhead.
 /// Priority order:
 /// 1. CC_MODEL_CONTEXT_WINDOWS per-model mapping (highest priority)
@@ -282,19 +326,33 @@ pub async fn proxy_handler(
     let estimated_input = tokenizer::estimate_from_openai_request(&openai_req);
     let requested_output = openai_req.max_tokens.unwrap_or(64000);
 
-    if estimated_input + requested_output > context_limit {
-        // Use 256-token safety margin to account for tiktoken vs NIM tokenizer differences
-        let safe_output =
-            context_limit.saturating_sub(estimated_input).saturating_sub(256).clamp(1024, 64000);
-        tracing::warn!(
-            "[WARN] Pre-check: ~{}tok + {}tok > {}tok (model={}, tiktoken). Clamping -> {}",
-            estimated_input,
-            requested_output,
-            context_limit,
-            openai_req.model,
-            safe_output
-        );
-        openai_req.max_tokens = Some(safe_output);
+    // Issue #107/#119: leave headroom inside the context limit and reject hopeless
+    // requests early (a near-full context makes NIM return a degenerate empty 200 that
+    // the non-streaming path can't decode -> opaque 502).
+    let threshold_pct = get_overflow_threshold_pct();
+    match context_precheck(estimated_input, requested_output, context_limit, threshold_pct) {
+        PreCheck::Reject { safe_zone } => {
+            // Report the output budget actually left after the input, not the safe-zone total.
+            let remaining_output = safe_zone.saturating_sub(estimated_input);
+            tracing::warn!(
+                "[WARN] Pre-check REJECT: ~{}tok input leaves {}tok < {}tok min output (safe zone {} = {}% of {}, model={}). Returning /compact error.",
+                estimated_input, remaining_output, MIN_USEFUL_OUTPUT, safe_zone, threshold_pct, context_limit, openai_req.model
+            );
+            return Err(ProxyError::ContextOverflow(format!(
+                "Context window nearly full: ~{} input tokens leave only {} tokens for output \
+                 (fewer than the {} minimum; model limit {}, usable {}). Use /compact to reduce \
+                 context, or switch to a larger-context model.",
+                estimated_input, remaining_output, MIN_USEFUL_OUTPUT, context_limit, safe_zone
+            )));
+        }
+        PreCheck::Clamp { safe_output, safe_zone } => {
+            tracing::warn!(
+                "[WARN] Pre-check: ~{}tok + {}tok > safe zone {} ({}% of {}, model={}). Clamping -> {} (headroom preserved)",
+                estimated_input, requested_output, safe_zone, threshold_pct, context_limit, openai_req.model, safe_output
+            );
+            openai_req.max_tokens = Some(safe_output);
+        }
+        PreCheck::Ok => {}
     }
 
     if config.verbose {
@@ -825,5 +883,64 @@ mod keepalive_interval_tests {
     fn test_keepalive_interval_is_30s() {
         // Verify the constant is accessible and correct
         assert_eq!(KEEPALIVE_INTERVAL_SECS, 30);
+    }
+}
+
+#[cfg(test)]
+mod precheck_tests {
+    use super::{context_precheck, PreCheck, MIN_USEFUL_OUTPUT};
+
+    // glm-5.1 limit; safe_zone @90% = 182476.
+    const LIMIT: u32 = 202752;
+
+    #[test]
+    fn rejects_when_input_leaves_no_useful_output() {
+        // 190000 + 8192 > 182476 -> hopeless (Issue #107).
+        assert_eq!(
+            context_precheck(190_000, 64_000, LIMIT, 90),
+            PreCheck::Reject { safe_zone: 182_476 }
+        );
+    }
+
+    #[test]
+    fn clamps_with_headroom_for_panthera_case() {
+        // The exact failing case: 149379 input + 64000 requested. Clamp to the safe zone,
+        // leaving ~10% headroom (was filling to 99.9% -> degenerate empty 200).
+        assert_eq!(
+            context_precheck(149_379, 64_000, LIMIT, 90),
+            PreCheck::Clamp { safe_output: 33_097, safe_zone: 182_476 }
+        );
+    }
+
+    #[test]
+    fn clamp_caps_at_max_fit_not_requested() {
+        // input 150000 + requested 40000 = 190000 > safe_zone -> clamp to 32476 (max fit).
+        assert_eq!(
+            context_precheck(150_000, 40_000, LIMIT, 90),
+            PreCheck::Clamp { safe_output: 32_476, safe_zone: 182_476 }
+        );
+    }
+
+    #[test]
+    fn ok_when_request_fits_inside_safe_zone() {
+        assert_eq!(context_precheck(10_000, 4_000, LIMIT, 90), PreCheck::Ok);
+    }
+
+    #[test]
+    fn small_requested_below_min_useful_does_not_panic_and_is_ok() {
+        // requested (4000) < MIN_USEFUL_OUTPUT but the total fits -> Ok, no clamp/panic.
+        assert!(4_000 < MIN_USEFUL_OUTPUT);
+        assert_eq!(context_precheck(170_000, 4_000, LIMIT, 90), PreCheck::Ok);
+    }
+
+    #[test]
+    fn degenerate_empty_200_body_decodes_with_optional_usage() {
+        // Issue #119: NIM's near-full-context degenerate 200. Must decode (usage Option)
+        // so the empty-choices guard can turn it into a clear ContextOverflow error.
+        let body = r#"{"id":"","choices":[],"created":0,"model":"","service_tier":null,"system_fingerprint":null,"object":"chat.completion","usage":null}"#;
+        let resp: crate::models::openai::OpenAIResponse =
+            serde_json::from_str(body).expect("degenerate body must decode with Option usage");
+        assert!(resp.choices.is_empty(), "guard relies on empty choices");
+        assert!(resp.usage.is_none(), "usage:null must decode to None");
     }
 }

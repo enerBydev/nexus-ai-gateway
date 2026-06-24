@@ -285,7 +285,11 @@ pub struct OpenAIResponse {
     pub created: u64,
     pub model: String,
     pub choices: Vec<Choice>,
-    pub usage: Usage,
+    // Issue #119: degenerate NIM responses (near-full context) send `"usage":null`.
+    // Optional + default so the body still decodes; the empty-`choices` guard in
+    // resilient_send turns it into a clear ContextOverflow error.
+    #[serde(default)]
+    pub usage: Option<Usage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
 }
