@@ -156,6 +156,41 @@ impl Config {
         map.get(key).cloned()
     }
 
+    /// Resolve a secret using the `*_FILE` convention (Issue #115).
+    /// Precedence: a non-empty `direct` value > the trimmed contents of the file at
+    /// `file_path` > `None`. Bridges Docker/Kubernetes secrets, systemd `LoadCredential`
+    /// and Vault Agent, which all expose secrets as files.
+    ///
+    /// Empty files and read errors warn and fall through (never abort — another source
+    /// may cover). Uses `eprintln!` because config is built before the tracing subscriber
+    /// exists (lesson from #78), and never logs the secret itself — only the path.
+    fn resolve_secret(direct: Option<String>, file_path: Option<String>) -> Option<String> {
+        if let Some(v) = direct.filter(|s| !s.is_empty()) {
+            if file_path.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                eprintln!(
+                    "[WARN] both a direct secret and its *_FILE were set; using the direct value"
+                );
+            }
+            return Some(v);
+        }
+        let path = file_path.filter(|p| !p.trim().is_empty())?;
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let secret = content.trim().to_string();
+                if secret.is_empty() {
+                    eprintln!("[WARN] secret file '{path}' is empty; ignoring");
+                    None
+                } else {
+                    Some(secret)
+                }
+            }
+            Err(e) => {
+                eprintln!("[WARN] could not read secret file '{path}': {e}");
+                None
+            }
+        }
+    }
+
     /// Validate and normalize a bind address (Issue #78).
     /// Parses the value as an `IpAddr`; on failure warns and falls back to the safe
     /// loopback default `127.0.0.1` (parse, don't validate).
@@ -260,9 +295,17 @@ impl Config {
             )
         })?;
 
-        let api_key = Self::get_from_map(data, "UPSTREAM_API_KEY")
-            .or_else(|| Self::get_from_map(data, "OPENROUTER_API_KEY"))
-            .filter(|k| !k.is_empty());
+        // Issue #115: support the *_FILE convention (direct value > _FILE > none).
+        let api_key = Self::resolve_secret(
+            Self::get_from_map(data, "UPSTREAM_API_KEY"),
+            Self::get_from_map(data, "UPSTREAM_API_KEY_FILE"),
+        )
+        .or_else(|| {
+            Self::resolve_secret(
+                Self::get_from_map(data, "OPENROUTER_API_KEY"),
+                Self::get_from_map(data, "OPENROUTER_API_KEY_FILE"),
+            )
+        });
 
         let reasoning_model = Self::get_from_map(data, "REASONING_MODEL");
         let completion_model = Self::get_from_map(data, "COMPLETION_MODEL");
@@ -313,7 +356,10 @@ impl Config {
                 "bigmodel".to_string(),
                 UpstreamConfig {
                     base_url: bm_url,
-                    api_key: Self::get_from_map(data, "UPSTREAM_BIGMODEL_API_KEY"),
+                    api_key: Self::resolve_secret(
+                        Self::get_from_map(data, "UPSTREAM_BIGMODEL_API_KEY"),
+                        Self::get_from_map(data, "UPSTREAM_BIGMODEL_API_KEY_FILE"),
+                    ),
                     upstream_type: bm_type,
                 },
             );
@@ -330,7 +376,10 @@ impl Config {
                 "cf".to_string(),
                 UpstreamConfig {
                     base_url: cf_url,
-                    api_key: Self::get_from_map(data, "UPSTREAM_CF_API_KEY"),
+                    api_key: Self::resolve_secret(
+                        Self::get_from_map(data, "UPSTREAM_CF_API_KEY"),
+                        Self::get_from_map(data, "UPSTREAM_CF_API_KEY_FILE"),
+                    ),
                     upstream_type: cf_type,
                 },
             );
@@ -619,10 +668,17 @@ impl Config {
             )
         })?;
 
-        let api_key = env::var("UPSTREAM_API_KEY")
-            .or_else(|_| env::var("OPENROUTER_API_KEY"))
-            .ok()
-            .filter(|k| !k.is_empty());
+        // Issue #115: support the *_FILE convention (direct value > _FILE > none).
+        let api_key = Self::resolve_secret(
+            env::var("UPSTREAM_API_KEY").ok(),
+            env::var("UPSTREAM_API_KEY_FILE").ok(),
+        )
+        .or_else(|| {
+            Self::resolve_secret(
+                env::var("OPENROUTER_API_KEY").ok(),
+                env::var("OPENROUTER_API_KEY_FILE").ok(),
+            )
+        });
 
         let reasoning_model = env::var("REASONING_MODEL").ok();
         let completion_model = env::var("COMPLETION_MODEL").ok();
@@ -670,7 +726,10 @@ impl Config {
                 "bigmodel".to_string(),
                 UpstreamConfig {
                     base_url: bm_url,
-                    api_key: env::var("UPSTREAM_BIGMODEL_API_KEY").ok(),
+                    api_key: Self::resolve_secret(
+                        env::var("UPSTREAM_BIGMODEL_API_KEY").ok(),
+                        env::var("UPSTREAM_BIGMODEL_API_KEY_FILE").ok(),
+                    ),
                     upstream_type: bm_type,
                 },
             );
@@ -687,7 +746,10 @@ impl Config {
                 "cf".to_string(),
                 UpstreamConfig {
                     base_url: cf_url,
-                    api_key: env::var("UPSTREAM_CF_API_KEY").ok(),
+                    api_key: Self::resolve_secret(
+                        env::var("UPSTREAM_CF_API_KEY").ok(),
+                        env::var("UPSTREAM_CF_API_KEY_FILE").ok(),
+                    ),
                     upstream_type: cf_type,
                 },
             );
@@ -1250,5 +1312,88 @@ mod tests {
     #[test]
     fn test_resolve_socket_addr_invalid_errors() {
         assert!(Config::resolve_socket_addr("not-an-ip", 8315).is_err());
+    }
+
+    // =========================================================================
+    // Issue #115: *_FILE secret resolution
+    // =========================================================================
+
+    #[test]
+    fn test_resolve_secret_direct_value() {
+        assert_eq!(Config::resolve_secret(Some("k".into()), None), Some("k".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_secret_direct_wins_over_file() {
+        // A non-empty direct value wins even if a (here, nonexistent) file is given.
+        assert_eq!(
+            Config::resolve_secret(Some("direct".into()), Some("/no/such/file".into())),
+            Some("direct".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_secret_reads_and_trims_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-secret-{}-{}.txt",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "  file-secret\n\n").unwrap();
+        let got = Config::resolve_secret(None, Some(path.to_string_lossy().to_string()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got, Some("file-secret".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_secret_empty_file_is_none() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-secret-empty-{}-{}.txt",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "   \n").unwrap();
+        let got = Config::resolve_secret(None, Some(path.to_string_lossy().to_string()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn test_resolve_secret_missing_file_and_all_none() {
+        assert_eq!(Config::resolve_secret(None, Some("/no/such/file/xyz".into())), None);
+        assert_eq!(Config::resolve_secret(None, None), None);
+        // Empty direct + empty file path both degrade to None.
+        assert_eq!(Config::resolve_secret(Some(String::new()), Some(String::new())), None);
+    }
+
+    #[test]
+    fn test_from_map_loads_api_key_from_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-upstream-key-{}-{}.txt",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "secret-from-file\n").unwrap();
+        let mut map = make_test_map();
+        map.remove("UPSTREAM_API_KEY"); // only the _FILE variant present
+        map.insert("UPSTREAM_API_KEY_FILE".to_string(), path.to_string_lossy().to_string());
+        let config = Config::from_map(&map).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(config.api_key, Some("secret-from-file".to_string()));
+    }
+
+    #[test]
+    fn test_from_map_direct_key_wins_over_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-upstream-key2-{}-{}.txt",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "from-file\n").unwrap();
+        let mut map = make_test_map(); // has UPSTREAM_API_KEY=test-key
+        map.insert("UPSTREAM_API_KEY_FILE".to_string(), path.to_string_lossy().to_string());
+        let config = Config::from_map(&map).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(config.api_key, Some("test-key".to_string()));
     }
 }
