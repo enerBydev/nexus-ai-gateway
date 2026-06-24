@@ -139,8 +139,6 @@ pub(crate) async fn resilient_send(
         let status = response.status();
 
         if status.is_success() {
-            circuit_breaker.record_success(generation).await;
-            OverflowLoopTracker::reset_tracker(&openai_req.model);
             // Issue #119: read the body first so a degenerate/empty 200 (which NIM returns
             // when input+max_tokens leave no room) becomes a clear, non-retriable
             // ContextOverflow (400 -> /compact) instead of an opaque
@@ -170,6 +168,10 @@ pub(crate) async fn resilient_send(
                         .to_string(),
                 ));
             }
+            // Only a genuinely usable body counts as success (Issue #119): record health and
+            // clear overflow history AFTER validation — never on a degenerate/empty 200.
+            circuit_breaker.record_success(generation).await;
+            OverflowLoopTracker::reset_tracker(&openai_req.model);
             if attempt > 1 {
                 tracing::info!("🔄 Request succeeded on attempt #{}", attempt);
             }

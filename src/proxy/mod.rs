@@ -332,15 +332,17 @@ pub async fn proxy_handler(
     let threshold_pct = get_overflow_threshold_pct();
     match context_precheck(estimated_input, requested_output, context_limit, threshold_pct) {
         PreCheck::Reject { safe_zone } => {
+            // Report the output budget actually left after the input, not the safe-zone total.
+            let remaining_output = safe_zone.saturating_sub(estimated_input);
             tracing::warn!(
-                "[WARN] Pre-check REJECT: ~{}tok input leaves < {}tok usable output (safe zone {} = {}% of {}, model={}). Returning /compact error.",
-                estimated_input, MIN_USEFUL_OUTPUT, safe_zone, threshold_pct, context_limit, openai_req.model
+                "[WARN] Pre-check REJECT: ~{}tok input leaves {}tok < {}tok min output (safe zone {} = {}% of {}, model={}). Returning /compact error.",
+                estimated_input, remaining_output, MIN_USEFUL_OUTPUT, safe_zone, threshold_pct, context_limit, openai_req.model
             );
             return Err(ProxyError::ContextOverflow(format!(
-                "Context window nearly full: ~{} input tokens leave fewer than {} tokens for \
-                 output (model limit {}, usable {}). Use /compact to reduce context, or switch \
-                 to a larger-context model.",
-                estimated_input, MIN_USEFUL_OUTPUT, context_limit, safe_zone
+                "Context window nearly full: ~{} input tokens leave only {} tokens for output \
+                 (fewer than the {} minimum; model limit {}, usable {}). Use /compact to reduce \
+                 context, or switch to a larger-context model.",
+                estimated_input, remaining_output, MIN_USEFUL_OUTPUT, context_limit, safe_zone
             )));
         }
         PreCheck::Clamp { safe_output, safe_zone } => {
