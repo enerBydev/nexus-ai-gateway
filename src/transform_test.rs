@@ -514,11 +514,11 @@ mod tests {
                 },
                 finish_reason: Some("stop".to_string()),
             }],
-            usage: crate::models::openai::Usage {
+            usage: Some(crate::models::openai::Usage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
-            },
+            }),
         };
 
         // Test with None scaling - should pass through raw tokens
@@ -550,11 +550,11 @@ mod tests {
                 },
                 finish_reason: Some("stop".to_string()),
             }],
-            usage: crate::models::openai::Usage {
+            usage: Some(crate::models::openai::Usage {
                 prompt_tokens: 50000,
                 completion_tokens: 4000,
                 total_tokens: 54000,
-            },
+            }),
         };
 
         // Test with scaling parameters that trigger Branch 1 (context_limit < cc_context_window)
@@ -592,11 +592,11 @@ mod tests {
                 },
                 finish_reason: Some("stop".to_string()),
             }],
-            usage: crate::models::openai::Usage {
+            usage: Some(crate::models::openai::Usage {
                 prompt_tokens: 100000,
                 completion_tokens: 4000,
                 total_tokens: 104000,
-            },
+            }),
         };
 
         // Test with scaling parameters that trigger Branch 2 (context_limit >= cc_context_window)

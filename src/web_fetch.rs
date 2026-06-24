@@ -215,21 +215,21 @@ pub async fn execute_fetch(
     // Si es JSON, devolver raw
     if content_type.contains("application/json") {
         let truncated = truncate_content(&body);
-        tracing::info!("[WebFetch] JSON response: {} chars", truncated.len());
+        tracing::info!("[WebFetch] JSON response: {} bytes", truncated.len());
         return Ok(truncated);
     }
 
     // Si es texto plano, devolver raw
     if content_type.contains("text/plain") {
         let truncated = truncate_content(&body);
-        tracing::info!("[WebFetch] Plain text: {} chars", truncated.len());
+        tracing::info!("[WebFetch] Plain text: {} bytes", truncated.len());
         return Ok(truncated);
     }
 
     // Si es HTML, strip tags
     let text = strip_html_tags(&body);
     let truncated = truncate_content(&text);
-    tracing::info!("[WebFetch] HTML->text: {} -> {} chars", body.len(), truncated.len());
+    tracing::info!("[WebFetch] HTML->text: {} -> {} bytes", body.len(), truncated.len());
     Ok(truncated)
 }
 
