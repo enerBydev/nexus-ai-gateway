@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.1] - 2026-06-24
+
+### Fixed
+- Gate panic backtrace behind capture() (#72)
+- Capture backtrace in panic hook (#72)
+
+---
+
 ## [0.24.0] - 2026-06-24
 
 ### Added
