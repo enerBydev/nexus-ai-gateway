@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.4] - 2026-06-24
+
+### Fixed
+- Constrain model_tier to real claude ids (#105)
+- Family fallback for unmapped Claude model ids (#105)
+
+---
+
 ## [0.24.3] - 2026-06-24
 
 ### Fixed
