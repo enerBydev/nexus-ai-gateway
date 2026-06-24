@@ -19,6 +19,59 @@ pub(crate) fn chunk_timeout_secs() -> u64 {
 }
 pub(crate) const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
 
+/// Compute the clamped `max_tokens` for a retry on a clampable (`Fixable`) upstream error.
+///
+/// Issue #62: single source of truth for the retry-clamp decision that previously lived
+/// duplicated in both the non-streaming (`resilient_send`) and streaming
+/// (`resilient_send_raw`) loops — keeping one copy prevents the two from drifting (the
+/// asymmetry this issue tracked, already unified for behavior by Issue #34 M9).
+///
+/// On an `input_tokens overflow` the safe limit is extracted from the NIM message and
+/// reduced by a growing safety margin (NIM re-tokenization adds ~257 tokens per retry from
+/// chat-template expansion); otherwise it falls back to halving. `current_max` is the
+/// caller's current `max_tokens`; `stream_label` is "" or "[stream] " for log parity.
+fn clamp_max_tokens_for_retry(
+    status: reqwest::StatusCode,
+    reason: &str,
+    message: &str,
+    current_max: u32,
+    attempt: u32,
+    stream_label: &str,
+) -> u32 {
+    if reason.contains("input_tokens overflow") {
+        if let Some(safe) = extract_safe_max_tokens_from_error(message) {
+            // Growing safety margin to absorb NIM re-tokenization drift (~257 tokens/retry).
+            // The 1024 floor is intentionally below MIN_CLAMP_TOKENS: `safe` is already
+            // floored at MIN_CLAMP_TOKENS inside extract_safe_max_tokens_from_error, so the
+            // margin must be allowed to push the result below it; otherwise a near-full
+            // context (safe ≈ MIN_CLAMP) would retry at ~the same value and re-overflow.
+            // This sub-floor gives the re-tokenization margin real headroom to fit.
+            let margin = 2048 + (attempt * 1024);
+            let safe_with_margin = safe.saturating_sub(margin).max(1024);
+            tracing::warn!(
+                "🔧 {}input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens -> {}",
+                stream_label, attempt, MAX_RETRIES, safe, margin, safe_with_margin
+            );
+            safe_with_margin
+        } else {
+            (current_max / 2).max(MIN_CLAMP_TOKENS)
+        }
+    } else {
+        let halved = (current_max / 2).max(MIN_CLAMP_TOKENS);
+        tracing::warn!(
+            "🔧 {}{} [{}] (attempt {}/{}): clamping max_tokens {} -> {}",
+            stream_label,
+            status.as_u16(),
+            reason,
+            attempt,
+            MAX_RETRIES,
+            current_max,
+            halved
+        );
+        halved
+    }
+}
+
 /// Resilient send for non-streaming: returns parsed OpenAI response.
 /// Auto-retries on 429 (rate limit) with exponential backoff.
 /// Auto-clamps max_tokens on 400 (too large) and retries.
@@ -212,35 +265,16 @@ pub(crate) async fn resilient_send(
                         )));
                     }
                 }
-                // Issue #34 M9: Precise extraction (unified with streaming path)
-                let new_max = if reason.contains("input_tokens overflow") {
-                    if let Some(safe) = extract_safe_max_tokens_from_error(&upstream_err.message) {
-                        let margin = 2048 + (attempt * 1024);
-                        let safe_with_margin = safe.saturating_sub(margin).max(1024);
-                        tracing::warn!(
-                            "🔧 input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens -> {}",
-                            attempt, MAX_RETRIES, safe, margin, safe_with_margin
-                        );
-                        safe_with_margin
-                    } else {
-                        let current = openai_req.max_tokens.unwrap_or(64000);
-                        (current / 2).max(MIN_CLAMP_TOKENS)
-                    }
-                } else {
-                    let current = openai_req.max_tokens.unwrap_or(64000);
-                    let halved = (current / 2).max(MIN_CLAMP_TOKENS);
-                    tracing::warn!(
-                        "🔧 {} [{}] (attempt {}/{}): clamping max_tokens {} -> {}",
-                        status.as_u16(),
-                        reason,
-                        attempt,
-                        MAX_RETRIES,
-                        current,
-                        halved
-                    );
-                    halved
-                };
-                openai_req.max_tokens = Some(new_max);
+                // Issue #34 M9 / #62: precise extraction unified across both retry paths.
+                let current = openai_req.max_tokens.unwrap_or(64000);
+                openai_req.max_tokens = Some(clamp_max_tokens_for_retry(
+                    status,
+                    reason,
+                    &upstream_err.message,
+                    current,
+                    attempt,
+                    "",
+                ));
                 continue;
             }
             ErrorClass::Fatal { reason } => {
@@ -456,41 +490,16 @@ pub(crate) async fn resilient_send_raw(
                         )));
                     }
                 }
-                // v10.2: For input_tokens overflow, calculate exact safe max_tokens
-                let new_max = if reason.contains("input_tokens overflow") {
-                    if let Some(safe) = crate::proxy::classify::extract_safe_max_tokens_from_error(
-                        &upstream_err.message,
-                    ) {
-                        // v0.11.0: Subtract safety margin to absorb NIM re-tokenization drift
-                        // NIM adds ~257 tokens per retry (chat template expansion).
-                        // Without margin: attempt1=63743, NIM says input=139010 (+257) -> fail
-                        // With margin: attempt1=61695, NIM says input=139010 -> still fits
-                        let margin = 2048 + (attempt * 1024); // Growing margin per retry
-                        let safe_with_margin = safe.saturating_sub(margin).max(1024);
-                        tracing::warn!(
-                            "🔧 [stream] input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens -> {}",
-                            attempt, MAX_RETRIES, safe, margin, safe_with_margin
-                        );
-                        safe_with_margin
-                    } else {
-                        let current = openai_req.max_tokens.unwrap_or(64000);
-                        (current / 2).max(MIN_CLAMP_TOKENS)
-                    }
-                } else {
-                    let current = openai_req.max_tokens.unwrap_or(64000);
-                    let halved = (current / 2).max(MIN_CLAMP_TOKENS);
-                    tracing::warn!(
-                        "🔧 [stream] {} [{}] (attempt {}/{}): clamping max_tokens {} -> {}",
-                        status.as_u16(),
-                        reason,
-                        attempt,
-                        MAX_RETRIES,
-                        current,
-                        halved
-                    );
-                    halved
-                };
-                openai_req.max_tokens = Some(new_max);
+                // Issue #34 M9 / #62: precise extraction unified across both retry paths.
+                let current = openai_req.max_tokens.unwrap_or(64000);
+                openai_req.max_tokens = Some(clamp_max_tokens_for_retry(
+                    status,
+                    reason,
+                    &upstream_err.message,
+                    current,
+                    attempt,
+                    "[stream] ",
+                ));
                 continue;
             }
             ErrorClass::Fatal { reason } => {
@@ -563,5 +572,89 @@ mod anthropic_header_tests {
 
         assert!(beta.contains("prompt-caching-scope-2026-01-05"));
         assert!(beta.contains("compact-2026-01-12"));
+    }
+}
+
+#[cfg(test)]
+mod clamp_max_tokens_tests {
+    use super::clamp_max_tokens_for_retry;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn non_overflow_halves_above_floor() {
+        let got = clamp_max_tokens_for_retry(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit",
+            "",
+            64000,
+            1,
+            "",
+        );
+        assert_eq!(got, 32000);
+    }
+
+    #[test]
+    fn halving_respects_min_clamp_floor() {
+        // 5000 / 2 = 2500 -> floored to MIN_CLAMP_TOKENS (4096). Stream label is cosmetic.
+        let got = clamp_max_tokens_for_retry(
+            StatusCode::BAD_REQUEST,
+            "too_large",
+            "",
+            5000,
+            1,
+            "[stream] ",
+        );
+        assert_eq!(got, 4096);
+    }
+
+    #[test]
+    fn overflow_uses_precise_extraction_not_halving() {
+        // input=100000, limit=200000 -> safe=99744; attempt=1 margin=3072 -> 96672.
+        let msg = "You passed 100000 input tokens and requested 64000 output tokens. \
+                   However, the model's context length is only 200000 tokens";
+        let got = clamp_max_tokens_for_retry(
+            StatusCode::BAD_REQUEST,
+            "input_tokens overflow",
+            msg,
+            64000,
+            1,
+            "",
+        );
+        assert_eq!(got, 96672, "must use precise extraction, not crude halving");
+        assert_ne!(got, 32000, "crude halving (64000/2) would be wrong here");
+    }
+
+    #[test]
+    fn overflow_without_parseable_message_falls_back_to_halving() {
+        let got = clamp_max_tokens_for_retry(
+            StatusCode::BAD_REQUEST,
+            "input_tokens overflow",
+            "no parseable numbers here",
+            64000,
+            2,
+            "",
+        );
+        assert_eq!(got, 32000);
+    }
+
+    #[test]
+    fn overflow_margin_may_clamp_below_min_clamp_floor() {
+        // Intentional (regression guard): `safe` is already floored at MIN_CLAMP_TOKENS by
+        // extraction, so the re-tokenization margin is allowed to push the retry BELOW
+        // MIN_CLAMP (floor is 1024, not MIN_CLAMP_TOKENS) to actually fit a near-full
+        // context. input=126976, limit=131072 -> safe=max(3840,4096)=4096; attempt=2 ->
+        // margin=4096 -> 4096-4096=0 -> floored to 1024. Raising this floor to MIN_CLAMP
+        // would make the retry request ~the same budget and re-overflow.
+        let msg = "You passed 126976 input tokens and requested 64000 output tokens. \
+                   However, the model's context length is only 131072 tokens";
+        let got = clamp_max_tokens_for_retry(
+            StatusCode::BAD_REQUEST,
+            "input_tokens overflow",
+            msg,
+            64000,
+            2,
+            "",
+        );
+        assert_eq!(got, 1024, "margin must be able to push below MIN_CLAMP_TOKENS to fit");
     }
 }
