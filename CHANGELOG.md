@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.0] - 2026-06-24
+
+### Added
+- Support *_FILE convention to load API keys from a file (#115)
+
+### Security
+- Support *_FILE convention to load API keys from a file (#115)
+
+---
+
 ## [0.23.0] - 2026-06-23
 
 ### Added
