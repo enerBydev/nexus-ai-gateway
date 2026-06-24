@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.3] - 2026-06-24
+
+### Fixed
+- Delay success bookkeeping until after body validation (#119)
+- Context headroom + reject impossible requests + robust decode (#107, #119)
+
+---
+
 ## [0.24.2] - 2026-06-24
 
 ### Changed
