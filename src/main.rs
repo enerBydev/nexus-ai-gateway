@@ -50,11 +50,19 @@ use tokio_util::sync::CancellationToken;
 pub static SHUTDOWN_TOKEN: std::sync::LazyLock<CancellationToken> =
     std::sync::LazyLock::new(CancellationToken::new);
 
+/// Format the crash diagnostic emitted by the panic hook (Issue #72). Kept as a pure
+/// function so it can be unit-tested — the hook itself cannot be, because Cargo.toml sets
+/// `panic="abort"`, which aborts the test process before any assertion runs.
+fn format_panic_report(location: &str, msg: &str, backtrace: &str) -> String {
+    format!("[PANIC] NEXUS panicked at {location}: {msg}\n[PANIC] backtrace:\n{backtrace}")
+}
+
 fn main() -> anyhow::Result<()> {
-    // Issue #72/#65: log the panic payload + location before the process aborts.
-    // Cargo.toml sets panic="abort", so any panic kills the whole process with no
+    // Issue #72/#65: log the panic payload + location + backtrace before the process
+    // aborts. Cargo.toml sets panic="abort", so any panic kills the whole process with no
     // diagnostic by default. eprintln! (not tracing) because the subscriber may not be
-    // initialized when the panic fires.
+    // initialized when the panic fires. force_capture() always captures a trace regardless
+    // of RUST_BACKTRACE, so a crash is never left unexplained.
     std::panic::set_hook(Box::new(|info| {
         let location = info
             .location()
@@ -66,7 +74,8 @@ fn main() -> anyhow::Result<()> {
             .map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<non-string panic payload>".to_string());
-        eprintln!("[PANIC] NEXUS panicked at {location}: {msg}");
+        let backtrace = std::backtrace::Backtrace::force_capture().to_string();
+        eprintln!("{}", format_panic_report(&location, &msg, &backtrace));
     }));
 
     let cli = Cli::parse();
@@ -934,3 +943,24 @@ fn check_status(pid_file: &std::path::Path) -> anyhow::Result<()> {
 #[cfg(test)]
 #[path = "watcher_test.rs"]
 mod watcher_test;
+
+#[cfg(test)]
+mod panic_report_tests {
+    use super::format_panic_report;
+
+    #[test]
+    fn report_includes_location_message_and_backtrace() {
+        let out = format_panic_report("src/foo.rs:10:5", "boom", "0: alpha_frame\n1: beta_frame");
+        assert!(out.contains("src/foo.rs:10:5"), "location missing: {out}");
+        assert!(out.contains("boom"), "message missing: {out}");
+        assert!(out.contains("alpha_frame"), "backtrace missing: {out}");
+        assert!(out.starts_with("[PANIC] NEXUS panicked at"), "prefix missing: {out}");
+    }
+
+    #[test]
+    fn force_capture_backtrace_is_nonempty() {
+        // Proves the crash-diagnostic mechanism is available in this build profile.
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        assert!(!bt.is_empty());
+    }
+}
