@@ -30,6 +30,32 @@ pub struct TransformResult {
 }
 
 /// Resolve model name and upstream from model map or config defaults
+/// Tier (opus/sonnet/haiku) of a Claude model id (Issue #105).
+fn model_tier(model: &str) -> Option<&'static str> {
+    ["opus", "sonnet", "haiku"].into_iter().find(|t| model.contains(t))
+}
+
+/// Length of the shared leading byte run between two ids.
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+}
+
+/// Issue #105: find the configured map entry that best covers an unmapped Claude id of the
+/// same family. Newer CC builds ship ids (`claude-opus-4-8`, `claude-sonnet-4-5`, ...) the
+/// map does not list yet; routing them to the closest same-tier mapping keeps opus/sonnet/
+/// haiku usable across CC upgrades without a config change. Picks the same-tier key with the
+/// longest shared prefix, breaking ties by the lexicographically largest key (a newer dotted
+/// version sorts above an older dated snapshot, e.g. `claude-opus-4-6` > `claude-opus-4-20250115`).
+fn best_family_match<'a>(
+    req_model: &str,
+    map: &'a std::collections::HashMap<String, crate::config::ModelRoute>,
+) -> Option<(&'a String, &'a crate::config::ModelRoute)> {
+    let tier = model_tier(req_model)?;
+    map.iter()
+        .filter(|(k, _)| model_tier(k) == Some(tier))
+        .max_by_key(|(k, _)| (common_prefix_len(req_model, k), (*k).clone()))
+}
+
 pub(crate) fn resolve_model_and_upstream(
     req_model: &str,
     has_thinking: bool,
@@ -45,7 +71,20 @@ pub(crate) fn resolve_model_and_upstream(
         );
         return (route.target_model.clone(), route.upstream_name.clone());
     }
-    // 2. Fallback to configured model overrides
+    // 2. Issue #105: family fallback for newer CC model ids the map does not list yet
+    // (e.g. claude-opus-4-8 -> the configured claude-opus-4-6 route). Without this an
+    // unmapped id is forwarded verbatim and NVIDIA returns a raw "404 page not found".
+    if let Some((matched, route)) = best_family_match(req_model, &config.model_map) {
+        tracing::warn!(
+            "[PIN] Model family fallback: {} -> {}:{} (no exact map; matched '{}' by family)",
+            req_model,
+            route.upstream_name,
+            route.target_model,
+            matched
+        );
+        return (route.target_model.clone(), route.upstream_name.clone());
+    }
+    // 3. Fallback to configured model overrides
     let model =
         if has_thinking { config.reasoning_model.clone() } else { config.completion_model.clone() }
             .unwrap_or_else(|| req_model.to_string());
