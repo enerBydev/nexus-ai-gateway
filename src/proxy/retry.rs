@@ -40,7 +40,13 @@ fn clamp_max_tokens_for_retry(
 ) -> u32 {
     if reason.contains("input_tokens overflow") {
         if let Some(safe) = extract_safe_max_tokens_from_error(message) {
-            let margin = 2048 + (attempt * 1024); // Growing margin per retry
+            // Growing safety margin to absorb NIM re-tokenization drift (~257 tokens/retry).
+            // The 1024 floor is intentionally below MIN_CLAMP_TOKENS: `safe` is already
+            // floored at MIN_CLAMP_TOKENS inside extract_safe_max_tokens_from_error, so the
+            // margin must be allowed to push the result below it; otherwise a near-full
+            // context (safe ≈ MIN_CLAMP) would retry at ~the same value and re-overflow.
+            // This sub-floor gives the re-tokenization margin real headroom to fit.
+            let margin = 2048 + (attempt * 1024);
             let safe_with_margin = safe.saturating_sub(margin).max(1024);
             tracing::warn!(
                 "🔧 {}input_tokens overflow (attempt {}/{}): NIM safe={}, margin={}, clamping max_tokens -> {}",
@@ -629,5 +635,26 @@ mod clamp_max_tokens_tests {
             "",
         );
         assert_eq!(got, 32000);
+    }
+
+    #[test]
+    fn overflow_margin_may_clamp_below_min_clamp_floor() {
+        // Intentional (regression guard): `safe` is already floored at MIN_CLAMP_TOKENS by
+        // extraction, so the re-tokenization margin is allowed to push the retry BELOW
+        // MIN_CLAMP (floor is 1024, not MIN_CLAMP_TOKENS) to actually fit a near-full
+        // context. input=126976, limit=131072 -> safe=max(3840,4096)=4096; attempt=2 ->
+        // margin=4096 -> 4096-4096=0 -> floored to 1024. Raising this floor to MIN_CLAMP
+        // would make the retry request ~the same budget and re-overflow.
+        let msg = "You passed 126976 input tokens and requested 64000 output tokens. \
+                   However, the model's context length is only 131072 tokens";
+        let got = clamp_max_tokens_for_retry(
+            StatusCode::BAD_REQUEST,
+            "input_tokens overflow",
+            msg,
+            64000,
+            2,
+            "",
+        );
+        assert_eq!(got, 1024, "margin must be able to push below MIN_CLAMP_TOKENS to fit");
     }
 }
