@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.2] - 2026-06-24
+
+### Changed
+- Document intentional sub-MIN_CLAMP floor + regression guard (#62)
+- Unify max_tokens clamp decision across both paths (#62)
+
+---
+
 ## [0.24.1] - 2026-06-24
 
 ### Fixed
