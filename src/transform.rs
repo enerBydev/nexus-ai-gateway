@@ -30,9 +30,15 @@ pub struct TransformResult {
 }
 
 /// Resolve model name and upstream from model map or config defaults
-/// Tier (opus/sonnet/haiku) of a Claude model id (Issue #105).
+/// Tier (opus/sonnet/haiku) of a Claude model id (Issue #105). Constrained to real
+/// `claude-…-<tier>-…` ids (delimited, lowercased) so a non-Claude model that merely
+/// contains a tier word is never rerouted by the family fallback.
 fn model_tier(model: &str) -> Option<&'static str> {
-    ["opus", "sonnet", "haiku"].into_iter().find(|t| model.contains(t))
+    let m = model.to_ascii_lowercase();
+    if !m.starts_with("claude-") {
+        return None;
+    }
+    ["opus", "sonnet", "haiku"].into_iter().find(|t| m.contains(&format!("-{t}-")))
 }
 
 /// Length of the shared leading byte run between two ids.

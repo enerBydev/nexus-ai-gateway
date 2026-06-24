@@ -792,7 +792,11 @@ mod tests {
         assert_eq!(model_tier("claude-opus-4-8"), Some("opus"));
         assert_eq!(model_tier("claude-sonnet-4-5"), Some("sonnet"));
         assert_eq!(model_tier("claude-haiku-4-5"), Some("haiku"));
+        assert_eq!(model_tier("claude-3-opus-20240229"), Some("opus"));
+        // Constrained to real claude ids (Issue #105 / CodeRabbit): no false positives.
         assert_eq!(model_tier("gpt-4o"), None);
+        assert_eq!(model_tier("some-sonnet-engine"), None, "non-claude id must not reroute");
+        assert_eq!(model_tier("CLAUDE-OPUS-4-8"), Some("opus"), "case-insensitive");
     }
 
     #[test]
