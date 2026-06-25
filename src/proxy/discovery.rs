@@ -187,6 +187,21 @@ pub async fn get_context_limit(
         }
     }
 
+    // Issue #104: NVIDIA NIM silently clamps an oversized max_tokens (HTTP 200, no
+    // `max_total_tokens=` error string), so the error-parsing probe never succeeds — it only
+    // burns a round-trip + PROBE_TIMEOUT and re-warns on every request (there is no negative
+    // cache). Skip it for NIM and use the fallback; pin real limits via MODEL_LIMIT_OVERRIDES.
+    // Non-NIM upstreams still probe.
+    if config.get_upstream_type(upstream_name) == crate::config::UpstreamType::NIM {
+        let fallback = default_context_limit();
+        tracing::debug!(
+            "[SCAN] NIM probe skipped for '{}' (silent clamp, Issue #104) — using fallback {}. Pin via MODEL_LIMIT_OVERRIDES.",
+            model,
+            fallback
+        );
+        return fallback;
+    }
+
     // 2. Get upstream base URL (without /v1/chat/completions)
     let upstream = config.upstreams.get(upstream_name).or_else(|| config.upstreams.get("default"));
 
