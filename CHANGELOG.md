@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.7] - 2026-06-25
+
+### Fixed
+- Emit server_tool_use + web_fetch_tool_result for CC (B3)
+
+---
+
 ## [0.24.6] - 2026-06-25
 
 ### Fixed
