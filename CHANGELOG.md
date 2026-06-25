@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.5] - 2026-06-25
+
+### Fixed
+- Guard against silent turn death on 0-content completions (#106)
+
+---
+
 ## [0.24.4] - 2026-06-24
 
 ### Fixed
