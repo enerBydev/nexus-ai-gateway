@@ -234,11 +234,29 @@ pub fn anthropic_to_openai(
                     .into_iter()
                     .map(|t| {
                         let parameters = if t.input_schema.is_null() {
-                            tracing::debug!(
-                                "Tool '{}' has null input_schema, using default schema",
-                                t.name
-                            );
-                            json!({ "type": "object", "properties": {}, "required": [] })
+                            if crate::web_fetch::is_web_fetch_tool(&t.name) {
+                                // B3: web_fetch is a server tool with no input_schema. Give the
+                                // NIM model a real `url` parameter so it emits {"url":"..."}
+                                // instead of an empty {} (which makes URL extraction fail).
+                                // NEXUS intercepts the call and executes the fetch inline.
+                                tracing::debug!(
+                                    "Tool '{}' is web_fetch — synthesizing url input schema",
+                                    t.name
+                                );
+                                json!({
+                                    "type": "object",
+                                    "properties": {
+                                        "url": { "type": "string", "description": "The URL to fetch" }
+                                    },
+                                    "required": ["url"]
+                                })
+                            } else {
+                                tracing::debug!(
+                                    "Tool '{}' has null input_schema, using default schema",
+                                    t.name
+                                );
+                                json!({ "type": "object", "properties": {}, "required": [] })
+                            }
                         } else {
                             ensure_valid_schema(clean_schema(t.input_schema))
                         };

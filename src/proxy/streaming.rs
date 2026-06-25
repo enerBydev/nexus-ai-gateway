@@ -43,6 +43,37 @@ fn signature_delta_sse(thinking: &str, index: i32) -> Option<Bytes> {
     )))
 }
 
+/// web_fetch server-tool emulation: emit the interception result as the `server_tool_use`
+/// and `web_fetch_tool_result` block pair Claude Code expects for its `web_fetch` server
+/// tool. A plain text block is NOT recognised by CC ("the model's tool call could not be
+/// parsed"). Emits two content blocks at `idx` and `idx+1`; the caller closes any open block
+/// first and advances `content_index` by 2.
+fn web_fetch_result_sse(tool_id: &str, url: &str, content: &str, idx: i32) -> Vec<Bytes> {
+    fn sse(event: &str, v: &serde_json::Value) -> Bytes {
+        Bytes::from(format!(
+            "event: {event}\ndata: {}\n\n",
+            serde_json::to_string(v).unwrap_or_default()
+        ))
+    }
+    let (su, res) = (idx, idx + 1);
+    vec![
+        sse(
+            "content_block_start",
+            &json!({"type":"content_block_start","index":su,"content_block":{"type":"server_tool_use","id":tool_id,"name":"web_fetch"}}),
+        ),
+        sse(
+            "content_block_delta",
+            &json!({"type":"content_block_delta","index":su,"delta":{"type":"input_json_delta","partial_json":json!({"url":url}).to_string()}}),
+        ),
+        sse("content_block_stop", &json!({"type":"content_block_stop","index":su})),
+        sse(
+            "content_block_start",
+            &json!({"type":"content_block_start","index":res,"content_block":{"type":"web_fetch_tool_result","tool_use_id":tool_id,"content":{"type":"web_fetch_result","url":url,"content":{"type":"document","source":{"type":"text","media_type":"text/plain","data":content}}}}}),
+        ),
+        sse("content_block_stop", &json!({"type":"content_block_stop","index":res})),
+    ]
+}
+
 /// Issue #106: should the silent-turn-death guard fire? True when a turn was started
 /// (message_start sent) but no usable content — neither text nor a tool_use — ever reached
 /// the client, so the stream would otherwise close content-empty and the CC turn would die
@@ -177,11 +208,13 @@ pub(crate) fn create_sse_stream(
         // reasoning_content -> finish_reason=length, 0 content) would otherwise produce a
         // content-empty stream that kills the CC turn silently.
         let mut content_emitted = false;
+        // B3: count intercepted web_fetch calls so the terminal message_delta can report
+        // `usage.server_tool_use.web_fetch_requests` (CC tracks server-tool usage there).
+        let mut web_fetch_requests: u32 = 0;
         let mut is_intercepting_fetch = false;
         let mut _fetch_tool_name: Option<String> = None;
         let mut _fetch_tool_id_buf: Option<String> = None;
         let mut fetch_args_buffer = String::new();
-        let mut suppressed_block_start = false;
         let mut accumulated_input_tokens: u32 = estimated_input_tokens;
         let mut accumulated_output_tokens: u32 = 0;
         let mut saved_stop_reason: Option<String> = None;
@@ -325,17 +358,15 @@ pub(crate) fn create_sse_stream(
                                             yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
                                             content_index += 1;
                                         }
-                                        let ev = json!({"type": "content_block_start", "index": content_index, "content_block": {"type": "text", "text": ""}});
-                                        yield Ok(Bytes::from(format!("event: content_block_start\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
-                                        let ev = json!({"type": "content_block_delta", "index": content_index, "delta": {"type": "text_delta", "text": format!("[Fetched content from {}]\n\n{}", fetch_url, fetch_result)}});
-                                        yield Ok(Bytes::from(format!("event: content_block_delta\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
-                                        let ev = json!({"type": "content_block_stop", "index": content_index});
-                                        yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
-                                        content_index += 1;
+                                        let srv_id = format!("srvtoolu_nexus{}", content_index);
+                                        for b in web_fetch_result_sse(&srv_id, &fetch_url, &fetch_result, content_index) {
+                                            yield Ok(b);
+                                        }
+                                        content_index += 2;
                                         current_block_type = None;
-                                        content_emitted = true; // Issue #106: fetch text is content
+                                        content_emitted = true; // B3: fetch result is server-tool content
+                                        web_fetch_requests += 1;
                                         is_intercepting_fetch = false;
-                                        suppressed_block_start = false;
                                         // CodeRabbit: when the finish_reason branch never ran (the common NIM
                                         // web_fetch case), saved_stop_reason is None and the terminal
                                         // message_delta (stop_reason + scaled usage) below would be skipped.
@@ -372,20 +403,36 @@ pub(crate) fn create_sse_stream(
                                         saved_stop_reason = Some("end_turn".to_string());
                                         tracing::warn!("[STREAM] Issue #106 guard: upstream emitted 0 content tokens (reasoning-only) - injected fallback to prevent silent turn death");
                                     }
+                                    // B3 (PRIMARY FIX): a web_fetch interception is a COMPLETED server-tool
+                                    // turn — NEXUS executed the fetch inline and emitted server_tool_use +
+                                    // web_fetch_tool_result. It is NOT a pending client tool call. CC rejects
+                                    // a turn whose stop_reason is "tool_use" but which carries zero client
+                                    // `tool_use` blocks (server_tool_use is excluded) with "the model's tool
+                                    // call could not be parsed". map_stop_reason() returns "tool_use" whenever
+                                    // the model emitted any tool_call, so override to end_turn here.
+                                    // (Reverse-engineered from the CC 2.1.175 binary, offset 241314738.)
+                                    if web_fetch_requests > 0 {
+                                        saved_stop_reason = Some("end_turn".to_string());
+                                    }
                                     if let Some(ref stop) = saved_stop_reason {
                                         let scaled_delta = scale_token_usage(accumulated_input_tokens, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
+                                        let mut usage = json!({
+                                            "input_tokens": scaled_delta.input,
+                                            "output_tokens": scaled_delta.output,
+                                            "cache_creation_input_tokens": 0,
+                                            "cache_read_input_tokens": 0
+                                        });
+                                        // B3: report server-tool usage so CC recognises the web_fetch result.
+                                        if web_fetch_requests > 0 {
+                                            usage["server_tool_use"] = json!({"web_fetch_requests": web_fetch_requests});
+                                        }
                                         let delta_event = json!({
                                             "type": "message_delta",
                                             "delta": {
                                                 "stop_reason": stop,
                                                 "stop_sequence": serde_json::Value::Null,
                                             },
-                                            "usage": {
-                                                "input_tokens": scaled_delta.input,
-                                                "output_tokens": scaled_delta.output,
-                                                "cache_creation_input_tokens": 0,
-                                                "cache_read_input_tokens": 0
-                                            }
+                                            "usage": usage
                                         });
                                         let sse_data = format!("event: message_delta\ndata: {}\n\n",
                                             serde_json::to_string(&delta_event).unwrap_or_default());
@@ -674,12 +721,17 @@ pub(crate) fn create_sse_stream(
                                                         _tool_call_name = Some(name.clone());
 
                                                         if web_fetch::is_web_fetch_tool(name) {
-                                                            is_intercepting_fetch = true;
-                                                            _fetch_tool_name = Some(name.clone());
-                                                            _fetch_tool_id_buf = tool_call_id.clone();
-                                                            fetch_args_buffer.clear();
-                                                            suppressed_block_start = true;
-                                                            tracing::info!("[WebFetch/Stream] Intercepting tool_use: {}", name);
+                                                            // B3 (Gap B): only set up the interception ONCE per turn.
+                                                            // kimi can emit a duplicate web_fetch tool_call; without
+                                                            // this guard the second one clears fetch_args_buffer and
+                                                            // loses the buffered url.
+                                                            if !is_intercepting_fetch {
+                                                                is_intercepting_fetch = true;
+                                                                _fetch_tool_name = Some(name.clone());
+                                                                _fetch_tool_id_buf = tool_call_id.clone();
+                                                                fetch_args_buffer.clear();
+                                                                tracing::info!("[WebFetch/Stream] Intercepting tool_use: {}", name);
+                                                            }
                                                         } else {
                                                             let event = json!({
                                                                 "type": "content_block_start",
@@ -753,52 +805,31 @@ pub(crate) fn create_sse_stream(
 
                                                 tracing::info!("[WebFetch/Stream] Fetched {} bytes", fetch_result.len());
 
-                                                if suppressed_block_start {
-                                                    // FIX C11 (Issue #80): Close any prior tool_use block that might be
-                                                    // open (from another tool_call in the same chunk) before emitting text.
-                                                    if current_block_type.is_some() {
-                                                        // Issue #90-B: close the thinking sub-protocol with a signature_delta.
-                                                        if current_block_type.as_deref() == Some("thinking") {
-                                                            if let Some(b) = signature_delta_sse(&accumulated_thinking, content_index) {
-                                                                yield Ok(b);
-                                                            }
-                                                            accumulated_thinking.clear();
+                                                // B3 / web_fetch server-tool: close any open block, then emit the
+                                                // server_tool_use + web_fetch_tool_result pair CC expects (a plain
+                                                // text block is not recognised as the web_fetch result).
+                                                if current_block_type.is_some() {
+                                                    if current_block_type.as_deref() == Some("thinking") {
+                                                        if let Some(b) = signature_delta_sse(&accumulated_thinking, content_index) {
+                                                            yield Ok(b);
                                                         }
-                                                        let event = json!({"type": "content_block_stop", "index": content_index});
-                                                        let sse_data = format!("event: content_block_stop\ndata: {}\n\n",
-                                                            serde_json::to_string(&event).unwrap_or_default());
-                                                        yield Ok(Bytes::from(sse_data));
-                                                        content_index += 1;
+                                                        accumulated_thinking.clear();
                                                     }
-                                                    let event = json!({
-                                                        "type": "content_block_start",
-                                                        "index": content_index,
-                                                        "content_block": {
-                                                            "type": "text",
-                                                            "text": ""
-                                                        }
-                                                    });
-                                                    let sse_data = format!("event: content_block_start\ndata: {}\n\n",
-                                                        serde_json::to_string(&event).unwrap_or_default());
-                                                    yield Ok(Bytes::from(sse_data));
+                                                    let event = json!({"type": "content_block_stop", "index": content_index});
+                                                    yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n",
+                                                        serde_json::to_string(&event).unwrap_or_default())));
+                                                    content_index += 1;
+                                                    current_block_type = None;
                                                 }
-
-                                                let event = json!({
-                                                    "type": "content_block_delta",
-                                                    "index": content_index,
-                                                    "delta": {
-                                                        "type": "text_delta",
-                                                        "text": format!("\n\n[Fetched content from {}]\n\n{}", fetch_url, fetch_result)
-                                                    }
-                                                });
-                                                let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
-                                                    serde_json::to_string(&event).unwrap_or_default());
-                                                yield Ok(Bytes::from(sse_data));
-
-                                                current_block_type = Some("text".to_string());
-                                                content_emitted = true; // Issue #106: fetch text is content
+                                                let srv_id = format!("srvtoolu_nexus{}", content_index);
+                                                for b in web_fetch_result_sse(&srv_id, &fetch_url, &fetch_result, content_index) {
+                                                    yield Ok(b);
+                                                }
+                                                content_index += 2;
+                                                current_block_type = None;
+                                                content_emitted = true; // B3: fetch result is server-tool content
+                                                web_fetch_requests += 1;
                                                 is_intercepting_fetch = false;
-                                                suppressed_block_start = false;
                                             }
 
                                             if current_block_type.is_some() {
@@ -865,12 +896,33 @@ pub(crate) fn create_sse_stream(
 
 #[cfg(test)]
 mod stream_guard_tests {
-    use super::needs_empty_content_guard;
+    use super::{needs_empty_content_guard, web_fetch_result_sse};
 
     #[test]
     fn fires_on_reasoning_only_turn() {
         // Turn started, no text, no tool_use -> the #106 silent-death condition.
         assert!(needs_empty_content_guard(true, false, false));
+    }
+
+    #[test]
+    fn web_fetch_result_sse_emits_server_tool_pair() {
+        // B3: the web_fetch interception result must be a server_tool_use +
+        // web_fetch_tool_result pair (not a text block) for CC to parse it.
+        let chunks = web_fetch_result_sse("srvtoolu_x", "https://example.com", "Hello world", 2);
+        assert_eq!(chunks.len(), 5, "server_tool_use start/delta/stop + result start/stop");
+        let joined: String =
+            chunks.iter().map(|b| String::from_utf8_lossy(b).into_owned()).collect();
+        assert!(joined.contains("\"type\":\"server_tool_use\""));
+        assert!(joined.contains("\"name\":\"web_fetch\""));
+        assert!(joined.contains("\"type\":\"web_fetch_tool_result\""));
+        assert!(joined.contains("\"tool_use_id\":\"srvtoolu_x\""));
+        assert!(joined.contains("\"type\":\"web_fetch_result\""));
+        assert!(joined.contains("\"type\":\"document\""));
+        assert!(joined.contains("https://example.com"));
+        assert!(joined.contains("Hello world"));
+        // server_tool_use at idx=2, result at idx=3.
+        assert!(joined.contains("\"index\":2"));
+        assert!(joined.contains("\"index\":3"));
     }
 
     #[test]
