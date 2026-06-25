@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.6] - 2026-06-25
+
+### Fixed
+- Skip the dead NIM context-limit probe (#104)
+- Reject implausible MODEL_LIMIT_OVERRIDES limits + byte labels (#106 §8)
+
+---
+
 ## [0.24.5] - 2026-06-25
 
 ### Fixed
