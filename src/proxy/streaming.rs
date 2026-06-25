@@ -43,6 +43,18 @@ fn signature_delta_sse(thinking: &str, index: i32) -> Option<Bytes> {
     )))
 }
 
+/// Issue #106: should the silent-turn-death guard fire? True when a turn was started
+/// (message_start sent) but no usable content — neither text nor a tool_use — ever reached
+/// the client, so the stream would otherwise close content-empty and the CC turn would die
+/// silently (the reasoning-only / finish_reason=length case under forced thinking).
+fn needs_empty_content_guard(
+    message_started: bool,
+    content_emitted: bool,
+    tool_calls_emitted: bool,
+) -> bool {
+    message_started && !content_emitted && !tool_calls_emitted
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_streaming(
     config: Arc<Config>,
@@ -160,6 +172,11 @@ pub(crate) fn create_sse_stream(
         let mut current_block_type: Option<String> = None;
         let original_model_owned = original_model;
         let mut tool_calls_emitted = false;
+        // Issue #106: did we forward any *usable* content (text) to CC? A reasoning-only
+        // completion (forced thinking on a large context spends the whole budget on
+        // reasoning_content -> finish_reason=length, 0 content) would otherwise produce a
+        // content-empty stream that kills the CC turn silently.
+        let mut content_emitted = false;
         let mut is_intercepting_fetch = false;
         let mut _fetch_tool_name: Option<String> = None;
         let mut _fetch_tool_id_buf: Option<String> = None;
@@ -316,6 +333,7 @@ pub(crate) fn create_sse_stream(
                                         yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
                                         content_index += 1;
                                         current_block_type = None;
+                                        content_emitted = true; // Issue #106: fetch text is content
                                         is_intercepting_fetch = false;
                                         suppressed_block_start = false;
                                         // CodeRabbit: when the finish_reason branch never ran (the common NIM
@@ -326,6 +344,33 @@ pub(crate) fn create_sse_stream(
                                         if saved_stop_reason.is_none() {
                                             saved_stop_reason = Some("end_turn".to_string());
                                         }
+                                    }
+                                    // Issue #106: silent turn death guard. If a turn was started (message_start
+                                    // sent) but ZERO usable content reached CC — only reasoning_content, which
+                                    // happens when forced thinking on a large context spends the whole output
+                                    // budget reasoning (finish_reason=length) — inject a synthetic text block so
+                                    // CC receives a visible, explained turn instead of a content-empty stream
+                                    // that dies silently. tool_calls_emitted covers valid tool_use turns.
+                                    if needs_empty_content_guard(has_sent_message_start, content_emitted, tool_calls_emitted) {
+                                        if current_block_type.is_some() {
+                                            let ev = json!({"type": "content_block_stop", "index": content_index});
+                                            yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                            content_index += 1;
+                                            current_block_type = None;
+                                        }
+                                        let notice = "[NEXUS] The model returned no answer: it spent its entire output budget on internal reasoning for this large context and produced no content (finish_reason=length). Try /compact to shrink the context, or retry — the request may be too large for thinking mode.";
+                                        let ev = json!({"type": "content_block_start", "index": content_index, "content_block": {"type": "text", "text": ""}});
+                                        yield Ok(Bytes::from(format!("event: content_block_start\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                        let ev = json!({"type": "content_block_delta", "index": content_index, "delta": {"type": "text_delta", "text": notice}});
+                                        yield Ok(Bytes::from(format!("event: content_block_delta\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                        let ev = json!({"type": "content_block_stop", "index": content_index});
+                                        yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
+                                        content_index += 1;
+                                        content_emitted = true;
+                                        // Close the turn cleanly so CC shows the notice instead of treating a
+                                        // bare finish_reason=length (max_tokens) as a truncation to continue.
+                                        saved_stop_reason = Some("end_turn".to_string());
+                                        tracing::warn!("[STREAM] Issue #106 guard: upstream emitted 0 content tokens (reasoning-only) - injected fallback to prevent silent turn death");
                                     }
                                     if let Some(ref stop) = saved_stop_reason {
                                         let scaled_delta = scale_token_usage(accumulated_input_tokens, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
@@ -588,6 +633,7 @@ pub(crate) fn create_sse_stream(
                                                     let sse_data = format!("event: content_block_delta\ndata: {}\n\n",
                                                         serde_json::to_string(&event).unwrap_or_default());
                                                     yield Ok(Bytes::from(sse_data));
+                                                    content_emitted = true; // Issue #106
                                                 }
                                             }
                                         }
@@ -750,6 +796,7 @@ pub(crate) fn create_sse_stream(
                                                 yield Ok(Bytes::from(sse_data));
 
                                                 current_block_type = Some("text".to_string());
+                                                content_emitted = true; // Issue #106: fetch text is content
                                                 is_intercepting_fetch = false;
                                                 suppressed_block_start = false;
                                             }
@@ -813,5 +860,31 @@ pub(crate) fn create_sse_stream(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_guard_tests {
+    use super::needs_empty_content_guard;
+
+    #[test]
+    fn fires_on_reasoning_only_turn() {
+        // Turn started, no text, no tool_use -> the #106 silent-death condition.
+        assert!(needs_empty_content_guard(true, false, false));
+    }
+
+    #[test]
+    fn does_not_fire_when_text_emitted() {
+        assert!(!needs_empty_content_guard(true, true, false));
+    }
+
+    #[test]
+    fn does_not_fire_for_tool_use_turn() {
+        assert!(!needs_empty_content_guard(true, false, true));
+    }
+
+    #[test]
+    fn does_not_fire_before_message_start() {
+        assert!(!needs_empty_content_guard(false, false, false));
     }
 }
