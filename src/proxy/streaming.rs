@@ -319,7 +319,7 @@ pub(crate) fn create_sse_stream(
                                                 .await
                                                 .unwrap_or_else(|e| format!("Error fetching {}: {}", fetch_url, e))
                                         };
-                                        tracing::info!("[WebFetch/Stream] Fetched {} chars (flushed at [DONE])", fetch_result.len());
+                                        tracing::info!("[WebFetch/Stream] Fetched {} bytes (flushed at [DONE])", fetch_result.len());
                                         if current_block_type.is_some() {
                                             let ev = json!({"type": "content_block_stop", "index": content_index});
                                             yield Ok(Bytes::from(format!("event: content_block_stop\ndata: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())));
@@ -751,7 +751,7 @@ pub(crate) fn create_sse_stream(
                                                         .unwrap_or_else(|e| format!("Error fetching {}: {}", fetch_url, e))
                                                 };
 
-                                                tracing::info!("[WebFetch/Stream] Fetched {} chars", fetch_result.len());
+                                                tracing::info!("[WebFetch/Stream] Fetched {} bytes", fetch_result.len());
 
                                                 if suppressed_block_start {
                                                     // FIX C11 (Issue #80): Close any prior tool_use block that might be

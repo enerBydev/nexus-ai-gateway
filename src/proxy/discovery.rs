@@ -76,21 +76,48 @@ fn probing_disabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Get model limit override from MODEL_LIMIT_OVERRIDES env var
-/// Format: "model-id1:limit1,model-id2:limit2"
-fn get_model_limit_override(model_id: &str) -> Option<u32> {
-    std::env::var("MODEL_LIMIT_OVERRIDES").ok().and_then(|overrides| {
-        overrides.split(',').find_map(|entry| {
-            let mut parts = entry.trim().split(':');
-            let model = parts.next()?;
-            let limit: u32 = parts.next()?.trim().parse().ok()?;
-            if model == model_id {
-                Some(limit)
-            } else {
+/// A context limit below this is almost certainly a parse error (Issue #106 §8): e.g. a
+/// comma thousands-separator in `…:1,048,576` splits on `,` into `…:1` -> limit 1. Reject
+/// such values rather than silently capping a model at a useless context.
+const MIN_PLAUSIBLE_LIMIT: u32 = 1024;
+
+/// Pure parser for `MODEL_LIMIT_OVERRIDES` (`model-id1:limit1,model-id2:limit2`). Returns
+/// the override for `model_id`, ignoring implausibly small / non-numeric limits with a
+/// warning so a malformed entry never silently wins.
+fn parse_limit_override(overrides: &str, model_id: &str) -> Option<u32> {
+    overrides.split(',').find_map(|entry| {
+        let mut parts = entry.trim().split(':');
+        let model = parts.next()?;
+        if model != model_id {
+            return None;
+        }
+        let raw = parts.next()?.trim();
+        match raw.parse::<u32>() {
+            Ok(limit) if limit >= MIN_PLAUSIBLE_LIMIT => Some(limit),
+            Ok(limit) => {
+                tracing::warn!(
+                    "MODEL_LIMIT_OVERRIDES: ignoring implausibly small limit {} for '{}' (min {}). \
+                     Check for comma thousands-separators — use 1048576, not 1,048,576.",
+                    limit, model_id, MIN_PLAUSIBLE_LIMIT
+                );
                 None
             }
-        })
+            Err(e) => {
+                tracing::warn!(
+                    "MODEL_LIMIT_OVERRIDES: invalid limit '{}' for '{}' ({}) — ignoring.",
+                    raw,
+                    model_id,
+                    e
+                );
+                None
+            }
+        }
     })
+}
+
+/// Get model limit override from the `MODEL_LIMIT_OVERRIDES` env var.
+fn get_model_limit_override(model_id: &str) -> Option<u32> {
+    std::env::var("MODEL_LIMIT_OVERRIDES").ok().and_then(|o| parse_limit_override(&o, model_id))
 }
 
 /// Probe NIM to discover a model's max_total_tokens.
@@ -223,5 +250,38 @@ mod fallback_tests {
         // Invalid values fall back to the default.
         assert_eq!(with_env(Some("0"), default_context_limit), 200_000);
         assert_eq!(with_env(Some("garbage"), default_context_limit), 200_000);
+    }
+}
+
+#[cfg(test)]
+mod limit_override_tests {
+    use super::parse_limit_override;
+
+    #[test]
+    fn valid_override_and_model_selection() {
+        let s = "z-ai/glm-5.1:202752,moonshotai/kimi-k2.6:262144";
+        assert_eq!(parse_limit_override(s, "z-ai/glm-5.1"), Some(202752));
+        assert_eq!(parse_limit_override(s, "moonshotai/kimi-k2.6"), Some(262144));
+        assert_eq!(parse_limit_override(s, "other/model"), None);
+    }
+
+    #[test]
+    fn rejects_comma_thousands_separator_artifact() {
+        // Issue #106 §8: "deepseek-ai/deepseek-v4-pro:1,048,576" splits on ',' so the
+        // matching entry becomes "…:1" (limit 1) — must be rejected, never silently cap
+        // the model at 1 token. Surrounding good entries stay unaffected.
+        let s =
+            "z-ai/glm-5.1:202752,deepseek-ai/deepseek-v4-pro:1,048,576,moonshotai/kimi-k2.6:262144";
+        assert_eq!(parse_limit_override(s, "deepseek-ai/deepseek-v4-pro"), None);
+        assert_eq!(parse_limit_override(s, "z-ai/glm-5.1"), Some(202752));
+        assert_eq!(parse_limit_override(s, "moonshotai/kimi-k2.6"), Some(262144));
+    }
+
+    #[test]
+    fn rejects_zero_and_nonnumeric() {
+        assert_eq!(parse_limit_override("m:0", "m"), None);
+        assert_eq!(parse_limit_override("m:abc", "m"), None);
+        assert_eq!(parse_limit_override("m:1023", "m"), None, "below MIN_PLAUSIBLE_LIMIT");
+        assert_eq!(parse_limit_override("m:1024", "m"), Some(1024), "exactly MIN is allowed");
     }
 }
