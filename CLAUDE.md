@@ -174,6 +174,7 @@ These behaviors are intentional and should not be changed:
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed CORS origins |
 | `NIM_PROMPT_CACHE_ENABLED` | `false` | Enable proxy-side prompt cache for NIM |
 | `DRAIN_TIMEOUT_SECS` | `30` | Max graceful drain duration before forced shutdown |
+| `UPSTREAM_FIRST_BYTE_TIMEOUT_SECS` | `60` | First-byte (response-headers) timeout (Issue #83). Aborts a stalled upstream that accepts the connection but never responds, instead of hanging Claude Code indefinitely — `read_timeout` only fires AFTER the first byte. Wraps `send()` in both retry paths; must be > 0 |
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all telemetry |
 | `TELEMETRY_BEACON_URL` | `https://nexus-beacon-receiver.enerby212.workers.dev/v1/beacon` | Beacon endpoint URL. Set to empty string to disable beacon only |
 | `BEACON_AUTH_TOKEN` | (compiled in) | Auth token for beacon endpoint. Override via env var if needed |

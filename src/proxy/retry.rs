@@ -17,6 +17,26 @@ use crate::proxy::overflow_tracker::OverflowLoopTracker;
 pub(crate) fn chunk_timeout_secs() -> u64 {
     std::env::var("CHUNK_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120)
 }
+
+/// Issue #83 (P0): first-byte (response-headers) timeout.
+///
+/// reqwest's `read_timeout` only fires AFTER the first byte is received, so an upstream
+/// that accepts the TLS connection but never sends a response (model stall, e.g. a dead
+/// or overloaded NIM model) would hang the request forever. We wrap the upstream
+/// `send()` future in this timeout: `send()` resolves once the response headers arrive,
+/// so this bounds time-to-first-byte WITHOUT capping the total stream duration (which is
+/// why CR1/CR2 removed the global `.timeout()` for streaming).
+///
+/// Default 60s — generous enough for a legitimate model cold start, bounded so a stall
+/// can never block Claude Code indefinitely. Configurable via
+/// `UPSTREAM_FIRST_BYTE_TIMEOUT_SECS` (must be > 0; invalid/zero falls back to default).
+pub(crate) fn first_byte_timeout_secs() -> u64 {
+    std::env::var("UPSTREAM_FIRST_BYTE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(60)
+}
 pub(crate) const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
 
 /// Compute the clamped `max_tokens` for a retry on a clampable (`Fixable`) upstream error.
@@ -135,7 +155,30 @@ pub(crate) async fn resilient_send(
             req_builder = req_builder.header("anthropic-version", version);
         }
 
-        let response = req_builder.send().await?;
+        let response = match tokio::time::timeout(
+            Duration::from_secs(first_byte_timeout_secs()),
+            req_builder.send(),
+        )
+        .await
+        {
+            Ok(send_result) => send_result?,
+            Err(_elapsed) => {
+                // Issue #83 (P0): upstream stalled (no response headers within the first-byte
+                // budget). The 300s builder timeout would still bound this eventually, but fail
+                // fast so a stalled model can't tie up the request for a full 5 minutes.
+                circuit_breaker.record_failure(generation).await;
+                tracing::error!(
+                    "⛔ first-byte timeout: upstream '{}' sent no response within {}s (model stall)",
+                    upstream_name,
+                    first_byte_timeout_secs()
+                );
+                return Err(ProxyError::Upstream(format!(
+                    "Upstream '{}' stalled: no response within {}s (model unavailable)",
+                    upstream_name,
+                    first_byte_timeout_secs()
+                )));
+            }
+        };
         let status = response.status();
 
         if status.is_success() {
@@ -391,7 +434,31 @@ pub(crate) async fn resilient_send_raw(
             req_builder = req_builder.header("anthropic-version", version);
         }
 
-        let response = req_builder.send().await?;
+        let response = match tokio::time::timeout(
+            Duration::from_secs(first_byte_timeout_secs()),
+            req_builder.send(),
+        )
+        .await
+        {
+            Ok(send_result) => send_result?,
+            Err(_elapsed) => {
+                // Issue #83 (P0): the upstream accepted the connection but sent no response
+                // headers within the first-byte budget (model stall). Without this the stream
+                // hangs forever — reqwest's read_timeout only fires AFTER the first byte.
+                // Record a CB failure so a persistently-stalled model trips the breaker.
+                circuit_breaker.record_failure(generation).await;
+                tracing::error!(
+                    "⛔ [stream] first-byte timeout: upstream '{}' sent no response within {}s (model stall)",
+                    upstream_name,
+                    first_byte_timeout_secs()
+                );
+                return Err(ProxyError::Upstream(format!(
+                    "Upstream '{}' stalled: no response within {}s (model unavailable)",
+                    upstream_name,
+                    first_byte_timeout_secs()
+                )));
+            }
+        };
         let status = response.status();
 
         if status.is_success() {
@@ -686,5 +753,37 @@ mod clamp_max_tokens_tests {
             "",
         );
         assert_eq!(got, 1024, "margin must be able to push below MIN_CLAMP_TOKENS to fit");
+    }
+}
+
+#[cfg(test)]
+mod first_byte_timeout_tests {
+    use super::first_byte_timeout_secs;
+
+    /// Save/restore the single env var this test touches so it is order-independent.
+    fn with_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let key = "UPSTREAM_FIRST_BYTE_TIMEOUT_SECS";
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        let out = f();
+        match prev {
+            Some(p) => std::env::set_var(key, p),
+            None => std::env::remove_var(key),
+        }
+        out
+    }
+
+    #[test]
+    fn default_and_overrides() {
+        // Default 60s when unset.
+        assert_eq!(with_env(None, first_byte_timeout_secs), 60);
+        // Honoured when valid.
+        assert_eq!(with_env(Some("30"), first_byte_timeout_secs), 30);
+        // Zero and invalid fall back to the default — a 0s budget would abort every request.
+        assert_eq!(with_env(Some("0"), first_byte_timeout_secs), 60);
+        assert_eq!(with_env(Some("garbage"), first_byte_timeout_secs), 60);
     }
 }
