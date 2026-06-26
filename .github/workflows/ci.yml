@@ -20,6 +20,12 @@ jobs:
           tool: cargo-audit
       - name: Run security audit
         run: cargo audit
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Run cargo-deny (advisories, bans, licenses, sources)
+        run: cargo deny check
 
   test:
     runs-on: ubuntu-latest

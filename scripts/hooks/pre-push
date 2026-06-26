@@ -71,6 +71,17 @@ if [ "$remote_ref" = "refs/heads/main" ]; then
 		fi
 	fi
 
+	# 6. Supply-chain / license policy (deny.toml) — non-blocking if cargo-deny not installed
+	if command -v cargo-deny >/dev/null 2>&1; then
+		echo " Running cargo deny check..."
+		if ! cargo deny check 2>/dev/null; then
+			echo "⚠️ cargo-deny policy violations found! Review with: cargo deny check"
+			echo "   (Not blocking push — fix when possible)"
+		else
+			echo " ✅ cargo-deny passed"
+		fi
+	fi
+
 	echo ""
 	echo "✅ Pre-push validation passed"
 
