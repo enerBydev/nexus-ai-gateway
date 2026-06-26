@@ -169,6 +169,7 @@ fn typed_variant_matches_json_variant() {
         tools: None,
         tool_choice: None,
         chat_template_kwargs: None,
+        response_format: None,
     };
 
     let json_req = serde_json::to_value(&openai_req).unwrap();

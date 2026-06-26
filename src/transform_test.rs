@@ -126,6 +126,75 @@ mod tests {
     }
 
     #[test]
+    fn test_structured_output_translated_to_response_format() {
+        // #126: CC headless mode sends output_config.format (json_schema). NEXUS must
+        // translate it to an OpenAI response_format so NIM enforces the schema instead
+        // of returning free-form prose (which made CC's verdict fail with "Execution error").
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "reason": {"type": "string"}
+            },
+            "required": ["ok", "reason"],
+            "additionalProperties": false
+        });
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![],
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            system: None,
+            metadata: None,
+            extra: json!({
+                "output_config": { "format": {"type": "json_schema", "schema": schema} }
+            }),
+        };
+        let config = test_config();
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+
+        let rf = result
+            .request
+            .response_format
+            .expect("response_format must be set when output_config.format is json_schema");
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"]["name"], "structured_output");
+        assert_eq!(rf["json_schema"]["strict"], true);
+        assert_eq!(rf["json_schema"]["schema"]["required"][0], "ok");
+    }
+
+    #[test]
+    fn test_no_structured_output_leaves_response_format_none() {
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![],
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            system: None,
+            metadata: None,
+            extra: json!({}),
+        };
+        let config = test_config();
+        let result =
+            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
+        assert!(
+            result.request.response_format.is_none(),
+            "response_format must be None when no output_config.format is present"
+        );
+    }
+
+    #[test]
     fn test_cache_marker_from_content_block() {
         // Build an AnthropicRequest with a message containing ContentBlock::Text
         // with cache_control

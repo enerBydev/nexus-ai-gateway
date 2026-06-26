@@ -26,6 +26,10 @@ pub struct OpenAIRequest {
     /// NIM/vLLM chat template kwargs for model-specific features (e.g. GLM5 thinking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_template_kwargs: Option<Value>,
+    /// Structured-output constraint (OpenAI `response_format`). Translated from CC's
+    /// `output_config.format` (json_schema) so NIM/OpenAI upstreams honor the schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
