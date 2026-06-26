@@ -101,6 +101,24 @@ pub(crate) fn resolve_model_and_upstream(
 
 /// Transform Anthropic request to OpenAI format
 /// Returns (OpenAIRequest, upstream_name) for routing
+/// Translate CC's `output_config.format` (Anthropic structured-output, json_schema)
+/// into an OpenAI `response_format` so NIM / OpenAI-compatible upstreams enforce the
+/// schema. CC sends `{ "type": "json_schema", "schema": {...} }`; OpenAI expects
+/// `{ "type": "json_schema", "json_schema": { "name", "schema", "strict" } }`.
+/// Returns None when the request carries no json_schema format.
+fn structured_output_to_response_format(extra: &serde_json::Value) -> Option<serde_json::Value> {
+    let format = extra.get("output_config")?.get("format")?;
+    if format.get("type")?.as_str()? != "json_schema" {
+        return None;
+    }
+    let schema = format.get("schema")?;
+    let name = format.get("name").and_then(|n| n.as_str()).unwrap_or("structured_output");
+    Some(json!({
+        "type": "json_schema",
+        "json_schema": { "name": name, "schema": schema, "strict": true }
+    }))
+}
+
 pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     config: &Config,
@@ -298,6 +316,10 @@ pub fn anthropic_to_openai(
             // Issue #35 Bug E / #90-B: chat_template_kwargs is only valid for NIM
             // upstreams; the activation policy (ARB Eje A) resolves it NIM-only.
             chat_template_kwargs: activation.chat_template_kwargs.clone(),
+            // #126: forward CC's structured-output schema (output_config.format) as an
+            // OpenAI response_format so NIM upstreams enforce it instead of returning
+            // free-form prose (which made CC's headless verdict fail with "Execution error").
+            response_format: structured_output_to_response_format(&req.extra),
         },
         upstream_name: upstream_name.to_string(),
         cache_markers,
