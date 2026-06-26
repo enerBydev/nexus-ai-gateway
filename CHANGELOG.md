@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.8] - 2026-06-26
+
+### Changed
+- Enforce cargo-deny — wire deny.toml into CI + pre-push (#125)
+
+### Fixed
+- Forward CC structured-output schema as response_format (#126)
+
+### Security
+- Enforce cargo-deny — wire deny.toml into CI + pre-push (#125)
+
+---
+
 ## [0.24.7] - 2026-06-25
 
 ### Fixed
