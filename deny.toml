@@ -1,10 +1,9 @@
 [advisories]
 db-urls = ["https://github.com/RustSec/advisory-db"]
-ignore = [
-    "RUSTSEC-2025-0069", # daemonize — unmaintained, no alternative
-    "RUSTSEC-2024-0384", # instant — unmaintained, transitive via notify
-    "RUSTSEC-2025-0119", # number_prefix — unmaintained, transitive via indicatif
-]
+# No active ignores. The previous RUSTSEC ignores (daemonize / instant /
+# number_prefix) are no longer in the dependency tree. Re-add an entry here only
+# if an advisory genuinely matches a crate we cannot upgrade.
+ignore = []
 unmaintained = "none"
 
 [bans]
