@@ -212,7 +212,6 @@ pub(crate) async fn resilient_send(
                 // Issue #83 (P0): upstream stalled (no response headers within the first-byte
                 // budget). The 300s builder timeout would still bound this eventually, but fail
                 // fast so a stalled model can't tie up the request for a full 5 minutes.
-                circuit_breaker.record_failure(generation).await;
                 tracing::error!(
                     "⛔ first-byte timeout: upstream '{}' sent no response within {}s (model stall)",
                     upstream_name,
@@ -223,6 +222,10 @@ pub(crate) async fn resilient_send(
                     attempt = 0;
                     continue;
                 }
+                // CodeRabbit (#133): charge the breaker only when the whole fallback chain is
+                // exhausted, not once per stalled model — avoids tripping it prematurely when a
+                // single request stalls across multiple models.
+                circuit_breaker.record_failure(generation).await;
                 return Err(ProxyError::Upstream(format!(
                     "Upstream '{}' stalled: no response within {}s (model unavailable)",
                     upstream_name,
@@ -518,7 +521,6 @@ pub(crate) async fn resilient_send_raw(
                 // headers within the first-byte budget (model stall). Without this the stream
                 // hangs forever — reqwest's read_timeout only fires AFTER the first byte.
                 // Record a CB failure so a persistently-stalled model trips the breaker.
-                circuit_breaker.record_failure(generation).await;
                 tracing::error!(
                     "⛔ [stream] first-byte timeout: upstream '{}' sent no response within {}s (model stall)",
                     upstream_name,
@@ -529,6 +531,10 @@ pub(crate) async fn resilient_send_raw(
                     attempt = 0;
                     continue;
                 }
+                // CodeRabbit (#133): charge the breaker only when the whole fallback chain is
+                // exhausted, not once per stalled model — avoids tripping it prematurely when a
+                // single request stalls across multiple models.
+                circuit_breaker.record_failure(generation).await;
                 return Err(ProxyError::Upstream(format!(
                     "Upstream '{}' stalled: no response within {}s (model unavailable)",
                     upstream_name,
