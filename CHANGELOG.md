@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.10] - 2026-06-30
+
+### Changed
+- Bump anyhow 1.0.102 -> 1.0.103 for RUSTSEC-2026-0190
+
+### Fixed
+- Record breaker failure once per request on stall fallback (#67)
+- Add model fallback chain on non-transient failures (#67)
+
+---
+
 ## [0.24.9] - 2026-06-26
 
 ### Fixed
