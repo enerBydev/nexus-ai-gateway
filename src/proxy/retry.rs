@@ -18,6 +18,37 @@ pub(crate) fn chunk_timeout_secs() -> u64 {
     std::env::var("CHUNK_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120)
 }
 
+/// Issue #79: longer chunk timeout for "thinking" models. Heavy reasoners (deepseek-r1,
+/// QwQ, glm-5, ...) go SILENT during reasoning — NIM emits no SSE events at all while the
+/// model thinks — so the normal `CHUNK_TIMEOUT_SECS` (120s) cuts the stream off mid-thought
+/// and forces CC to re-send the whole (often 60K+ token) request. Thinking models get a
+/// longer budget. Default 300s, configurable via `THINKING_MODEL_CHUNK_TIMEOUT_SECS` (> 0).
+pub(crate) fn thinking_model_chunk_timeout_secs() -> u64 {
+    std::env::var("THINKING_MODEL_CHUNK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(300)
+}
+
+/// Issue #79: heuristic detection of reasoning models that go silent during thinking and
+/// therefore need a longer chunk timeout. Case-insensitive substring match against the known
+/// silent reasoners.
+pub(crate) fn is_thinking_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    ["deepseek-r1", "qwq", "glm-5", "glm5", "-r1-", "o1-", "o3-"].iter().any(|p| m.contains(p))
+}
+
+/// Issue #79: per-request chunk timeout. Thinking models get
+/// `THINKING_MODEL_CHUNK_TIMEOUT_SECS`; everything else gets `CHUNK_TIMEOUT_SECS`.
+pub(crate) fn resolve_chunk_timeout(model: &str) -> u64 {
+    if is_thinking_model(model) {
+        thinking_model_chunk_timeout_secs()
+    } else {
+        chunk_timeout_secs()
+    }
+}
+
 /// Issue #83 (P0): first-byte (response-headers) timeout.
 ///
 /// reqwest's `read_timeout` only fires AFTER the first byte is received, so an upstream
@@ -969,5 +1000,49 @@ mod fallback_tests {
             assert_eq!(try_next_fallback(&mut r, &mut used), None);
             assert_eq!(r.model, "primary");
         });
+    }
+}
+
+#[cfg(test)]
+mod thinking_timeout_tests {
+    use super::{is_thinking_model, resolve_chunk_timeout, thinking_model_chunk_timeout_secs};
+
+    #[test]
+    fn detects_silent_reasoners_only() {
+        for m in
+            ["z-ai/glm-5.1", "deepseek-ai/deepseek-r1", "qwen/qwq-32b", "openai/o1-mini", "o3-pro"]
+        {
+            assert!(is_thinking_model(m), "{m} should be detected as a thinking model");
+        }
+        for m in [
+            "moonshotai/kimi-k2.6",
+            "qwen/qwen3-coder",
+            "mistralai/mistral-small",
+            "claude-sonnet-4-6",
+        ] {
+            assert!(!is_thinking_model(m), "{m} should NOT be a thinking model");
+        }
+    }
+
+    #[test]
+    fn resolve_uses_longer_timeout_for_thinking() {
+        // Save/restore the two env vars this test touches (no sibling test reads them).
+        let prev_t = std::env::var("THINKING_MODEL_CHUNK_TIMEOUT_SECS").ok();
+        let prev_c = std::env::var("CHUNK_TIMEOUT_SECS").ok();
+        std::env::remove_var("THINKING_MODEL_CHUNK_TIMEOUT_SECS");
+        std::env::remove_var("CHUNK_TIMEOUT_SECS");
+
+        assert_eq!(thinking_model_chunk_timeout_secs(), 300, "default thinking timeout is 300s");
+        assert_eq!(resolve_chunk_timeout("z-ai/glm-5.1"), 300, "thinking model gets 300s");
+        assert_eq!(resolve_chunk_timeout("moonshotai/kimi-k2.6"), 120, "non-thinking gets 120s");
+
+        match prev_t {
+            Some(v) => std::env::set_var("THINKING_MODEL_CHUNK_TIMEOUT_SECS", v),
+            None => std::env::remove_var("THINKING_MODEL_CHUNK_TIMEOUT_SECS"),
+        }
+        match prev_c {
+            Some(v) => std::env::set_var("CHUNK_TIMEOUT_SECS", v),
+            None => std::env::remove_var("CHUNK_TIMEOUT_SECS"),
+        }
     }
 }

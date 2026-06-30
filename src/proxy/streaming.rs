@@ -16,7 +16,7 @@ use crate::config::Config;
 use crate::error::ProxyResult;
 use crate::models::{anthropic, openai};
 use crate::proxy::concurrency::{acquire_model_permit, ModelSemaphores};
-use crate::proxy::retry::{chunk_timeout_secs, resilient_send_raw, MAX_SSE_BUFFER};
+use crate::proxy::retry::{resilient_send_raw, resolve_chunk_timeout, MAX_SSE_BUFFER};
 use crate::proxy::token_scaling::scale_token_usage;
 use crate::tokenizer;
 use crate::transform;
@@ -227,8 +227,10 @@ pub(crate) fn create_sse_stream(
 
     let mut last_keepalive = std::time::Instant::now();
     // Use min of KEEPALIVE_INTERVAL and CHUNK_TIMEOUT for the select timeout
-    // This allows us to emit keep-alive even when CHUNK_TIMEOUT is 120s
-    let chunk_timeout = chunk_timeout_secs();
+    // This allows us to emit keep-alive even when CHUNK_TIMEOUT is 120s.
+    // Issue #79: thinking models (glm-5, deepseek-r1, qwq) go silent for long stretches
+    // during reasoning, so they get a longer per-model chunk timeout.
+    let chunk_timeout = resolve_chunk_timeout(&nim_model_name);
     let keepalive_check_interval = Duration::from_secs(KEEPALIVE_INTERVAL_SECS.min(chunk_timeout));
     let mut consecutive_keepalives: u32 = 0;
 
