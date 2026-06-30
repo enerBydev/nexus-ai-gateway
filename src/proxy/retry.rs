@@ -37,6 +37,51 @@ pub(crate) fn first_byte_timeout_secs() -> u64 {
         .filter(|&v| v > 0)
         .unwrap_or(60)
 }
+
+/// Issue #67: priority-ordered fallback models (comma-separated upstream model ids in
+/// `FALLBACK_MODELS`). When the primary model fails with a non-transient error
+/// (5xx / model-not-found / EOL / stall — NOT 429 or auth), NEXUS retries the request
+/// against the next model here before giving up, so one dead model cannot take down every
+/// session mapped to it. Empty (default) = no fallback.
+pub(crate) fn fallback_models() -> Vec<String> {
+    std::env::var("FALLBACK_MODELS")
+        .ok()
+        .map(|s| s.split(',').map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Max fallback models to try per request (Issue #67: "max 2 fallbacks").
+pub(crate) const MAX_FALLBACKS: usize = 2;
+
+/// Whether an upstream HTTP status is fallback-eligible: a non-transient signal that THIS
+/// model is unavailable and another might work. 429 (rate limit) is Retryable elsewhere;
+/// 401/403 (auth) and 400 (bad request / context overflow) are config/input errors that a
+/// different model cannot fix.
+pub(crate) fn is_fallback_eligible_status(status: u16) -> bool {
+    matches!(status, 500 | 502 | 503 | 504 | 404 | 410)
+}
+
+/// Issue #67: swap `openai_req.model` to the next fallback (within `MAX_FALLBACKS`).
+/// Returns the new model name when a swap happened, or None when fallbacks are exhausted.
+fn try_next_fallback(
+    openai_req: &mut openai::OpenAIRequest,
+    fallback_used: &mut usize,
+) -> Option<String> {
+    if *fallback_used >= MAX_FALLBACKS {
+        return None;
+    }
+    let next = fallback_models().get(*fallback_used)?.clone();
+    *fallback_used += 1;
+    let prev = std::mem::replace(&mut openai_req.model, next.clone());
+    tracing::warn!(
+        "🔀 [fallback] model '{}' failed — falling back to '{}' (fallback {}/{})",
+        prev,
+        next,
+        *fallback_used,
+        MAX_FALLBACKS
+    );
+    Some(next)
+}
 pub(crate) const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024; // 10MB safety limit for SSE buffer
 
 /// Compute the clamped `max_tokens` for a retry on a clampable (`Fixable`) upstream error.
@@ -105,6 +150,7 @@ pub(crate) async fn resilient_send(
     client_headers: &crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<openai::OpenAIResponse> {
     let mut attempt: u32 = 0;
+    let mut fallback_used: usize = 0; // Issue #67: fallback models tried so far
 
     loop {
         attempt += 1;
@@ -172,6 +218,11 @@ pub(crate) async fn resilient_send(
                     upstream_name,
                     first_byte_timeout_secs()
                 );
+                // Issue #67: a stall means THIS model is unavailable — try a fallback model.
+                if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                    attempt = 0;
+                    continue;
+                }
                 return Err(ProxyError::Upstream(format!(
                     "Upstream '{}' stalled: no response within {}s (model unavailable)",
                     upstream_name,
@@ -238,6 +289,17 @@ pub(crate) async fn resilient_send(
 
         match class {
             ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
+                // Issue #67: a 5xx is a model-availability signal. If a fallback model is
+                // configured, switch to it on the first such failure instead of burning the
+                // full (slow, backoff-growing) retry budget on a likely-dead model — CC would
+                // time out first. Falls through to the normal retry/exhaust path when no
+                // fallback is configured or all fallbacks have been used.
+                if is_fallback_eligible_status(status.as_u16())
+                    && try_next_fallback(openai_req, &mut fallback_used).is_some()
+                {
+                    attempt = 0;
+                    continue;
+                }
                 if attempt >= max_retries {
                     // Only record ONE CB failure when ALL retries are exhausted.
                     // Internal retries are self-healing — they must not individually
@@ -364,6 +426,15 @@ pub(crate) async fn resilient_send(
                         crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
                 }
+                // Issue #67: a non-transient failure (5xx / model-not-found / EOL) means THIS
+                // model is unavailable — try a fallback before giving up. Auth (401/403) and
+                // bad-request/overflow (400) are excluded: a different model cannot fix them.
+                if is_fallback_eligible_status(status.as_u16())
+                    && try_next_fallback(openai_req, &mut fallback_used).is_some()
+                {
+                    attempt = 0;
+                    continue;
+                }
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
                     status,
@@ -387,6 +458,7 @@ pub(crate) async fn resilient_send_raw(
     client_headers: &crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<reqwest::Response> {
     let mut attempt: u32 = 0;
+    let mut fallback_used: usize = 0; // Issue #67: fallback models tried so far
 
     loop {
         attempt += 1;
@@ -452,6 +524,11 @@ pub(crate) async fn resilient_send_raw(
                     upstream_name,
                     first_byte_timeout_secs()
                 );
+                // Issue #67: a stall means THIS model is unavailable — try a fallback model.
+                if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                    attempt = 0;
+                    continue;
+                }
                 return Err(ProxyError::Upstream(format!(
                     "Upstream '{}' stalled: no response within {}s (model unavailable)",
                     upstream_name,
@@ -487,6 +564,17 @@ pub(crate) async fn resilient_send_raw(
 
         match class {
             ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
+                // Issue #67: a 5xx is a model-availability signal. If a fallback model is
+                // configured, switch to it on the first such failure instead of burning the
+                // full (slow, backoff-growing) retry budget on a likely-dead model — CC would
+                // time out first. Falls through to the normal retry/exhaust path when no
+                // fallback is configured or all fallbacks have been used.
+                if is_fallback_eligible_status(status.as_u16())
+                    && try_next_fallback(openai_req, &mut fallback_used).is_some()
+                {
+                    attempt = 0;
+                    continue;
+                }
                 if attempt >= max_retries {
                     // Only record ONE CB failure when ALL retries are exhausted.
                     // Internal retries are self-healing — they must not individually
@@ -612,6 +700,15 @@ pub(crate) async fn resilient_send_raw(
                         "Context window full: {}. Use /compact to reduce context.",
                         crate::str_utils::safe_truncate(&upstream_err.message, 300)
                     )));
+                }
+                // Issue #67: a non-transient failure (5xx / model-not-found / EOL) means THIS
+                // model is unavailable — try a fallback before giving up. Auth (401/403) and
+                // bad-request/overflow (400) are excluded: a different model cannot fix them.
+                if is_fallback_eligible_status(status.as_u16())
+                    && try_next_fallback(openai_req, &mut fallback_used).is_some()
+                {
+                    attempt = 0;
+                    continue;
                 }
                 return Err(ProxyError::Upstream(format!(
                     "Fatal {} ({}): {}",
@@ -785,5 +882,86 @@ mod first_byte_timeout_tests {
         // Zero and invalid fall back to the default — a 0s budget would abort every request.
         assert_eq!(with_env(Some("0"), first_byte_timeout_secs), 60);
         assert_eq!(with_env(Some("garbage"), first_byte_timeout_secs), 60);
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::{fallback_models, is_fallback_eligible_status, try_next_fallback, MAX_FALLBACKS};
+    use crate::models::openai::OpenAIRequest;
+
+    fn with_fallbacks<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let key = "FALLBACK_MODELS";
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        let out = f();
+        match prev {
+            Some(p) => std::env::set_var(key, p),
+            None => std::env::remove_var(key),
+        }
+        out
+    }
+
+    fn req(model: &str) -> OpenAIRequest {
+        OpenAIRequest {
+            model: model.to_string(),
+            messages: vec![],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: None,
+            stream: None,
+            stream_options: None,
+            tools: None,
+            tool_choice: None,
+            chat_template_kwargs: None,
+            response_format: None,
+        }
+    }
+
+    #[test]
+    fn eligible_status_only_non_transient() {
+        for s in [500, 502, 503, 504, 404, 410] {
+            assert!(is_fallback_eligible_status(s), "{s} should be fallback-eligible");
+        }
+        // 429 (retryable), auth (401/403), bad-request/overflow (400), success (200) must NOT.
+        for s in [200, 400, 401, 403, 429] {
+            assert!(!is_fallback_eligible_status(s), "{s} must NOT be fallback-eligible");
+        }
+    }
+
+    // All FALLBACK_MODELS-dependent assertions run in one test so the process-wide env var is
+    // never mutated concurrently by a sibling test.
+    #[test]
+    fn fallback_parsing_and_swap() {
+        // Default: no fallbacks.
+        assert_eq!(with_fallbacks(None, fallback_models), Vec::<String>::new());
+        // Parse, trim, and drop empty entries.
+        assert_eq!(
+            with_fallbacks(Some("a, b ,, c"), fallback_models),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        // Swaps in priority order and stops at MAX_FALLBACKS (2) even if more are configured.
+        with_fallbacks(Some("m1,m2,m3"), || {
+            let mut r = req("primary");
+            let mut used = 0usize;
+            assert_eq!(try_next_fallback(&mut r, &mut used).as_deref(), Some("m1"));
+            assert_eq!(r.model, "m1");
+            assert_eq!(try_next_fallback(&mut r, &mut used).as_deref(), Some("m2"));
+            assert_eq!(r.model, "m2");
+            assert_eq!(MAX_FALLBACKS, 2);
+            assert_eq!(try_next_fallback(&mut r, &mut used), None, "must stop at MAX_FALLBACKS");
+            assert_eq!(r.model, "m2", "model unchanged once fallbacks are exhausted");
+        });
+        // No fallbacks configured -> None, model untouched.
+        with_fallbacks(None, || {
+            let mut r = req("primary");
+            let mut used = 0usize;
+            assert_eq!(try_next_fallback(&mut r, &mut used), None);
+            assert_eq!(r.model, "primary");
+        });
     }
 }
