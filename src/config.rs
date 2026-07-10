@@ -47,10 +47,47 @@ pub struct UpstreamConfig {
     pub upstream_type: Option<UpstreamType>,
 }
 
+/// Per-model thinking mechanism — how NEXUS asks the upstream to enable reasoning.
+/// Closes #58 (per-model flag), #101 (denylist for Mistral), #57 (Anthropic API thinking).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingMechanism {
+    /// NIM: inject `chat_template_kwargs: {enable_thinking: true, clear_thinking: false}`
+    ChatTemplate,
+    /// Anthropic-shaped upstream: inject `thinking: {type: "enabled", budget_tokens: N}`
+    AnthropicApi,
+    /// Inject nothing — model does not support or should not receive thinking hints.
+    None,
+}
+
+impl std::fmt::Display for ThinkingMechanism {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ThinkingMechanism::ChatTemplate => write!(f, "chat_template"),
+            ThinkingMechanism::AnthropicApi => write!(f, "anthropic_api"),
+            ThinkingMechanism::None => write!(f, "none"),
+        }
+    }
+}
+
+impl std::str::FromStr for ThinkingMechanism {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "chat_template" | "chattemplate" => Ok(ThinkingMechanism::ChatTemplate),
+            "anthropic_api" | "anthropicapi" | "anthropic" => Ok(ThinkingMechanism::AnthropicApi),
+            "none" | "disabled" | "off" => Ok(ThinkingMechanism::None),
+            other => Err(format!("unknown thinking mechanism: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelRoute {
     pub upstream_name: String,
     pub target_model: String,
+    /// Per-route thinking mechanism override (optional 3rd segment in MODEL_MAP).
+    /// When `Some`, overrides both the denylist and the default-by-UpstreamType.
+    pub thinking_mechanism: Option<ThinkingMechanism>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +141,13 @@ pub struct Config {
     /// Issue #69: Skip startup model health check when true.
     /// Controlled by `DISABLE_HEALTH_CHECK` env var (default: false).
     pub disable_health_check: bool,
+    /// Issue #101/#58: comma-separated list of target model substrings that must never
+    /// receive thinking hints (chat_template_kwargs or thinking). Forces
+    /// `ThinkingMechanism::None` for any matched target model.
+    pub disable_thinking_models: Vec<String>,
+    /// Issue #57: default budget_tokens for the AnthropicApi thinking mechanism.
+    /// Used when the client does not send its own `thinking.budget_tokens`.
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 impl Config {
@@ -409,19 +453,42 @@ impl Config {
         }
 
         // Model Mapping Table from env vars
+        // Issue #58: optional 3rd segment for per-route thinking mechanism:
+        //   MODEL_MAP_X=upstream:model           -> mechanism = None (use default)
+        //   MODEL_MAP_X=upstream:model:none       -> mechanism = Some(None)
+        //   MODEL_MAP_X=upstream:model:chat_template -> mechanism = Some(ChatTemplate)
+        //   MODEL_MAP_X=upstream:model:anthropic_api -> mechanism = Some(AnthropicApi)
         let mut model_map = HashMap::new();
         for (key, value) in data {
             if let Some(model_id_raw) = key.strip_prefix("MODEL_MAP_") {
                 let model_id = model_id_raw.replace('_', "-").to_lowercase();
-                if let Some((upstream, target)) = value.split_once(':') {
+                if let Some((upstream, rest)) = value.split_once(':') {
+                    let (target, mechanism) = if let Some((t, m)) = rest.split_once(':') {
+                        let mech = match m.trim().parse::<ThinkingMechanism>() {
+                            Ok(tm) => Some(tm),
+                            Err(e) => {
+                                eprintln!(
+                                    " [WARN] MODEL_MAP_{}: invalid mechanism '{}': {}",
+                                    model_id_raw,
+                                    m.trim(),
+                                    e
+                                );
+                                Option::None
+                            }
+                        };
+                        (t.to_string(), mech)
+                    } else {
+                        (rest.to_string(), Option::None)
+                    };
                     model_map.insert(
                         model_id.clone(),
                         ModelRoute {
                             upstream_name: upstream.to_string(),
-                            target_model: target.to_string(),
+                            target_model: target,
+                            thinking_mechanism: mechanism,
                         },
                     );
-                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, target);
+                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, value);
                 }
             }
         }
@@ -467,6 +534,22 @@ impl Config {
         let disable_health_check = Self::get_from_map(data, "DISABLE_HEALTH_CHECK")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
+
+        // Issue #101/#58: denylist of model substrings that must not receive thinking hints.
+        // Parsed like FALLBACK_MODELS: comma-separated, trimmed, empty entries dropped.
+        let disable_thinking_models = Self::get_from_map(data, "DISABLE_THINKING_MODELS")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        // Issue #57: default budget_tokens for AnthropicApi thinking mechanism.
+        let thinking_budget_tokens = Self::get_from_map(data, "THINKING_BUDGET_TOKENS")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&v| v > 0);
 
         // Dynamic context window mapping (Issue #28)
         let cc_model_context_windows = Self::get_from_map(data, "CC_MODEL_CONTEXT_WINDOWS")
@@ -592,6 +675,8 @@ impl Config {
             telemetry_disabled_reason,
             config_path: None, // Set by caller (from_env_with_path)
             disable_health_check,
+            disable_thinking_models,
+            thinking_budget_tokens,
         })
     }
 
@@ -770,19 +855,38 @@ impl Config {
 
         // Model Mapping Table from env vars
         // Note: env var names use underscores (POSIX), model IDs use hyphens
+        // Issue #58: optional 3rd segment for per-route thinking mechanism
         let mut model_map = HashMap::new();
         for (key, value) in env::vars() {
             if let Some(model_id_raw) = key.strip_prefix("MODEL_MAP_") {
                 let model_id = model_id_raw.replace('_', "-").to_lowercase();
-                if let Some((upstream, target)) = value.split_once(':') {
+                if let Some((upstream, rest)) = value.split_once(':') {
+                    let (target, mechanism) = if let Some((t, m)) = rest.split_once(':') {
+                        let mech = match m.trim().parse::<ThinkingMechanism>() {
+                            Ok(tm) => Some(tm),
+                            Err(e) => {
+                                eprintln!(
+                                    " [WARN] MODEL_MAP_{}: invalid mechanism '{}': {}",
+                                    model_id_raw,
+                                    m.trim(),
+                                    e
+                                );
+                                Option::None
+                            }
+                        };
+                        (t.to_string(), mech)
+                    } else {
+                        (rest.to_string(), Option::None)
+                    };
                     model_map.insert(
                         model_id.clone(),
                         ModelRoute {
                             upstream_name: upstream.to_string(),
-                            target_model: target.to_string(),
+                            target_model: target,
+                            thinking_mechanism: mechanism,
                         },
                     );
-                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, target);
+                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, value);
                 }
             }
         }
@@ -821,6 +925,22 @@ impl Config {
         let disable_health_check = env::var("DISABLE_HEALTH_CHECK")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
+
+        // Issue #101/#58: denylist of model substrings that must not receive thinking hints.
+        let disable_thinking_models = env::var("DISABLE_THINKING_MODELS")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        // Issue #57: default budget_tokens for AnthropicApi thinking mechanism.
+        let thinking_budget_tokens = env::var("THINKING_BUDGET_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&v| v > 0);
 
         // Dynamic context window mapping (Issue #28)
         let cc_model_context_windows = env::var("CC_MODEL_CONTEXT_WINDOWS")
@@ -945,6 +1065,8 @@ impl Config {
             telemetry_disabled_reason,
             config_path: stored_config_path,
             disable_health_check,
+            disable_thinking_models,
+            thinking_budget_tokens,
         };
         Ok(config)
     }
@@ -980,6 +1102,34 @@ impl Config {
             .get(upstream_name)
             .and_then(|u| u.upstream_type)
             .unwrap_or(self.upstream_type)
+    }
+
+    /// Resolve the thinking mechanism for a specific target model.
+    /// Resolution order (most specific wins):
+    ///   1. Per-route override from MODEL_MAP 3rd segment
+    ///   2. DISABLE_THINKING_MODELS denylist match -> ThinkingMechanism::None
+    ///   3. Default by UpstreamType
+    pub fn resolve_thinking_mechanism(
+        &self,
+        target_model: &str,
+        upstream_type: UpstreamType,
+        route_override: Option<ThinkingMechanism>,
+    ) -> ThinkingMechanism {
+        // 1. Explicit per-route override wins
+        if let Some(mechanism) = route_override {
+            return mechanism;
+        }
+        // 2. Denylist check: case-insensitive substring match
+        let target_lower = target_model.to_lowercase();
+        if self.disable_thinking_models.iter().any(|pattern| target_lower.contains(pattern)) {
+            return ThinkingMechanism::None;
+        }
+        // 3. Default by upstream type
+        match upstream_type {
+            UpstreamType::NIM => ThinkingMechanism::ChatTemplate,
+            UpstreamType::Anthropic => ThinkingMechanism::AnthropicApi,
+            UpstreamType::OpenAI | UpstreamType::OpenRouter => ThinkingMechanism::None,
+        }
     }
 
     /// Reload config from environment/dotenv file

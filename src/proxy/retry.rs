@@ -183,6 +183,8 @@ fn classify_transport_error(err: &reqwest::Error) -> &'static str {
         "timeout"
     } else if err.is_request() {
         "request"
+    } else if err.is_builder() {
+        "builder"
     } else {
         "unknown"
     }
@@ -1096,6 +1098,7 @@ mod fallback_tests {
             tools: None,
             tool_choice: None,
             chat_template_kwargs: None,
+            thinking: None,
             response_format: None,
         }
     }
@@ -1209,10 +1212,10 @@ mod transport_error_tests {
     }
 
     #[test]
-    fn classify_builder_error_as_request() {
+    fn classify_builder_error() {
         // reqwest transport errors are opaque — we cannot construct a connect error
         // without a real network call. Here we verify classify_transport_error returns
-        // a valid kind for a builder error (which reports is_request() = true).
+        // "builder" for a URL-parse error (reqwest 0.12+ reports is_builder() = true).
         let err = reqwest::Client::builder()
             .build()
             .unwrap()
@@ -1220,7 +1223,7 @@ mod transport_error_tests {
             .build()
             .unwrap_err();
         let kind = classify_transport_error(&err);
-        assert_eq!(kind, "request", "builder error should classify as 'request'");
+        assert_eq!(kind, "builder", "URL-parse error should classify as 'builder'");
     }
 }
 

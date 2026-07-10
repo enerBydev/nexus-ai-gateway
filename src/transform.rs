@@ -107,16 +107,51 @@ pub fn anthropic_to_openai(
     config: &Config,
     upstream_name: &str, // Issue #35 F9: for conditional chat_template_kwargs
 ) -> ProxyResult<TransformResult> {
-    // Issue #90-B (ARB Eje A): reasoning activation is now policy-driven (`global_max`),
-    // decoupled from the Claude model id and translated to the upstream's mechanism. The
-    // default reproduces the prior behavior (force thinking; enable_thinking kwargs for
-    // NIM only). Replaces the former hardcoded `has_thinking = true` + inline kwargs.
-    let activation =
-        crate::reasoning::activation::activate(config.get_upstream_type(upstream_name));
+    // Issue #58/#101/#57: resolve model FIRST (tiers 1-2) so the target model is known
+    // before calling activate(). This breaks the prior circularity where activate() ran
+    // before resolve_model_and_upstream(). Tier 3 (no map hit) uses has_thinking=true
+    // (global_max default) because no per-model identity is known in that path.
+    let upstream_type = config.get_upstream_type(upstream_name);
+
+    // Try tiers 1-2 (model_map exact hit, family fallback) which don't need has_thinking
+    let (model, route_mechanism) = if let Some(route) = config.model_map.get(&req.model) {
+        tracing::info!(
+            "[PIN] Model map hit: {} -> {}:{}",
+            req.model,
+            route.upstream_name,
+            route.target_model
+        );
+        (route.target_model.clone(), route.thinking_mechanism)
+    } else if let Some((matched, route)) = best_family_match(&req.model, &config.model_map) {
+        tracing::warn!(
+            "[PIN] Model family fallback: {} -> {}:{} (no exact map; matched '{}' by family)",
+            req.model,
+            route.upstream_name,
+            route.target_model,
+            matched
+        );
+        (route.target_model.clone(), route.thinking_mechanism)
+    } else {
+        // Tier 3: no map hit — use global_max default (has_thinking=true)
+        let model = config.reasoning_model.clone().unwrap_or_else(|| req.model.clone());
+        tracing::info!("[PIN] Model fallback: {} -> default:{}", req.model, model);
+        (model, None)
+    };
+
+    // Now activate with the known target model
+    let activation = crate::reasoning::activation::activate(
+        upstream_type,
+        &model,
+        config,
+        route_mechanism,
+        req.extra.get("thinking"),
+        req.max_tokens,
+    );
     let has_thinking = activation.has_thinking;
 
-    // Resolve model AND upstream via model map or config
-    let (model, _resolved_upstream) = resolve_model_and_upstream(&req.model, has_thinking, config);
+    // For the full resolve (needed for upstream_name), use the original function
+    let (_model_check, _resolved_upstream) =
+        resolve_model_and_upstream(&req.model, has_thinking, config);
 
     // Convert messages
     let mut openai_messages = Vec::new();
@@ -221,13 +256,19 @@ pub fn anthropic_to_openai(
         }
     });
 
+    // Issue #57 (§8.2): when AnthropicApi thinking is active, force temperature and
+    // top_p to None. The Anthropic Messages API requires temperature=1 (or omitted) when
+    // thinking is enabled; sending a custom temperature causes a hard 400.
+    let (temperature, top_p) =
+        if activation.thinking.is_some() { (None, None) } else { (req.temperature, req.top_p) };
+
     Ok(TransformResult {
         request: openai::OpenAIRequest {
             model,
             messages: openai_messages,
             max_tokens: Some(req.max_tokens),
-            temperature: req.temperature,
-            top_p: req.top_p,
+            temperature,
+            top_p,
             stop: req.stop_sequences,
             stream: req.stream,
             // v6.1: Request token usage in streaming — NIM sends real counts in final chunk
@@ -238,9 +279,12 @@ pub fn anthropic_to_openai(
             },
             tools,
             tool_choice: None,
-            // Issue #35 Bug E / #90-B: chat_template_kwargs is only valid for NIM
-            // upstreams; the activation policy (ARB Eje A) resolves it NIM-only.
+            // Issue #35 Bug E / #90-B / #101: chat_template_kwargs resolved per-model.
+            // Only ChatTemplate mechanism produces Some — Mistral/Devstral get None.
             chat_template_kwargs: activation.chat_template_kwargs.clone(),
+            // Issue #57: Anthropic-API thinking injection. Only AnthropicApi mechanism
+            // produces Some — NIM/OpenAI/OpenRouter get None.
+            thinking: activation.thinking.clone(),
             // #126: forward CC's structured-output schema (output_config.format) as an
             // OpenAI response_format so NIM upstreams enforce it instead of returning
             // free-form prose (which made CC's headless verdict fail with "Execution error").

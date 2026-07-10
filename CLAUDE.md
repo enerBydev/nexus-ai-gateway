@@ -122,13 +122,13 @@ These behaviors are intentional and should not be changed:
 
 ### Transform Layer (src/transform.rs)
 
-1. **`has_thinking = true` BY DESIGN** — NIM upstreams force `enable_thinking=true` via `chat_template_kwargs` to produce better output with thinking enabled globally, not just for Opus. Non-NIM upstreams (Anthropic, OpenAI, OpenRouter) handle thinking natively and do not receive `chat_template_kwargs`.
+1. **Per-model `ThinkingMechanism` BY DESIGN** (Issues #58/#101/#57) — Reasoning activation is resolved per target model via `ThinkingMechanism` enum (`ChatTemplate` / `AnthropicApi` / `None`). NIM models get `chat_template_kwargs` (ChatTemplate); Anthropic upstreams get `thinking: {type:"enabled", budget_tokens:N}` (AnthropicApi) with forced `temperature=None`; OpenAI/OpenRouter get nothing (None). Models on the `DISABLE_THINKING_MODELS` denylist always get `None`. Per-route override via optional 3rd `MODEL_MAP` segment (e.g. `MODEL_MAP_X=upstream:model:none`).
 
 2. **Model identity preservation BY DESIGN** — Responses return the original Claude model ID (e.g., `claude-sonnet-4-6`) even when routed to different upstream models. This is done via `original_model` parameter in streaming responses.
 
 3. **`anthropic-beta` header conditional BY DESIGN** — Only sent to Anthropic upstream (when `NEXUS_UPSTREAM_TYPE=anthropic` or per-upstream `UPSTREAM_<NAME>_TYPE=anthropic`). Never sent to NIM/OpenAI/OpenRouter. Client betas are merged with `PROXY_MINIMUM_BETAS` (e.g. `prompt-caching-scope-2026-01-05`) and deduplicated. When client omits `anthropic-beta`, only proxy minimums are sent.
 
-4. **`chat_template_kwargs` conditional BY DESIGN** — `enable_thinking=true` via `chat_template_kwargs` is only included when the upstream type is NIM. Non-NIM upstreams (Anthropic, OpenAI, OpenRouter) receive the request without `chat_template_kwargs`, since they handle thinking natively.
+4. **`chat_template_kwargs` and `thinking` conditional BY DESIGN** (Issues #58/#101/#57) — `chat_template_kwargs` is only included for NIM models that support it (ChatTemplate mechanism); Mistral/Devstral and other denylisted models never receive it. Anthropic upstreams receive `thinking: {type:"enabled", budget_tokens:N}` instead (AnthropicApi mechanism). OpenAI/OpenRouter receive neither. Resolution order: per-route MODEL_MAP override > DISABLE_THINKING_MODELS denylist > default-by-UpstreamType.
 
 ### Proxy Layer (src/proxy/)
 
@@ -182,8 +182,10 @@ These behaviors are intentional and should not be changed:
 | `TELEMETRY_BEACON_URL` | `https://nexus-beacon-receiver.enerby212.workers.dev/v1/beacon` | Beacon endpoint URL. Set to empty string to disable beacon only |
 | `BEACON_AUTH_TOKEN` | (compiled in) | Auth token for beacon endpoint. Override via env var if needed |
 | `TELEMETRY_RETENTION_DAYS` | `30` | Days before auto-purge of local analytics data |
+| `DISABLE_THINKING_MODELS` | (none) | Comma-separated denylist of target model substrings (Issue #101). Models matching any entry never receive `chat_template_kwargs` or `thinking` hints. Example: `DISABLE_THINKING_MODELS=mistral,devstral,llama` |
+| `THINKING_BUDGET_TOKENS` | (none) | Default `budget_tokens` for the AnthropicApi thinking mechanism (Issue #57). When set, Anthropic upstreams receive `thinking:{type:"enabled", budget_tokens:N}`. Client's own `budget_tokens` takes precedence. Clamped to be strictly less than `max_tokens` |
 
-Model mapping: `MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>` (hyphens → underscores in model IDs)
+Model mapping: `MODEL_MAP_<claude_id_with_underscores>=<upstream>:<model>[:<mechanism>]` (hyphens → underscores in model IDs). Optional 3rd segment overrides thinking mechanism: `chat_template`, `anthropic_api`, or `none`
 Per-upstream type: `UPSTREAM_<NAME>_TYPE=anthropic|nim|openai|openrouter` — overrides global `NEXUS_UPSTREAM_TYPE` for a named upstream
 
 ## Testing Strategy
