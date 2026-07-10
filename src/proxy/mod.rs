@@ -597,6 +597,8 @@ mod context_window_tests {
             config_path: None,
             telemetry_disabled_reason: None,
             disable_health_check: false,
+            disable_thinking_models: Vec::new(),
+            thinking_budget_tokens: None,
         }
     }
 

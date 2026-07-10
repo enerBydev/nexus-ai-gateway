@@ -169,6 +169,7 @@ fn typed_variant_matches_json_variant() {
         tools: None,
         tool_choice: None,
         chat_template_kwargs: None,
+        thinking: None,
         response_format: None,
     };
 

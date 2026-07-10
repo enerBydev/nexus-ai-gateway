@@ -1096,6 +1096,7 @@ mod fallback_tests {
             tools: None,
             tool_choice: None,
             chat_template_kwargs: None,
+            thinking: None,
             response_format: None,
         }
     }

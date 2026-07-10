@@ -40,6 +40,8 @@ mod tests {
             config_path: None,
             telemetry_disabled_reason: None,
             disable_health_check: false,
+            disable_thinking_models: Vec::new(),
+            thinking_budget_tokens: None,
         }
     }
 
@@ -51,6 +53,7 @@ mod tests {
             ModelRoute {
                 upstream_name: "bigmodel".to_string(),
                 target_model: "z-ai/glm5".to_string(),
+                thinking_mechanism: None,
             },
         );
         // Insert bigmodel upstream entry so get_upstream_type can resolve it
@@ -627,17 +630,26 @@ mod tests {
         let mut m = HashMap::new();
         m.insert(
             "claude-opus-4-5".to_string(),
-            ModelRoute { upstream_name: "default".into(), target_model: "old/opus".into() },
+            ModelRoute {
+                upstream_name: "default".into(),
+                target_model: "old/opus".into(),
+                thinking_mechanism: None,
+            },
         );
         m.insert(
             "claude-opus-4-6".to_string(),
-            ModelRoute { upstream_name: "default".into(), target_model: "z-ai/glm-5.1".into() },
+            ModelRoute {
+                upstream_name: "default".into(),
+                target_model: "z-ai/glm-5.1".into(),
+                thinking_mechanism: None,
+            },
         );
         m.insert(
             "claude-sonnet-4-6".to_string(),
             ModelRoute {
                 upstream_name: "default".into(),
                 target_model: "moonshotai/kimi-k2.6".into(),
+                thinking_mechanism: None,
             },
         );
         m
@@ -688,11 +700,19 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(
             "claude-opus-4-20250115".to_string(),
-            ModelRoute { upstream_name: "default".into(), target_model: "dated/opus".into() },
+            ModelRoute {
+                upstream_name: "default".into(),
+                target_model: "dated/opus".into(),
+                thinking_mechanism: None,
+            },
         );
         map.insert(
             "claude-opus-4-6".to_string(),
-            ModelRoute { upstream_name: "default".into(), target_model: "z-ai/glm-5.1".into() },
+            ModelRoute {
+                upstream_name: "default".into(),
+                target_model: "z-ai/glm-5.1".into(),
+                thinking_mechanism: None,
+            },
         );
         let (matched, _) = best_family_match("claude-opus-4-8", &map).unwrap();
         assert_eq!(matched, "claude-opus-4-6", "clean dotted version sorts above dated snapshot");
