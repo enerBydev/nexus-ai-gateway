@@ -1,5 +1,7 @@
 use std::sync::OnceLock;
 
+use rand::RngExt;
+
 use crate::proxy::error_types::UpstreamError;
 use crate::proxy::rate_limit::{is_l2_rate_limit, log_l2_rate_limit, L2_MIN_BACKOFF_MS};
 
@@ -317,7 +319,6 @@ fn classify_by_status(status: u16, error_message: &str) -> ErrorClass {
 /// Calculate delay with exponential backoff + jitter (avoids thundering herd)
 /// Jitter range: ±25% of base, capped at 30s
 pub(crate) fn delay_with_jitter(base_ms: u64, attempt: u32) -> u64 {
-    use rand::RngExt;
     let exponential = base_ms * 2u64.pow(attempt.saturating_sub(1));
     let capped = exponential.min(30_000);
     let jitter_range = capped / 4;

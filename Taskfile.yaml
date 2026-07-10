@@ -273,9 +273,9 @@ tasks:
   version:
     desc: Show current version
     cmds:
-      - echo "Cargo.toml: $(grep '^version' Cargo.toml)"
+      - 'echo "Cargo.toml: $(grep ''^version'' Cargo.toml)"'
       - '[ -f VERSION ] && echo "VERSION file: $(cat VERSION)" || echo "VERSION file: not found"'
-      - git describe --tags --always 2>/dev/null || echo "Git tag: none"
+      - 'git describe --tags --always 2>/dev/null || echo "Git tag: none"'
 
   bump-patch:
     desc: Bump PATCH version (0.5.0 → 0.5.1)
