@@ -31,6 +31,10 @@ impl CircuitBreakerMap {
         }
     }
 
+    /// Maximum distinct models tracked. Beyond this, new models get the most recent
+    /// breaker (prevents unbounded memory growth from unknown client model names).
+    const MAX_MODELS: usize = 256;
+
     /// Get or create the circuit breaker for a specific upstream model. When the registry
     /// is disabled, returns a shared no-op breaker (no allocation per call).
     pub async fn get(&self, model: &str) -> Arc<circuit_breaker::CircuitBreaker> {
@@ -52,6 +56,22 @@ impl CircuitBreakerMap {
 
         // Slow path: write lock to create
         let mut write = self.breakers.write().await;
+
+        // Guard: cap the map to prevent unbounded growth from unknown model names.
+        // Once at capacity, return a shared default breaker for any new model.
+        if write.len() >= Self::MAX_MODELS && !write.contains_key(model) {
+            tracing::warn!(
+                "[CB] Per-model breaker map at capacity ({}) — using shared breaker for '{}'",
+                Self::MAX_MODELS,
+                model
+            );
+            static OVERFLOW: std::sync::OnceLock<Arc<circuit_breaker::CircuitBreaker>> =
+                std::sync::OnceLock::new();
+            return OVERFLOW
+                .get_or_init(|| Arc::new(circuit_breaker::CircuitBreaker::default()))
+                .clone();
+        }
+
         write
             .entry(model.to_string())
             .or_insert_with(|| {

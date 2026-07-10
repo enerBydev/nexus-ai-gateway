@@ -222,11 +222,17 @@ pub(crate) async fn resilient_send(
         let (allowed, generation) = cb.is_allowed().await;
         if !allowed {
             tracing::warn!(
-                "Circuit breaker OPEN for model '{}' — rejecting request",
+                "Circuit breaker OPEN for model '{}' — trying fallback",
                 openai_req.model
             );
+            // CR feedback: try fallback models before giving up — a healthy fallback
+            // should not be blocked by the primary model's open breaker.
+            if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                attempt = 0;
+                continue;
+            }
             return Err(ProxyError::Upstream(format!(
-                "Service unavailable: circuit breaker open for model '{}'",
+                "Service unavailable: circuit breaker open for model '{}' (no fallback available)",
                 openai_req.model
             )));
         }
@@ -589,11 +595,15 @@ pub(crate) async fn resilient_send_raw(
         let (allowed, generation) = cb.is_allowed().await;
         if !allowed {
             tracing::warn!(
-                "Circuit breaker OPEN for model '{}' — rejecting request",
+                "Circuit breaker OPEN for model '{}' — trying fallback",
                 openai_req.model
             );
+            if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                attempt = 0;
+                continue;
+            }
             return Err(ProxyError::Upstream(format!(
-                "Service unavailable: circuit breaker open for model '{}'",
+                "Service unavailable: circuit breaker open for model '{}' (no fallback available)",
                 openai_req.model
             )));
         }
@@ -1199,21 +1209,18 @@ mod transport_error_tests {
     }
 
     #[test]
-    fn classify_connect_error() {
-        // reqwest errors are opaque — we can only test the classification function with
-        // the error kinds it checks. Here we verify the function compiles and returns a
-        // valid kind string for a real reqwest error (builder error = is_request).
+    fn classify_builder_error_as_request() {
+        // reqwest transport errors are opaque — we cannot construct a connect error
+        // without a real network call. Here we verify classify_transport_error returns
+        // a valid kind for a builder error (which reports is_request() = true).
         let err = reqwest::Client::builder()
             .build()
             .unwrap()
-            .get("http://[::ffff:999.999.999.999]:1") // invalid IP — builder accepts it but send would fail
+            .get("http://[::ffff:999.999.999.999]:1")
             .build()
             .unwrap_err();
         let kind = classify_transport_error(&err);
-        assert!(
-            ["connect", "timeout", "request", "unknown"].contains(&kind),
-            "got unexpected kind: {kind}"
-        );
+        assert_eq!(kind, "request", "builder error should classify as 'request'");
     }
 }
 
