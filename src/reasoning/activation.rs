@@ -130,6 +130,7 @@ mod tests {
             telemetry_secret_path: String::new(),
             telemetry_disabled_reason: None,
             config_path: None,
+            env_file_path: None,
             disable_health_check: false,
             disable_thinking_models: Vec::new(),
             thinking_budget_tokens: None,

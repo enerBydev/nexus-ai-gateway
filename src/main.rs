@@ -188,6 +188,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Issue #70: Log config source attribution (tracing must be initialized first)
+    config.log_config_sources();
+
     // v0.18.0: Install Prometheus metrics recorder
     let prometheus_handle =
         PrometheusBuilder::new().install_recorder().expect("Failed to install Prometheus recorder");

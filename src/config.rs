@@ -138,6 +138,9 @@ pub struct Config {
     /// Path to custom config file (--config flag)
     /// Stored for hot-reload support (SIGHUP + file watcher)
     pub config_path: Option<PathBuf>,
+    /// Resolved .env file path from `load_dotenv()` (Issue #70).
+    /// Used by `log_config_sources()` to re-read the same file that was actually loaded.
+    pub env_file_path: Option<PathBuf>,
     /// Issue #69: Skip startup model health check when true.
     /// Controlled by `DISABLE_HEALTH_CHECK` env var (default: false).
     pub disable_health_check: bool,
@@ -673,7 +676,8 @@ impl Config {
             telemetry_retention_days,
             telemetry_secret_path,
             telemetry_disabled_reason,
-            config_path: None, // Set by caller (from_env_with_path)
+            config_path: None,   // Set by caller (from_env_with_path)
+            env_file_path: None, // Set by caller (from_env_with_path)
             disable_health_check,
             disable_thinking_models,
             thinking_budget_tokens,
@@ -714,360 +718,29 @@ impl Config {
         Self::from_env_with_path(None)
     }
 
+    /// Build Config from the process environment.
+    ///
+    /// Precedence (BY DESIGN): shell environment wins over .env file values.
+    /// `load_dotenv()` uses dotenvy which does NOT override existing env vars,
+    /// so after loading, `env::vars()` contains both shell and .env values with
+    /// shell taking precedence. This differs from `reload()` where .env wins
+    /// (see `load_env_to_map` which overlays .env on top of process env).
     pub fn from_env_with_path(custom_path: Option<PathBuf>) -> Result<Self> {
-        let stored_config_path = custom_path.clone();
-        if let Some(path) = Self::load_dotenv(custom_path) {
-            eprintln!("📄 Loaded config from: {}", path.display());
+        // Step 1: Load .env into process env (dotenvy default: shell vars win)
+        let resolved_env_path = Self::load_dotenv(custom_path.clone());
+        if let Some(ref path) = resolved_env_path {
+            eprintln!("\u{1f4c4} Loaded config from: {}", path.display());
         } else {
-            eprintln!("ℹ️ No .env file found, using environment variables only");
+            eprintln!("\u{2139}\u{fe0f} No .env file found, using environment variables only");
         }
 
-        let port = env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8315);
+        // Step 2: Collect process env into map (now includes .env, with shell precedence)
+        let map: HashMap<String, String> = env::vars().collect();
 
-        // Issue #78: configurable bind address, default 127.0.0.1 (loopback-only).
-        let bind_addr = Self::resolve_bind_addr(env::var("BIND_ADDR").ok(), env::var("HOST").ok());
-
-        let base_url = env::var("UPSTREAM_BASE_URL").map_err(|_| {
-            anyhow::anyhow!(
-                "UPSTREAM_BASE_URL is required. Set it to your OpenAI-compatible endpoint.\n\
-                 Examples:\n\
-                 - OpenRouter: https://openrouter.ai/api\n\
-                 - OpenAI: https://api.openai.com\n\
-                 - Local: http://localhost:11434"
-            )
-        })?;
-
-        // Issue #115: support the *_FILE convention (direct value > _FILE > none).
-        let api_key = Self::resolve_secret(
-            env::var("UPSTREAM_API_KEY").ok(),
-            env::var("UPSTREAM_API_KEY_FILE").ok(),
-        )
-        .or_else(|| {
-            Self::resolve_secret(
-                env::var("OPENROUTER_API_KEY").ok(),
-                env::var("OPENROUTER_API_KEY_FILE").ok(),
-            )
-        });
-
-        let reasoning_model = env::var("REASONING_MODEL").ok();
-        let completion_model = env::var("COMPLETION_MODEL").ok();
-
-        let debug =
-            env::var("DEBUG").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
-
-        let verbose =
-            env::var("VERBOSE").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
-
-        if base_url.ends_with("/v1") {
-            eprintln!("[WARN] WARNING: UPSTREAM_BASE_URL ends with '/v1'");
-            eprintln!("   This will result in URLs like: {}/v1/chat/completions", base_url);
-            eprintln!("   Consider removing '/v1' from UPSTREAM_BASE_URL");
-            eprintln!("   Correct: https://openrouter.ai/api");
-            eprintln!("   Wrong:   https://openrouter.ai/api/v1");
-        }
-
-        let web_fetch_enabled = env::var("WEB_FETCH_ENABLED")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(true);
-
-        let web_fetch_max_retries =
-            env::var("WEB_FETCH_MAX_RETRIES").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
-
-        let web_fetch_timeout_secs =
-            env::var("WEB_FETCH_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
-
-        // Multi-upstream configuration
-        let mut upstreams = HashMap::new();
-        upstreams.insert(
-            "default".to_string(),
-            UpstreamConfig {
-                base_url: base_url.clone(),
-                api_key: api_key.clone(),
-                upstream_type: None,
-            },
-        );
-
-        if let Ok(bm_url) = env::var("UPSTREAM_BIGMODEL_BASE_URL") {
-            let bm_type = env::var("UPSTREAM_BIGMODEL_TYPE")
-                .ok()
-                .and_then(|v| v.parse::<UpstreamType>().ok());
-            upstreams.insert(
-                "bigmodel".to_string(),
-                UpstreamConfig {
-                    base_url: bm_url,
-                    api_key: Self::resolve_secret(
-                        env::var("UPSTREAM_BIGMODEL_API_KEY").ok(),
-                        env::var("UPSTREAM_BIGMODEL_API_KEY_FILE").ok(),
-                    ),
-                    upstream_type: bm_type,
-                },
-            );
-            eprintln!(
-                " ✅ BigModel upstream configured [type={}]",
-                bm_type.map(|t| t.to_string()).unwrap_or_else(|| "global".to_string())
-            );
-        }
-
-        if let Ok(cf_url) = env::var("UPSTREAM_CF_BASE_URL") {
-            let cf_type =
-                env::var("UPSTREAM_CF_TYPE").ok().and_then(|v| v.parse::<UpstreamType>().ok());
-            upstreams.insert(
-                "cf".to_string(),
-                UpstreamConfig {
-                    base_url: cf_url,
-                    api_key: Self::resolve_secret(
-                        env::var("UPSTREAM_CF_API_KEY").ok(),
-                        env::var("UPSTREAM_CF_API_KEY_FILE").ok(),
-                    ),
-                    upstream_type: cf_type,
-                },
-            );
-            eprintln!(
-                " ✅ Cloudflare upstream configured [type={}]",
-                cf_type.map(|t| t.to_string()).unwrap_or_else(|| "global".to_string())
-            );
-        }
-
-        // Issue #35 F3: Generalized per-upstream type scanning
-        // After constructing upstreams, scan for UPSTREAM_<NAME>_TYPE for ANY named upstream
-        // This captures custom upstreams beyond bigmodel/cf
-        for (name, upstream) in upstreams.iter_mut() {
-            if name == "default" {
-                continue; // Default always inherits global type
-            }
-            if upstream.upstream_type.is_none() {
-                let type_key = format!("UPSTREAM_{}_TYPE", name.to_uppercase());
-                if let Ok(type_val) = env::var(&type_key) {
-                    if let Ok(t) = type_val.parse::<UpstreamType>() {
-                        upstream.upstream_type = Some(t);
-                        tracing::info!(
-                            "[PIN] Upstream '{}' type set to {} via {}",
-                            name,
-                            t,
-                            type_key
-                        );
-                    } else {
-                        tracing::warn!("[WARN] Invalid {}: '{}'", type_key, type_val);
-                    }
-                }
-            }
-        }
-
-        // Model Mapping Table from env vars
-        // Note: env var names use underscores (POSIX), model IDs use hyphens
-        // Issue #58: optional 3rd segment for per-route thinking mechanism
-        let mut model_map = HashMap::new();
-        for (key, value) in env::vars() {
-            if let Some(model_id_raw) = key.strip_prefix("MODEL_MAP_") {
-                let model_id = model_id_raw.replace('_', "-").to_lowercase();
-                if let Some((upstream, rest)) = value.split_once(':') {
-                    let (target, mechanism) = if let Some((t, m)) = rest.split_once(':') {
-                        let mech = match m.trim().parse::<ThinkingMechanism>() {
-                            Ok(tm) => Some(tm),
-                            Err(e) => {
-                                eprintln!(
-                                    " [WARN] MODEL_MAP_{}: invalid mechanism '{}': {}",
-                                    model_id_raw,
-                                    m.trim(),
-                                    e
-                                );
-                                Option::None
-                            }
-                        };
-                        (t.to_string(), mech)
-                    } else {
-                        (rest.to_string(), Option::None)
-                    };
-                    model_map.insert(
-                        model_id.clone(),
-                        ModelRoute {
-                            upstream_name: upstream.to_string(),
-                            target_model: target,
-                            thinking_mechanism: mechanism,
-                        },
-                    );
-                    eprintln!(" [PIN] Model map: {} -> {}:{}", model_id, upstream, value);
-                }
-            }
-        }
-
-        eprintln!(" 📊 Upstreams: {}, Model mappings: {}", upstreams.len(), model_map.len());
-
-        // Concurrency tuning (Opción B)
-        let max_concurrent_per_model =
-            env::var("MAX_CONCURRENT_PER_MODEL").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
-
-        let permit_timeout_secs =
-            env::var("PERMIT_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
-        let upstream_type = match std::env::var("NEXUS_UPSTREAM_TYPE") {
-            Ok(val) => match val.parse::<UpstreamType>() {
-                Ok(t) => t,
-                Err(_) => {
-                    tracing::warn!(
-                        "Invalid NEXUS_UPSTREAM_TYPE='{}' — valid values are: anthropic, nim, openai, openrouter. Defaulting to nim.",
-                        val
-                    );
-                    UpstreamType::NIM
-                }
-            },
-            Err(_) => UpstreamType::NIM,
-        };
-
-        // Circuit breaker configuration (v0.14.1)
-        let cb_enabled =
-            env::var("CB_ENABLED").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
-        let cb_threshold =
-            env::var("CB_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(10).max(1);
-        let cb_recovery_secs =
-            env::var("CB_RECOVERY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60).max(1);
-
-        // Issue #69: startup health check opt-out
-        let disable_health_check = env::var("DISABLE_HEALTH_CHECK")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
-
-        // Issue #101/#58: denylist of model substrings that must not receive thinking hints.
-        let disable_thinking_models = env::var("DISABLE_THINKING_MODELS")
-            .map(|v| {
-                v.split(',')
-                    .map(|s| s.trim().to_lowercase())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        // Issue #57: default budget_tokens for AnthropicApi thinking mechanism.
-        let thinking_budget_tokens = env::var("THINKING_BUDGET_TOKENS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|&v| v > 0);
-
-        // Dynamic context window mapping (Issue #28)
-        let cc_model_context_windows = env::var("CC_MODEL_CONTEXT_WINDOWS")
-            .map(|v| Self::parse_model_context_windows(&v))
-            .unwrap_or_default();
-
-        // Telemetry configuration (v0.18.0)
-        // v0.19.0: Default ON — telemetry is always active from minute one.
-        // Users can disable with TELEMETRY_ENABLED=false
-        let telemetry_enabled = env::var("TELEMETRY_ENABLED")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(true);
-
-        // v0.19.0: Beacon URL obfuscated via obfstr — not visible in binary strings
-        // v0.19.0: Beacon URL is hardcoded by default — users don't need to configure it.
-        let telemetry_beacon_url =
-            env::var("TELEMETRY_BEACON_URL").ok().filter(|u| !u.is_empty()).or_else(|| {
-                Some(
-                    obfstr::obfstr!(
-                        "https://nexus-beacon-receiver.enerby212.workers.dev/v1/beacon"
-                    )
-                    .to_string(),
-                )
-            });
-
-        // v0.19.0: Auth token obfuscated via obfstr — not visible in binary strings
-        // v0.19.0: Auth token is compiled into the binary — users don't need to configure it.
-        let beacon_auth_token = env::var("BEACON_AUTH_TOKEN").ok().or_else(|| {
-            Some(
-                obfstr::obfstr!("e5595631b251830324175922cf5a75740aa03c0616d57226050c15629051b9d2")
-                    .to_string(),
-            )
-        });
-
-        // CR fix: Never fall back to /tmp for secrets — world-readable + cleared on reboot.
-        // If HOME is unset AND no explicit paths provided, disable telemetry.
-        let explicit_telemetry_dir = env::var("TELEMETRY_DIR").ok();
-        let explicit_secret_path = env::var("TELEMETRY_SECRET_PATH").ok();
-
-        let home_dir = match std::env::var("HOME") {
-            Ok(h) if !h.is_empty() => h,
-            _ => String::new(),
-        };
-
-        let telemetry_dir = explicit_telemetry_dir
-            .clone()
-            .unwrap_or_else(|| format!("{home_dir}/.local/share/nexus-ai-gateway"));
-        let telemetry_db_path = env::var("TELEMETRY_DB_PATH")
-            .unwrap_or_else(|_| format!("{telemetry_dir}/telemetry.db"));
-
-        // Only force-disable telemetry when HOME is unset AND no explicit paths given
-        // (systemd/containers commonly set TELEMETRY_DIR explicitly)
-        let (telemetry_enabled, telemetry_disabled_reason) = if home_dir.is_empty()
-            && explicit_telemetry_dir.is_none()
-            && explicit_secret_path.is_none()
-        {
-            if telemetry_enabled {
-                (false, Some("$HOME not set and no explicit TELEMETRY_DIR/TELEMETRY_SECRET_PATH — cannot safely store secret".to_string()))
-            } else {
-                (false, None)
-            }
-        } else {
-            (telemetry_enabled, None)
-        };
-
-        let telemetry_retention_days = env::var("TELEMETRY_RETENTION_DAYS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30)
-            .max(1);
-
-        let telemetry_secret_path =
-            explicit_secret_path.unwrap_or_else(|| format!("{telemetry_dir}/.telemetry_secret"));
-
-        // Issue #35 Bug F: Validate model_map routes against configured upstreams
-        for (model_id, route) in &model_map {
-            if route.upstream_name != "default" {
-                if let Some(upstream) = upstreams.get(&route.upstream_name) {
-                    if upstream.upstream_type.is_none() {
-                        tracing::warn!(
-                        "[WARN] Model '{}' routes to upstream '{}' but no UPSTREAM_{}_TYPE configured — using global type '{}'",
-                        model_id, route.upstream_name, route.upstream_name.to_uppercase(), upstream_type
-                    );
-                    }
-                } else {
-                    tracing::warn!(
-                    "[WARN] Model '{}' routes to upstream '{}' which is not configured — will fall back to 'default'",
-                    model_id, route.upstream_name
-                );
-                }
-            }
-        }
-
-        let config = Config {
-            port,
-            bind_addr,
-            base_url,
-            api_key,
-            reasoning_model,
-            completion_model,
-            debug,
-            verbose,
-            web_fetch_enabled,
-            web_fetch_max_retries,
-            web_fetch_timeout_secs,
-            upstreams,
-            model_map,
-            max_concurrent_per_model,
-            permit_timeout_secs,
-            upstream_type,
-            cb_enabled,
-            cb_threshold,
-            cb_recovery_secs,
-            cc_model_context_windows,
-            telemetry_enabled,
-            telemetry_beacon_url,
-            beacon_auth_token,
-            telemetry_dir,
-            telemetry_db_path,
-            telemetry_retention_days,
-            telemetry_secret_path,
-            telemetry_disabled_reason,
-            config_path: stored_config_path,
-            disable_health_check,
-            disable_thinking_models,
-            thinking_budget_tokens,
-        };
+        // Step 3: Parse config from the unified map (single source of truth)
+        let mut config = Self::from_map(&map)?;
+        config.config_path = custom_path;
+        config.env_file_path = resolved_env_path;
         Ok(config)
     }
 
@@ -1129,6 +802,73 @@ impl Config {
             UpstreamType::NIM => ThinkingMechanism::ChatTemplate,
             UpstreamType::Anthropic => ThinkingMechanism::AnthropicApi,
             UpstreamType::OpenAI | UpstreamType::OpenRouter => ThinkingMechanism::None,
+        }
+    }
+
+    /// Log a summary of where key config values were loaded from (Issue #70).
+    ///
+    /// Must be called AFTER the tracing subscriber is initialized (config is built
+    /// before tracing exists). Re-reads the .env file to determine which keys came
+    /// from the file vs. the process environment vs. defaults.
+    /// Never logs actual secret values -- only variable names and sources.
+    pub fn log_config_sources(&self) {
+        use std::collections::HashSet;
+
+        // Collect keys present in the .env file using the exact path that load_dotenv resolved.
+        // This avoids a mismatch: load_dotenv uses dotenvy::dotenv() (walks up directories),
+        // but env_file_paths only checks fixed locations. Using the stored path is correct.
+        let mut env_file_keys = HashSet::new();
+        if let Some(ref path) = self.env_file_path {
+            if let Ok(iter) = dotenvy::from_path_iter(path) {
+                for item in iter.flatten() {
+                    env_file_keys.insert(item.0);
+                }
+            }
+        }
+
+        if let Some(ref path) = self.env_file_path {
+            tracing::info!("[CONFIG] Source .env file: {}", path.display());
+        } else {
+            tracing::info!(
+                "[CONFIG] No .env file found -- all values from process environment or defaults"
+            );
+        }
+
+        // Key variables to report source for (never log actual values for secrets)
+        let key_vars = [
+            "UPSTREAM_BASE_URL",
+            "UPSTREAM_API_KEY",
+            "PORT",
+            "BIND_ADDR",
+            "DEBUG",
+            "VERBOSE",
+            "NEXUS_UPSTREAM_TYPE",
+            "CB_ENABLED",
+            "TELEMETRY_ENABLED",
+            "DISABLE_HEALTH_CHECK",
+        ];
+
+        for var in key_vars {
+            let in_file = env_file_keys.contains(var);
+            let in_env = env::var(var).is_ok();
+            match (in_file, in_env) {
+                (true, true) => {
+                    // Both present: shell env wins (dotenvy doesn't override)
+                    tracing::debug!("[CONFIG] {var} (source: process env, also in .env file)");
+                }
+                (true, false) => {
+                    tracing::debug!("[CONFIG] {var} (source: .env file)");
+                }
+                (false, true) => {
+                    // Issue #70: detect "phantom config" -- set in process env but not in .env
+                    tracing::warn!(
+                        "[CONFIG] {var} set in process environment but NOT in .env file"
+                    );
+                }
+                (false, false) => {
+                    tracing::debug!("[CONFIG] {var} (source: default)");
+                }
+            }
         }
     }
 
