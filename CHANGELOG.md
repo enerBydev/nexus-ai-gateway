@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.12] - 2026-07-10
+
+### Fixed
+- Update crossbeam-epoch 0.9.18→0.9.20 (RUSTSEC-2026-0204)
+- Quote YAML scalars with colons + move rand import to module level (#128, #38)
+
+---
+
 ## [0.24.11] - 2026-06-30
 
 ### Fixed
