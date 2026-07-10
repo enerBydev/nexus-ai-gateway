@@ -38,6 +38,7 @@ mod tests {
             telemetry_retention_days: 30,
             telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
             config_path: None,
+            env_file_path: None,
             telemetry_disabled_reason: None,
             disable_health_check: false,
             disable_thinking_models: Vec::new(),

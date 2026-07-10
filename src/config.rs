@@ -138,6 +138,9 @@ pub struct Config {
     /// Path to custom config file (--config flag)
     /// Stored for hot-reload support (SIGHUP + file watcher)
     pub config_path: Option<PathBuf>,
+    /// Resolved .env file path from `load_dotenv()` (Issue #70).
+    /// Used by `log_config_sources()` to re-read the same file that was actually loaded.
+    pub env_file_path: Option<PathBuf>,
     /// Issue #69: Skip startup model health check when true.
     /// Controlled by `DISABLE_HEALTH_CHECK` env var (default: false).
     pub disable_health_check: bool,
@@ -673,7 +676,8 @@ impl Config {
             telemetry_retention_days,
             telemetry_secret_path,
             telemetry_disabled_reason,
-            config_path: None, // Set by caller (from_env_with_path)
+            config_path: None,   // Set by caller (from_env_with_path)
+            env_file_path: None, // Set by caller (from_env_with_path)
             disable_health_check,
             disable_thinking_models,
             thinking_budget_tokens,
@@ -723,7 +727,8 @@ impl Config {
     /// (see `load_env_to_map` which overlays .env on top of process env).
     pub fn from_env_with_path(custom_path: Option<PathBuf>) -> Result<Self> {
         // Step 1: Load .env into process env (dotenvy default: shell vars win)
-        if let Some(path) = Self::load_dotenv(custom_path.clone()) {
+        let resolved_env_path = Self::load_dotenv(custom_path.clone());
+        if let Some(ref path) = resolved_env_path {
             eprintln!("\u{1f4c4} Loaded config from: {}", path.display());
         } else {
             eprintln!("\u{2139}\u{fe0f} No .env file found, using environment variables only");
@@ -735,6 +740,7 @@ impl Config {
         // Step 3: Parse config from the unified map (single source of truth)
         let mut config = Self::from_map(&map)?;
         config.config_path = custom_path;
+        config.env_file_path = resolved_env_path;
         Ok(config)
     }
 
@@ -808,22 +814,19 @@ impl Config {
     pub fn log_config_sources(&self) {
         use std::collections::HashSet;
 
-        // Collect keys present in the .env file(s) without loading into process env
+        // Collect keys present in the .env file using the exact path that load_dotenv resolved.
+        // This avoids a mismatch: load_dotenv uses dotenvy::dotenv() (walks up directories),
+        // but env_file_paths only checks fixed locations. Using the stored path is correct.
         let mut env_file_keys = HashSet::new();
-        let mut loaded_file: Option<PathBuf> = None;
-        for path in Self::env_file_paths(self.config_path.clone()) {
-            if path.exists() {
-                if let Ok(iter) = dotenvy::from_path_iter(&path) {
-                    for item in iter.flatten() {
-                        env_file_keys.insert(item.0);
-                    }
-                    loaded_file = Some(path);
-                    break; // Only the first found file matters (matches load_dotenv behavior)
+        if let Some(ref path) = self.env_file_path {
+            if let Ok(iter) = dotenvy::from_path_iter(path) {
+                for item in iter.flatten() {
+                    env_file_keys.insert(item.0);
                 }
             }
         }
 
-        if let Some(ref path) = loaded_file {
+        if let Some(ref path) = self.env_file_path {
             tracing::info!("[CONFIG] Source .env file: {}", path.display());
         } else {
             tracing::info!(
@@ -849,7 +852,11 @@ impl Config {
             let in_file = env_file_keys.contains(var);
             let in_env = env::var(var).is_ok();
             match (in_file, in_env) {
-                (true, _) => {
+                (true, true) => {
+                    // Both present: shell env wins (dotenvy doesn't override)
+                    tracing::debug!("[CONFIG] {var} (source: process env, also in .env file)");
+                }
+                (true, false) => {
                     tracing::debug!("[CONFIG] {var} (source: .env file)");
                 }
                 (false, true) => {
