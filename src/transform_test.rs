@@ -1,10 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::config::{Config, ModelRoute};
-    use crate::models::anthropic::{
-        AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt,
-    };
-    use crate::prompt_cache::CacheLocation;
+    use crate::models::anthropic::{AnthropicRequest, ContentBlock, Message, MessageContent};
     use crate::reasoning::transducer::normalize_full;
     use crate::transform::anthropic_to_openai;
     use serde_json::json;
@@ -29,9 +26,6 @@ mod tests {
             max_concurrent_per_model: 5,
             permit_timeout_secs: 180,
             upstream_type: crate::config::UpstreamType::NIM,
-            prompt_cache_enabled: false,
-            prompt_cache_max_entries: 1000,
-            prompt_cache_ttl_secs: 300,
             cb_enabled: false,
             cb_threshold: 10,
             cb_recovery_secs: 60,
@@ -68,61 +62,6 @@ mod tests {
             },
         );
         config
-    }
-
-    // =========================================================================
-    // PHASE 19: Integration tests for CacheMarker extraction
-    // =========================================================================
-
-    #[test]
-    fn test_cache_marker_from_system_prompt() {
-        // Build an AnthropicRequest with SystemPrompt::Multiple containing
-        // a SystemMessage with cache_control
-        let system_message = SystemMessage {
-            message_type: "text".to_string(),
-            text: "This is a system prompt with cache control".to_string(),
-            cache_control: Some(json!({"type": "ephemeral"})),
-        };
-
-        let req = AnthropicRequest {
-            model: "claude-sonnet-4-6".to_string(),
-            messages: vec![],
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop_sequences: None,
-            stream: None,
-            tools: None,
-            system: Some(SystemPrompt::Multiple(vec![system_message])),
-            metadata: None,
-            extra: json!({}),
-        };
-
-        let config = test_config();
-        let result =
-            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
-
-        // Verify cache_markers has length 1 from system prompt
-        assert_eq!(
-            result.cache_markers.len(),
-            1,
-            "Expected 1 cache marker from system prompt, got {}",
-            result.cache_markers.len()
-        );
-
-        // Verify the marker has SystemPrompt location
-        assert_eq!(
-            result.cache_markers[0].location,
-            CacheLocation::SystemPrompt,
-            "Expected SystemPrompt location"
-        );
-
-        // Verify content_hash is non-empty
-        assert!(
-            !result.cache_markers[0].content_hash.is_empty(),
-            "content_hash should not be empty"
-        );
     }
 
     #[test]
@@ -192,64 +131,6 @@ mod tests {
             result.request.response_format.is_none(),
             "response_format must be None when no output_config.format is present"
         );
-    }
-
-    #[test]
-    fn test_cache_marker_from_content_block() {
-        // Build an AnthropicRequest with a message containing ContentBlock::Text
-        // with cache_control
-        let content_block = ContentBlock::Text {
-            text: "Cached message content".to_string(),
-            cache_control: Some(json!({"type": "ephemeral"})),
-        };
-
-        let message = Message {
-            role: "user".to_string(),
-            content: MessageContent::Blocks(vec![content_block]),
-            extra: json!({}),
-        };
-
-        let req = AnthropicRequest {
-            model: "claude-sonnet-4-6".to_string(),
-            messages: vec![message],
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop_sequences: None,
-            stream: None,
-            tools: None,
-            system: None,
-            metadata: None,
-            extra: json!({}),
-        };
-
-        let config = test_config();
-        let result =
-            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
-
-        // Debug output
-        eprintln!("DEBUG: cache_markers.len() = {}", result.cache_markers.len());
-        eprintln!("DEBUG: cache_markers = {:?}", result.cache_markers);
-
-        // Verify cache_markers has at least 1 marker with MessageContent location
-        assert!(
-            result.cache_markers.len() >= 1,
-            "Expected at least 1 cache marker, got {}",
-            result.cache_markers.len()
-        );
-
-        let has_message_content_marker =
-            result.cache_markers.iter().any(|m| m.location == CacheLocation::MessageContent);
-        assert!(
-            has_message_content_marker,
-            "Expected at least one marker with MessageContent location"
-        );
-
-        // Verify the marker has non-empty content_hash
-        for marker in &result.cache_markers {
-            assert!(!marker.content_hash.is_empty(), "content_hash should not be empty");
-        }
     }
 
     #[test]
@@ -323,100 +204,6 @@ mod tests {
             ResponseContent::Thinking { signature, .. } => assert_eq!(signature, None),
             _ => panic!("omit mode must emit a thinking block"),
         }
-    }
-
-    #[test]
-    fn test_no_cache_markers_without_cache_control() {
-        // Build a request without any cache_control fields
-        let content_block = ContentBlock::Text {
-            text: "Regular message without cache control".to_string(),
-            cache_control: None, // No cache control
-        };
-
-        let message = Message {
-            role: "user".to_string(),
-            content: MessageContent::Blocks(vec![content_block]),
-            extra: json!({}),
-        };
-
-        let req = AnthropicRequest {
-            model: "claude-sonnet-4-6".to_string(),
-            messages: vec![message],
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop_sequences: None,
-            stream: None,
-            tools: None,
-            system: None,
-            metadata: None,
-            extra: json!({}),
-        };
-
-        let config = test_config();
-        let result =
-            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
-
-        // Verify cache_markers is empty
-        assert!(
-            result.cache_markers.is_empty(),
-            "Expected empty cache_markers without cache_control, got {:?}",
-            result.cache_markers
-        );
-    }
-
-    #[test]
-    fn test_multiple_cache_markers() {
-        // Build a request with both system prompt and message content cache_control
-        let system_message = SystemMessage {
-            message_type: "text".to_string(),
-            text: "System prompt with cache".to_string(),
-            cache_control: Some(json!({"type": "ephemeral"})),
-        };
-
-        let content_block1 = ContentBlock::Text {
-            text: "First cached message".to_string(),
-            cache_control: Some(json!({"type": "ephemeral"})),
-        };
-
-        let content_block2 = ContentBlock::Text {
-            text: "Second cached message".to_string(),
-            cache_control: Some(json!({"type": "ephemeral"})),
-        };
-
-        let message = Message {
-            role: "user".to_string(),
-            content: MessageContent::Blocks(vec![content_block1, content_block2]),
-            extra: json!({}),
-        };
-
-        let req = AnthropicRequest {
-            model: "claude-sonnet-4-6".to_string(),
-            messages: vec![message],
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop_sequences: None,
-            stream: None,
-            tools: None,
-            system: Some(SystemPrompt::Multiple(vec![system_message])),
-            metadata: None,
-            extra: json!({}),
-        };
-
-        let config = test_config();
-        let result =
-            anthropic_to_openai(req, &config, "default").expect("Transform should succeed");
-
-        // Verify multiple markers are extracted from message content blocks
-        // (system prompt markers not yet implemented)
-        assert!(
-            result.cache_markers.len() >= 2,
-            "Expected at least 2 cache markers from message content blocks, got {}",
-            result.cache_markers.len()
-        );
     }
 
     // =========================================================================

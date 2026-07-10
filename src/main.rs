@@ -5,7 +5,6 @@ mod config;
 mod config_cmd;
 mod error;
 mod models;
-mod prompt_cache;
 mod proxy;
 mod reasoning;
 mod scan;

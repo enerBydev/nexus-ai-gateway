@@ -242,14 +242,6 @@ Resolution priority (highest → lowest):
 3. `CC_CONTEXT_WINDOW` (manual global override)
 4. `200_000` default
 
-#### Prompt Cache (NIM KV_REUSE)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NIM_PROMPT_CACHE_ENABLED` | `false` | Enable prompt caching |
-| `NIM_PROMPT_CACHE_MAX_ENTRIES` | `1000` | Max cache entries |
-| `NIM_PROMPT_CACHE_TTL_SECS` | `300` | Cache entry TTL |
-
 #### Advanced
 
 | Variable | Default | Description |
