@@ -13,6 +13,23 @@ struct OverflowTracker {
     last_timestamp: Instant,
 }
 
+// PERF: `std::sync::Mutex` is intentional here — do not change to `tokio::sync::Mutex`
+// (re-flagged in Issue #61; investigated and confirmed correct as-is, do not re-flag again).
+//
+// - The critical section in every caller below is a single `HashMap::entry()`/`.remove()`
+//   operation: O(1), pure in-memory, and never held across an `.await` point (verified in
+//   `check_overflow_loop()`, `reset_tracker()`, and the test-only `reset_all()`).
+// - This lock also sits on a rare path, not the request hot path: `check_overflow_loop()`
+//   only runs inside the context-overflow error-classification retry branch in
+//   `src/proxy/retry.rs` (`resilient_send`/`resilient_send_raw`), not on every request.
+//   `reset_tracker()` runs once per successful request, but its critical section is
+//   likewise a single O(1) op.
+// - `tokio::sync::Mutex` would be worse here: it adds async scheduling/lock overhead for
+//   zero correctness or throughput benefit when a lock is never held across a suspension
+//   point — this is Tokio's own documented guidance on choosing between std and async mutexes.
+//
+// Full analysis: docs/Issues-locales/Issues/quality-cluster/investigation-report.md,
+// "## Issue #61" section.
 static OVERFLOW_LOOP_TRACKER: OnceLock<Mutex<HashMap<String, OverflowTracker>>> = OnceLock::new();
 
 /// Threshold: number of consecutive same-level overflows to trigger loop detection.
@@ -33,6 +50,7 @@ impl OverflowLoopTracker {
             return false;
         }
 
+        // PERF: sync-only critical section below, no `.await` held — see Issue #61.
         let mut trackers = get_trackers().lock().unwrap_or_else(|e| {
             tracing::error!("OverflowLoopTracker mutex poisoned: {}", e);
             e.into_inner()
@@ -87,6 +105,7 @@ impl OverflowLoopTracker {
 
     /// Reset tracker for a model (call after successful non-overflow request).
     pub fn reset_tracker(model: &str) {
+        // PERF: sync-only critical section below, no `.await` held — see Issue #61.
         let mut trackers = get_trackers().lock().unwrap_or_else(|e| {
             tracing::error!("OverflowLoopTracker mutex poisoned on reset: {}", e);
             e.into_inner()
@@ -99,6 +118,7 @@ impl OverflowLoopTracker {
     /// Reset all trackers (test utility only).
     #[cfg(test)]
     fn reset_all() {
+        // PERF: same reasoning, test-only (see Issue #61).
         let mut trackers = get_trackers().lock().unwrap_or_else(|e| {
             tracing::error!("OverflowLoopTracker mutex poisoned on reset_all: {}", e);
             e.into_inner()
