@@ -57,7 +57,7 @@ nexus-beacon-receiver/
 *.temp
 
 # Claude Code auto-generated (do not track)
-CLAUDE.md
+# NOTE: CLAUDE.md is intentionally TRACKED — it contains project instructions
 .gstack/
 
 # Codex auto-generated (do not track)
