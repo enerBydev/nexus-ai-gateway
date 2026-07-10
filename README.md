@@ -207,6 +207,7 @@ flowchart TB
 |----------|---------|-------------|
 | `MAX_CONCURRENT_PER_MODEL` | `5` | Concurrent requests per model |
 | `PERMIT_TIMEOUT_SECS` | `180` | Max wait for semaphore permit |
+| `MAX_QUEUE_DEPTH` | `20` | Max requests waiting per model before immediate 503 (Issue #59) |
 | `WEB_FETCH_ENABLED` | `true` | Enable WebFetch interception |
 | `WEB_FETCH_MAX_RETRIES` | `3` | Retries for WebFetch failures |
 | `WEB_FETCH_TIMEOUT_SECS` | `15` | Timeout for WebFetch requests |

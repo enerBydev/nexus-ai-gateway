@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::error::ProxyResult;
 use crate::models::{anthropic, openai};
-use crate::proxy::concurrency::{acquire_model_permit, ModelSemaphores};
+use crate::proxy::concurrency::{acquire_model_permit, insert_ratelimit_headers, ModelSemaphores};
 use crate::proxy::retry::{resilient_send_raw, resolve_chunk_timeout, MAX_SSE_BUFFER};
 use crate::proxy::token_scaling::scale_token_usage;
 use crate::tokenizer;
@@ -102,13 +102,15 @@ pub(crate) async fn handle_streaming(
     shutdown_token: CancellationToken,
     client_headers: crate::proxy::headers::ClientHeaders,
 ) -> ProxyResult<Response> {
-    let permit = acquire_model_permit(
+    let acquire_result = acquire_model_permit(
         &model_semaphores,
         &openai_req.model,
         config.max_concurrent_per_model,
         config.permit_timeout_secs,
+        config.max_queue_depth,
     )
     .await?;
+    let permit = acquire_result.permit;
 
     let url = config.get_upstream_url(upstream_name);
     tracing::debug!("Sending streaming request to {} (upstream: {})", url, upstream_name);
@@ -158,6 +160,13 @@ pub(crate) async fn handle_streaming(
     headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
     headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+    // Issue #59: backpressure headers on successful responses too, so CC can
+    // self-throttle before actually hitting the concurrency limit.
+    insert_ratelimit_headers(
+        &mut headers,
+        acquire_result.available_permits,
+        acquire_result.queue_depth,
+    );
 
     Ok((headers, Body::from_stream(sse_stream)).into_response())
 }

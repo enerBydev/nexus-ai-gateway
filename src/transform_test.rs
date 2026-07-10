@@ -25,6 +25,7 @@ mod tests {
             model_map: HashMap::new(),
             max_concurrent_per_model: 5,
             permit_timeout_secs: 180,
+            max_queue_depth: 20,
             upstream_type: crate::config::UpstreamType::NIM,
             cb_enabled: false,
             cb_threshold: 10,
