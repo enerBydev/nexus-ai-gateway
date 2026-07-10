@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.25.0] - 2026-07-10
+
+### Added
+- Add startup model health-check with per-model status (#69)
+
+### Changed
+- Remove dead prompt_cache module and all 9 touch points (#77)
+- Document std::sync::Mutex correctness in overflow_tracker (#61)
+
+---
+
 ## [0.24.13] - 2026-07-10
 
 ### Fixed
