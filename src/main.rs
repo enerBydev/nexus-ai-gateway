@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod config_cmd;
 mod error;
+mod health;
 mod models;
 mod prompt_cache;
 mod proxy;
@@ -331,6 +332,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         config.cb_threshold,
         config.cb_recovery_secs,
     );
+
+    // Issue #69: Startup model health check — probe each configured upstream model.
+    // Runs AFTER config + client are built, BEFORE server starts listening.
+    // Warns on failure but never blocks startup (operator may have partial fleet).
+    if config.disable_health_check {
+        tracing::info!("[HEALTH] Startup health check disabled (DISABLE_HEALTH_CHECK=true)");
+    } else {
+        let health_results = health::check_model_health(&config, &client).await;
+        health::log_health_summary(&health_results);
+    }
 
     // Save CLI flags for hot-reload
     let cli_debug = config.debug;

@@ -111,6 +111,9 @@ pub struct Config {
     /// Path to custom config file (--config flag)
     /// Stored for hot-reload support (SIGHUP + file watcher)
     pub config_path: Option<PathBuf>,
+    /// Issue #69: Skip startup model health check when true.
+    /// Controlled by `DISABLE_HEALTH_CHECK` env var (default: false).
+    pub disable_health_check: bool,
 }
 
 impl Config {
@@ -482,6 +485,11 @@ impl Config {
             .unwrap_or(60)
             .max(1);
 
+        // Issue #69: startup health check opt-out
+        let disable_health_check = Self::get_from_map(data, "DISABLE_HEALTH_CHECK")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
         // Dynamic context window mapping (Issue #28)
         let cc_model_context_windows = Self::get_from_map(data, "CC_MODEL_CONTEXT_WINDOWS")
             .map(|v| Self::parse_model_context_windows(&v))
@@ -608,6 +616,7 @@ impl Config {
             telemetry_secret_path,
             telemetry_disabled_reason,
             config_path: None, // Set by caller (from_env_with_path)
+            disable_health_check,
         })
     }
 
@@ -843,6 +852,11 @@ impl Config {
         let cb_recovery_secs =
             env::var("CB_RECOVERY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60).max(1);
 
+        // Issue #69: startup health check opt-out
+        let disable_health_check = env::var("DISABLE_HEALTH_CHECK")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
         // Dynamic context window mapping (Issue #28)
         let cc_model_context_windows = env::var("CC_MODEL_CONTEXT_WINDOWS")
             .map(|v| Self::parse_model_context_windows(&v))
@@ -968,6 +982,7 @@ impl Config {
             telemetry_secret_path,
             telemetry_disabled_reason,
             config_path: stored_config_path,
+            disable_health_check,
         };
         Ok(config)
     }
@@ -1380,6 +1395,33 @@ mod tests {
         let config = Config::from_map(&map).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(config.api_key, Some("secret-from-file".to_string()));
+    }
+
+    // =========================================================================
+    // Issue #69: disable_health_check
+    // =========================================================================
+
+    #[test]
+    fn test_disable_health_check_default_false() {
+        let map = make_test_map();
+        let config = Config::from_map(&map).unwrap();
+        assert!(!config.disable_health_check);
+    }
+
+    #[test]
+    fn test_disable_health_check_true() {
+        let mut map = make_test_map();
+        map.insert("DISABLE_HEALTH_CHECK".to_string(), "true".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert!(config.disable_health_check);
+    }
+
+    #[test]
+    fn test_disable_health_check_one() {
+        let mut map = make_test_map();
+        map.insert("DISABLE_HEALTH_CHECK".to_string(), "1".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert!(config.disable_health_check);
     }
 
     #[test]
