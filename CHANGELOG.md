@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.26.1] - 2026-07-10
+
+### Changed
+- Deduplicate config parsing + add source attribution (#77, #70) (#144)
+
+---
+
 ## [0.26.0] - 2026-07-10
 
 ### Added
