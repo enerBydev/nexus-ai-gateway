@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.13] - 2026-07-10
+
+### Fixed
+- Untrack developer tool artifacts and fix CLAUDE.md gitignore (#43)
+
+---
+
 ## [0.24.12] - 2026-07-10
 
 ### Fixed
