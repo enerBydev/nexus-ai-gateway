@@ -84,6 +84,13 @@ pub(crate) fn fallback_models() -> Vec<String> {
 /// Max fallback models to try per request (Issue #67: "max 2 fallbacks").
 pub(crate) const MAX_FALLBACKS: usize = 2;
 
+/// Issue #71: max total attempts for transport-level errors (connection refused, DNS
+/// failure, TLS error). These are infrastructure issues that may resolve quickly (e.g. a
+/// brief DNS blip), so we retry twice. The base delay is shorter than HTTP retries because
+/// the upstream never received the request — there is no backpressure signal to respect.
+const MAX_TRANSPORT_RETRIES: u32 = 3;
+const TRANSPORT_BASE_DELAY_MS: u64 = 1000;
+
 /// Whether an upstream HTTP status is fallback-eligible: a non-transient signal that THIS
 /// model is unavailable and another might work. 429 (rate limit) is Retryable elsewhere;
 /// 401/403 (auth) and 400 (bad request / context overflow) are config/input errors that a
@@ -168,9 +175,24 @@ fn clamp_max_tokens_for_retry(
     }
 }
 
+/// Classify a reqwest transport error into a human-readable kind label for logging.
+fn classify_transport_error(err: &reqwest::Error) -> &'static str {
+    if err.is_connect() {
+        "connect"
+    } else if err.is_timeout() {
+        "timeout"
+    } else if err.is_request() {
+        "request"
+    } else {
+        "unknown"
+    }
+}
+
 /// Resilient send for non-streaming: returns parsed OpenAI response.
 /// Auto-retries on 429 (rate limit) with exponential backoff.
 /// Auto-clamps max_tokens on 400 (too large) and retries.
+/// Issue #71: transport errors (connection refused, DNS, TLS) now enter the retry/fallback
+/// pipeline instead of returning immediately.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resilient_send(
     client: &Client,
@@ -194,13 +216,25 @@ pub(crate) async fn resilient_send(
             ));
         }
 
-        // Circuit breaker check
-        let (allowed, generation) = circuit_breaker.is_allowed().await;
+        // Issue #73: per-model circuit breaker — get CB for the current upstream model.
+        // When fallback swaps the model, the next iteration picks up the right CB.
+        let cb = circuit_breaker.get(&openai_req.model).await;
+        let (allowed, generation) = cb.is_allowed().await;
         if !allowed {
-            tracing::warn!("Circuit breaker OPEN — rejecting request (upstream unhealthy)");
-            return Err(ProxyError::Upstream(
-                "Service unavailable: circuit breaker open".to_string(),
-            ));
+            tracing::warn!(
+                "Circuit breaker OPEN for model '{}' — trying fallback",
+                openai_req.model
+            );
+            // CR feedback: try fallback models before giving up — a healthy fallback
+            // should not be blocked by the primary model's open breaker.
+            if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                attempt = 0;
+                continue;
+            }
+            return Err(ProxyError::Upstream(format!(
+                "Service unavailable: circuit breaker open for model '{}' (no fallback available)",
+                openai_req.model
+            )));
         }
 
         let mut req_builder = client
@@ -238,7 +272,57 @@ pub(crate) async fn resilient_send(
         )
         .await
         {
-            Ok(send_result) => send_result?,
+            Ok(Ok(resp)) => resp,
+            Ok(Err(transport_err)) => {
+                // Issue #71: transport errors (connection refused, DNS failure, TLS error)
+                // previously bypassed ALL retry/classify/CB/fallback via `send_result?`.
+                // Now they enter the same pipeline as HTTP errors.
+                let kind = classify_transport_error(&transport_err);
+                tracing::error!(
+                    "⛔ [TRANSPORT] {} error sending to upstream '{}' (model '{}'): {} (attempt {}/{})",
+                    kind,
+                    upstream_name,
+                    openai_req.model,
+                    transport_err,
+                    attempt,
+                    MAX_TRANSPORT_RETRIES
+                );
+
+                // Try fallback chain — transport error = upstream unreachable = 502-equivalent
+                if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                    attempt = 0;
+                    continue;
+                }
+
+                if attempt >= MAX_TRANSPORT_RETRIES {
+                    // CodeRabbit (#133): charge the breaker only when the whole fallback chain
+                    // + retries are exhausted, not once per failed attempt.
+                    cb.record_failure(generation).await;
+                    return Err(ProxyError::Upstream(format!(
+                        "Transport {} error after {} attempts: {} (upstream '{}')",
+                        kind, attempt, transport_err, upstream_name
+                    )));
+                }
+
+                let delay = delay_with_jitter(TRANSPORT_BASE_DELAY_MS, attempt);
+                tracing::warn!(
+                    "🔄 [TRANSPORT] {} error (attempt {}/{}) — retrying in {}ms",
+                    kind,
+                    attempt,
+                    MAX_TRANSPORT_RETRIES,
+                    delay
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = crate::SHUTDOWN_TOKEN.cancelled() => {
+                        tracing::warn!("Server is draining — aborting transport retry");
+                        return Err(ProxyError::Upstream(
+                            "Server is shutting down — request not retried".to_string(),
+                        ));
+                    }
+                }
+                continue;
+            }
             Err(_elapsed) => {
                 // Issue #83 (P0): upstream stalled (no response headers within the first-byte
                 // budget). The 300s builder timeout would still bound this eventually, but fail
@@ -256,7 +340,7 @@ pub(crate) async fn resilient_send(
                 // CodeRabbit (#133): charge the breaker only when the whole fallback chain is
                 // exhausted, not once per stalled model — avoids tripping it prematurely when a
                 // single request stalls across multiple models.
-                circuit_breaker.record_failure(generation).await;
+                cb.record_failure(generation).await;
                 return Err(ProxyError::Upstream(format!(
                     "Upstream '{}' stalled: no response within {}s (model unavailable)",
                     upstream_name,
@@ -298,7 +382,7 @@ pub(crate) async fn resilient_send(
             }
             // Only a genuinely usable body counts as success (Issue #119): record health and
             // clear overflow history AFTER validation — never on a degenerate/empty 200.
-            circuit_breaker.record_success(generation).await;
+            cb.record_success(generation).await;
             OverflowLoopTracker::reset_tracker(&openai_req.model);
             if attempt > 1 {
                 tracing::info!("🔄 Request succeeded on attempt #{}", attempt);
@@ -338,7 +422,7 @@ pub(crate) async fn resilient_send(
                     // Only record ONE CB failure when ALL retries are exhausted.
                     // Internal retries are self-healing — they must not individually
                     // trip the breaker (3 retries of 1 request ≠ 3 separate failures).
-                    circuit_breaker.record_failure(generation).await;
+                    cb.record_failure(generation).await;
                     tracing::error!(
                         "⛔ {} [{}]: exhausted {} retries — giving up",
                         status.as_u16(),
@@ -482,6 +566,7 @@ pub(crate) async fn resilient_send(
 
 /// Resilient send for streaming: returns raw reqwest::Response (not parsed).
 /// Same retry logic as resilient_send but returns the response for streaming.
+/// Issue #71: transport errors now enter the retry/fallback pipeline.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resilient_send_raw(
     client: &Client,
@@ -505,13 +590,22 @@ pub(crate) async fn resilient_send_raw(
             ));
         }
 
-        // Circuit breaker check
-        let (allowed, generation) = circuit_breaker.is_allowed().await;
+        // Issue #73: per-model circuit breaker
+        let cb = circuit_breaker.get(&openai_req.model).await;
+        let (allowed, generation) = cb.is_allowed().await;
         if !allowed {
-            tracing::warn!("Circuit breaker OPEN — rejecting request (upstream unhealthy)");
-            return Err(ProxyError::Upstream(
-                "Service unavailable: circuit breaker open".to_string(),
-            ));
+            tracing::warn!(
+                "Circuit breaker OPEN for model '{}' — trying fallback",
+                openai_req.model
+            );
+            if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                attempt = 0;
+                continue;
+            }
+            return Err(ProxyError::Upstream(format!(
+                "Service unavailable: circuit breaker open for model '{}' (no fallback available)",
+                openai_req.model
+            )));
         }
         let mut req_builder = client
             .post(config.get_upstream_url(upstream_name))
@@ -546,7 +640,54 @@ pub(crate) async fn resilient_send_raw(
         )
         .await
         {
-            Ok(send_result) => send_result?,
+            Ok(Ok(resp)) => resp,
+            Ok(Err(transport_err)) => {
+                // Issue #71: transport errors now enter the retry/fallback pipeline
+                // instead of returning immediately via `send_result?`.
+                let kind = classify_transport_error(&transport_err);
+                tracing::error!(
+                    "⛔ [stream] [TRANSPORT] {} error sending to upstream '{}' (model '{}'): {} (attempt {}/{})",
+                    kind,
+                    upstream_name,
+                    openai_req.model,
+                    transport_err,
+                    attempt,
+                    MAX_TRANSPORT_RETRIES
+                );
+
+                // Try fallback chain — transport error = upstream unreachable = 502-equivalent
+                if try_next_fallback(openai_req, &mut fallback_used).is_some() {
+                    attempt = 0;
+                    continue;
+                }
+
+                if attempt >= MAX_TRANSPORT_RETRIES {
+                    cb.record_failure(generation).await;
+                    return Err(ProxyError::Upstream(format!(
+                        "Transport {} error after {} attempts: {} (upstream '{}')",
+                        kind, attempt, transport_err, upstream_name
+                    )));
+                }
+
+                let delay = delay_with_jitter(TRANSPORT_BASE_DELAY_MS, attempt);
+                tracing::warn!(
+                    "🔄 [stream] [TRANSPORT] {} error (attempt {}/{}) — retrying in {}ms",
+                    kind,
+                    attempt,
+                    MAX_TRANSPORT_RETRIES,
+                    delay
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                    _ = crate::SHUTDOWN_TOKEN.cancelled() => {
+                        tracing::warn!("Server is draining — aborting transport retry");
+                        return Err(ProxyError::Upstream(
+                            "Server is shutting down — request not retried".to_string(),
+                        ));
+                    }
+                }
+                continue;
+            }
             Err(_elapsed) => {
                 // Issue #83 (P0): the upstream accepted the connection but sent no response
                 // headers within the first-byte budget (model stall). Without this the stream
@@ -565,7 +706,7 @@ pub(crate) async fn resilient_send_raw(
                 // CodeRabbit (#133): charge the breaker only when the whole fallback chain is
                 // exhausted, not once per stalled model — avoids tripping it prematurely when a
                 // single request stalls across multiple models.
-                circuit_breaker.record_failure(generation).await;
+                cb.record_failure(generation).await;
                 return Err(ProxyError::Upstream(format!(
                     "Upstream '{}' stalled: no response within {}s (model unavailable)",
                     upstream_name,
@@ -576,7 +717,7 @@ pub(crate) async fn resilient_send_raw(
         let status = response.status();
 
         if status.is_success() {
-            circuit_breaker.record_success(generation).await;
+            cb.record_success(generation).await;
             OverflowLoopTracker::reset_tracker(&openai_req.model);
             if attempt > 1 {
                 tracing::info!("🔄 Streaming request succeeded on attempt #{}", attempt);
@@ -616,7 +757,7 @@ pub(crate) async fn resilient_send_raw(
                     // Only record ONE CB failure when ALL retries are exhausted.
                     // Internal retries are self-healing — they must not individually
                     // trip the breaker (3 retries of 1 request ≠ 3 separate failures).
-                    circuit_breaker.record_failure(generation).await;
+                    cb.record_failure(generation).await;
                     tracing::error!(
                         "⛔ [stream] {} [{}]: exhausted {} retries — giving up",
                         status.as_u16(),
@@ -1044,5 +1185,107 @@ mod thinking_timeout_tests {
             Some(v) => std::env::set_var("CHUNK_TIMEOUT_SECS", v),
             None => std::env::remove_var("CHUNK_TIMEOUT_SECS"),
         }
+    }
+}
+
+#[cfg(test)]
+mod transport_error_tests {
+    use super::{classify_transport_error, MAX_TRANSPORT_RETRIES, TRANSPORT_BASE_DELAY_MS};
+
+    #[test]
+    fn transport_constants_are_reasonable() {
+        // MAX_TRANSPORT_RETRIES should be small (transport errors are often persistent
+        // infrastructure issues — burning many retries wastes time).
+        assert!(
+            MAX_TRANSPORT_RETRIES >= 2 && MAX_TRANSPORT_RETRIES <= 5,
+            "MAX_TRANSPORT_RETRIES={MAX_TRANSPORT_RETRIES} must be in 2..=5"
+        );
+        // Base delay should be shorter than HTTP retries (upstream never received the
+        // request so there is no backpressure signal to respect).
+        assert!(
+            TRANSPORT_BASE_DELAY_MS >= 500 && TRANSPORT_BASE_DELAY_MS <= 5000,
+            "TRANSPORT_BASE_DELAY_MS={TRANSPORT_BASE_DELAY_MS} must be in 500..=5000"
+        );
+    }
+
+    #[test]
+    fn classify_builder_error_as_request() {
+        // reqwest transport errors are opaque — we cannot construct a connect error
+        // without a real network call. Here we verify classify_transport_error returns
+        // a valid kind for a builder error (which reports is_request() = true).
+        let err = reqwest::Client::builder()
+            .build()
+            .unwrap()
+            .get("http://[::ffff:999.999.999.999]:1")
+            .build()
+            .unwrap_err();
+        let kind = classify_transport_error(&err);
+        assert_eq!(kind, "request", "builder error should classify as 'request'");
+    }
+}
+
+#[cfg(test)]
+mod per_model_cb_tests {
+    use crate::circuit_breaker::CircuitState;
+    use crate::proxy::concurrency::CircuitBreakerMap;
+
+    #[tokio::test]
+    async fn disabled_registry_always_allows() {
+        let map = CircuitBreakerMap::new(false, 10, 60);
+        let cb = map.get("model-a").await;
+        let (allowed, _gen) = cb.is_allowed().await;
+        assert!(allowed, "disabled CB must always allow");
+    }
+
+    #[tokio::test]
+    async fn different_models_get_independent_breakers() {
+        let map = CircuitBreakerMap::new(true, 2, 60);
+
+        // Trip model-a's breaker
+        let cb_a = map.get("model-a").await;
+        let (_, gen) = cb_a.is_allowed().await;
+        cb_a.record_failure(gen).await;
+        let (_, gen) = cb_a.is_allowed().await;
+        cb_a.record_failure(gen).await;
+        assert_eq!(cb_a.state().await, CircuitState::Open, "model-a should be open");
+
+        // model-b must still be closed (independent breaker)
+        let cb_b = map.get("model-b").await;
+        let (allowed, _) = cb_b.is_allowed().await;
+        assert!(allowed, "model-b must still be allowed when model-a is open");
+        assert_eq!(cb_b.state().await, CircuitState::Closed);
+    }
+
+    #[tokio::test]
+    async fn same_model_returns_same_breaker() {
+        let map = CircuitBreakerMap::new(true, 5, 60);
+        let cb1 = map.get("model-x").await;
+        let cb2 = map.get("model-x").await;
+        // Both should point to the same Arc (same underlying breaker)
+        assert!(std::sync::Arc::ptr_eq(&cb1, &cb2), "same model must return same breaker instance");
+    }
+
+    #[tokio::test]
+    async fn success_resets_per_model_breaker() {
+        let map = CircuitBreakerMap::new(true, 2, 60);
+        let cb = map.get("model-c").await;
+
+        // Record one failure
+        let (_, gen) = cb.is_allowed().await;
+        cb.record_failure(gen).await;
+        assert_eq!(cb.state().await, CircuitState::Closed, "one failure must not open");
+
+        // Record success — should reset counter
+        let (_, gen) = cb.is_allowed().await;
+        cb.record_success(gen).await;
+
+        // Now another failure should not open (counter was reset)
+        let (_, gen) = cb.is_allowed().await;
+        cb.record_failure(gen).await;
+        assert_eq!(
+            cb.state().await,
+            CircuitState::Closed,
+            "counter should have been reset by success"
+        );
     }
 }

@@ -317,14 +317,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let calibration_factors = tokenizer::CalibrationFactors::new();
     // v0.12.0: Circuit breaker for upstream protection
     // v0.14.1: Configurable CB via CB_ENABLED, CB_THRESHOLD, CB_RECOVERY_SECS
-    let circuit_breaker: proxy::CircuitBreaker = if config.cb_enabled {
-        Arc::new(circuit_breaker::CircuitBreaker::new(
+    // Issue #73: per-model circuit breaker (one CB per upstream model, not global)
+    let circuit_breaker: proxy::CircuitBreaker =
+        Arc::new(proxy::concurrency::CircuitBreakerMap::new(
+            config.cb_enabled,
             config.cb_threshold,
-            std::time::Duration::from_secs(config.cb_recovery_secs),
-        ))
-    } else {
-        Arc::new(circuit_breaker::CircuitBreaker::disabled())
-    };
+            config.cb_recovery_secs,
+        ));
     tracing::info!(
         "Circuit breaker: {} (threshold={}, recovery={}s)",
         if config.cb_enabled { "ENABLED" } else { "disabled" },
