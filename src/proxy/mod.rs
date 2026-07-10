@@ -312,8 +312,6 @@ pub async fn proxy_handler(
         transform::anthropic_to_openai(req.clone(), &config, &upstream_name_pre)?;
     let mut openai_req = transform_result.request;
     let upstream_name = transform_result.upstream_name;
-    // PHASE 3.5: Cache markers available for cache integration (currently unused)
-    let _cache_markers = transform_result.cache_markers;
 
     // === Pre-check: Dynamic context limit clamping (Doc1) ===
     let context_limit =
@@ -585,9 +583,6 @@ mod context_window_tests {
             max_concurrent_per_model: 5,
             permit_timeout_secs: 180,
             upstream_type: crate::config::UpstreamType::NIM,
-            prompt_cache_enabled: false,
-            prompt_cache_max_entries: 1000,
-            prompt_cache_ttl_secs: 300,
             cb_enabled: false,
             cb_threshold: 10,
             cb_recovery_secs: 60,

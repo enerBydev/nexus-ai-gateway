@@ -6,7 +6,6 @@ mod config_cmd;
 mod error;
 mod health;
 mod models;
-mod prompt_cache;
 mod proxy;
 mod reasoning;
 mod scan;

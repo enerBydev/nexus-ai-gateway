@@ -75,16 +75,6 @@ pub struct Config {
     pub max_concurrent_per_model: usize,
     pub permit_timeout_secs: u64,
     pub upstream_type: UpstreamType,
-    // Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
-    /// Tracking: Future integration for prompt caching (PHASE 3.5)
-    #[allow(dead_code)]
-    pub prompt_cache_enabled: bool,
-    /// Tracking: Future integration for prompt caching (PHASE 3.5)
-    #[allow(dead_code)]
-    pub prompt_cache_max_entries: usize,
-    /// Tracking: Future integration for prompt caching (PHASE 3.5)
-    #[allow(dead_code)]
-    pub prompt_cache_ttl_secs: u64,
     // Circuit breaker configuration (v0.14.1)
     pub cb_enabled: bool,
     pub cb_threshold: u32,
@@ -460,18 +450,6 @@ impl Config {
             None => UpstreamType::NIM,
         };
 
-        let prompt_cache_enabled = Self::get_from_map(data, "NIM_PROMPT_CACHE_ENABLED")
-            .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(false);
-
-        let prompt_cache_max_entries = Self::get_from_map(data, "NIM_PROMPT_CACHE_MAX_ENTRIES")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
-
-        let prompt_cache_ttl_secs = Self::get_from_map(data, "NIM_PROMPT_CACHE_TTL_SECS")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(300);
-
         // Circuit breaker configuration (v0.14.1)
         let cb_enabled = Self::get_from_map(data, "CB_ENABLED")
             .map(|v| v == "1" || v.to_lowercase() == "true")
@@ -600,9 +578,6 @@ impl Config {
             max_concurrent_per_model,
             permit_timeout_secs,
             upstream_type,
-            prompt_cache_enabled,
-            prompt_cache_max_entries,
-            prompt_cache_ttl_secs,
             cb_enabled,
             cb_threshold,
             cb_recovery_secs,
@@ -834,16 +809,6 @@ impl Config {
             Err(_) => UpstreamType::NIM,
         };
 
-        // v0.13.0: Prompt cache configuration (for self-hosted NIM with KV_CACHE_REUSE=1)
-        let prompt_cache_enabled = env::var("NIM_PROMPT_CACHE_ENABLED")
-            .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(false);
-        let prompt_cache_max_entries = env::var("NIM_PROMPT_CACHE_MAX_ENTRIES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
-        let prompt_cache_ttl_secs =
-            env::var("NIM_PROMPT_CACHE_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
         // Circuit breaker configuration (v0.14.1)
         let cb_enabled =
             env::var("CB_ENABLED").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
@@ -966,9 +931,6 @@ impl Config {
             max_concurrent_per_model,
             permit_timeout_secs,
             upstream_type,
-            prompt_cache_enabled,
-            prompt_cache_max_entries,
-            prompt_cache_ttl_secs,
             cb_enabled,
             cb_threshold,
             cb_recovery_secs,
