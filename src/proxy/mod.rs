@@ -601,6 +601,7 @@ mod context_window_tests {
             telemetry_secret_path: "/tmp/nexus-telemetry-secret".to_string(),
             config_path: None,
             telemetry_disabled_reason: None,
+            disable_health_check: false,
         }
     }
 
