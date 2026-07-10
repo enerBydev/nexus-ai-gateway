@@ -7,7 +7,7 @@ use reqwest::Client;
 use crate::config::Config;
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
-use crate::proxy::concurrency::{acquire_model_permit, ModelSemaphores};
+use crate::proxy::concurrency::{acquire_model_permit, insert_ratelimit_headers, ModelSemaphores};
 use crate::proxy::retry::resilient_send;
 use crate::transform;
 use crate::web_fetch;
@@ -42,13 +42,19 @@ pub(crate) async fn handle_non_streaming(
     // ╔═══════════════════════════════════════════╗
     // ║ Concurrency Shield: acquire model permit ║
     // ╚═══════════════════════════════════════════╝
-    let _permit = acquire_model_permit(
+    let acquire_result = acquire_model_permit(
         &model_semaphores,
         &openai_req.model,
         config.max_concurrent_per_model,
         config.permit_timeout_secs,
+        config.max_queue_depth,
     )
     .await?;
+    let _permit = acquire_result.permit;
+    // Issue #59: captured once at acquisition time — attached to every response below,
+    // including successful ones, so CC can self-throttle before hitting the limit.
+    let available_permits = acquire_result.available_permits;
+    let queue_depth = acquire_result.queue_depth;
 
     tracing::debug!(
         "Sending non-streaming request to {} (upstream: {})",
@@ -129,7 +135,13 @@ pub(crate) async fn handle_non_streaming(
                         config.web_fetch_max_retries
                     );
                     // WebFetch max retries reached — return as-is (tokens already scaled via transform)
-                    return Ok(Json(anthropic_resp).into_response());
+                    let mut response = Json(anthropic_resp).into_response();
+                    insert_ratelimit_headers(
+                        response.headers_mut(),
+                        available_permits,
+                        queue_depth,
+                    );
+                    return Ok(response);
                 }
 
                 let fetch_url = web_fetch::extract_url(&input)
@@ -191,6 +203,8 @@ pub(crate) async fn handle_non_streaming(
         }
 
         // No web_fetch found, return the response directly (tokens already scaled via transform)
-        return Ok(Json(anthropic_resp).into_response());
+        let mut response = Json(anthropic_resp).into_response();
+        insert_ratelimit_headers(response.headers_mut(), available_permits, queue_depth);
+        return Ok(response);
     }
 }

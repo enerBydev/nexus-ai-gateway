@@ -21,8 +21,11 @@ pub enum ProxyError {
     #[error("Upstream API error: {0}")]
     Upstream(String),
 
+    /// Issue #59: second field is a suggested `retry-after` in seconds, scaled to how
+    /// backed up the model's queue was at rejection time. `None` falls back to the
+    /// default floor in `IntoResponse`.
     #[error("Service overloaded: {0}")]
-    Overloaded(String),
+    Overloaded(String, Option<u64>),
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -79,23 +82,29 @@ pub(crate) fn anthropic_error_type(status: StatusCode) -> &'static str {
 
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {
-        let (status, error_message) = match self {
-            ProxyError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            ProxyError::Transform(msg) => (StatusCode::BAD_REQUEST, msg),
-            ProxyError::Upstream(msg) => (StatusCode::BAD_GATEWAY, msg),
-            ProxyError::Overloaded(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
-            ProxyError::Serialization(err) => {
-                (StatusCode::BAD_REQUEST, format!("JSON error: {}", err))
+        let (status, error_message, retry_after_override) = match self {
+            ProxyError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
+            ProxyError::Transform(msg) => (StatusCode::BAD_REQUEST, msg, None),
+            ProxyError::Upstream(msg) => (StatusCode::BAD_GATEWAY, msg, None),
+            // Issue #59: retry_after scales with observed queue depth; falls back to the
+            // default floor below when not provided.
+            ProxyError::Overloaded(msg, retry_after) => {
+                (StatusCode::SERVICE_UNAVAILABLE, msg, retry_after)
             }
-            ProxyError::Http(err) => (StatusCode::BAD_GATEWAY, format!("HTTP error: {}", err)),
-            ProxyError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            ProxyError::WebFetch(msg) => (StatusCode::BAD_GATEWAY, msg),
+            ProxyError::Serialization(err) => {
+                (StatusCode::BAD_REQUEST, format!("JSON error: {}", err), None)
+            }
+            ProxyError::Http(err) => {
+                (StatusCode::BAD_GATEWAY, format!("HTTP error: {}", err), None)
+            }
+            ProxyError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
+            ProxyError::WebFetch(msg) => (StatusCode::BAD_GATEWAY, msg, None),
             // v6.1: 400 so CC treats it as non-retriable -> immediate /compact feedback
-            ProxyError::ContextOverflow(msg) => (StatusCode::BAD_REQUEST, msg),
+            ProxyError::ContextOverflow(msg) => (StatusCode::BAD_REQUEST, msg, None),
             // v0.11.0: Stream timeout -> 504 Gateway Timeout (retryable)
-            ProxyError::StreamTimeout(msg) => (StatusCode::GATEWAY_TIMEOUT, msg),
+            ProxyError::StreamTimeout(msg) => (StatusCode::GATEWAY_TIMEOUT, msg, None),
             // v0.11.0: Buffer overflow -> 502 Bad Gateway (retryable)
-            ProxyError::BufferOverflow(msg) => (StatusCode::BAD_GATEWAY, msg),
+            ProxyError::BufferOverflow(msg) => (StatusCode::BAD_GATEWAY, msg, None),
         };
 
         // Anthropic-native response format — CC recognizes these error types
@@ -128,7 +137,12 @@ impl IntoResponse for ProxyError {
                 headers.insert("retry-after", "10".parse().unwrap());
             }
             503 | 529 => {
-                headers.insert("retry-after", "5".parse().unwrap());
+                // Issue #59: use the queue-depth-scaled suggestion when the error carried
+                // one (Overloaded from acquire_model_permit); otherwise keep the old flat 5s.
+                let secs = retry_after_override.unwrap_or(5);
+                if let Ok(v) = secs.to_string().parse() {
+                    headers.insert("retry-after", v);
+                }
             }
             _ => {}
         }

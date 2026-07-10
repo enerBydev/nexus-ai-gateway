@@ -111,6 +111,10 @@ pub struct Config {
     // Concurrency tuning (Opción B: read from .env)
     pub max_concurrent_per_model: usize,
     pub permit_timeout_secs: u64,
+    /// Issue #59: max requests allowed to queue (wait) for a model's semaphore before
+    /// NEXUS rejects new ones immediately with 503 instead of waiting `permit_timeout_secs`
+    /// behind a backlog that was never going to drain in time (thundering-herd guard).
+    pub max_queue_depth: usize,
     pub upstream_type: UpstreamType,
     // Circuit breaker configuration (v0.14.1)
     pub cb_enabled: bool,
@@ -506,6 +510,11 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(180);
 
+        // Issue #59: queue-depth limiting — reject immediately instead of waiting
+        // permit_timeout_secs behind an already-saturated backlog.
+        let max_queue_depth =
+            Self::get_from_map(data, "MAX_QUEUE_DEPTH").and_then(|v| v.parse().ok()).unwrap_or(20);
+
         let upstream_type = match Self::get_from_map(data, "NEXUS_UPSTREAM_TYPE") {
             Some(val) => match val.parse::<UpstreamType>() {
                 Ok(t) => t,
@@ -663,6 +672,7 @@ impl Config {
             model_map,
             max_concurrent_per_model,
             permit_timeout_secs,
+            max_queue_depth,
             upstream_type,
             cb_enabled,
             cb_threshold,
@@ -1274,6 +1284,33 @@ mod tests {
         map.insert("DISABLE_HEALTH_CHECK".to_string(), "1".to_string());
         let config = Config::from_map(&map).unwrap();
         assert!(config.disable_health_check);
+    }
+
+    // =========================================================================
+    // Issue #59: max_queue_depth
+    // =========================================================================
+
+    #[test]
+    fn test_max_queue_depth_default_is_20() {
+        let map = make_test_map();
+        let config = Config::from_map(&map).unwrap();
+        assert_eq!(config.max_queue_depth, 20);
+    }
+
+    #[test]
+    fn test_max_queue_depth_custom() {
+        let mut map = make_test_map();
+        map.insert("MAX_QUEUE_DEPTH".to_string(), "50".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert_eq!(config.max_queue_depth, 50);
+    }
+
+    #[test]
+    fn test_max_queue_depth_invalid_uses_default() {
+        let mut map = make_test_map();
+        map.insert("MAX_QUEUE_DEPTH".to_string(), "not-a-number".to_string());
+        let config = Config::from_map(&map).unwrap();
+        assert_eq!(config.max_queue_depth, 20);
     }
 
     #[test]

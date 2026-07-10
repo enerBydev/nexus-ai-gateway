@@ -41,6 +41,7 @@ fn config_show(config_path: Option<PathBuf>) -> Result<()> {
     eprintln!("\n  {}", style("━━━ Concurrency ━━━").yellow().bold());
     eprintln!("    Max per model:   {}", style(config.max_concurrent_per_model).green());
     eprintln!("    Permit timeout:  {}s", style(config.permit_timeout_secs).green());
+    eprintln!("    Max queue depth: {}", style(config.max_queue_depth).green());
 
     // Upstream section
     eprintln!("\n  {}", style("━━━ Upstream ━━━").yellow().bold());

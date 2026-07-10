@@ -55,4 +55,25 @@ mod tests {
         let error_type = anthropic_error_type(StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(error_type, "overloaded_error");
     }
+
+    // =========================================================================
+    // Issue #59: queue-depth-scaled retry-after on Overloaded
+    // =========================================================================
+
+    #[test]
+    fn test_overloaded_uses_provided_retry_after() {
+        let error = ProxyError::Overloaded("busy".to_string(), Some(37));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "37");
+        assert_eq!(response.headers().get("x-should-retry").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_overloaded_falls_back_to_5s_when_none() {
+        // Old-style construction (no queue-depth context) keeps the original behavior.
+        let error = ProxyError::Overloaded("busy".to_string(), None);
+        let response = error.into_response();
+        assert_eq!(response.headers().get("retry-after").unwrap(), "5");
+    }
 }
