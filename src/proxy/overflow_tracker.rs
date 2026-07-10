@@ -13,6 +13,22 @@ struct OverflowTracker {
     last_timestamp: Instant,
 }
 
+// PERF: `std::sync::Mutex` (not `tokio::sync::Mutex`) is intentional here.
+//
+// - The critical section is sub-microsecond: a single `HashMap::entry()`
+//   lookup plus an integer comparison/increment. There is no I/O, no
+//   allocation-heavy work, and no reason to yield to the async runtime
+//   while holding the lock.
+// - The lock is never held across an `.await` point in any call site
+//   (`check_overflow_loop`, `reset_tracker`, `reset_all`), so there is no
+//   risk of blocking the Tokio executor's worker threads.
+// - This tracker is only touched on the context-overflow error path, not
+//   the hot request path — contention is rare by construction.
+// - Swapping in `tokio::sync::Mutex` would be a regression: its async
+//   lock/unlock adds overhead (task suspension, wake-up scheduling) that
+//   only pays off when a lock is held across `.await`, which never
+//   happens here. For short, synchronous critical sections, `std::sync::Mutex`
+//   is faster and simpler.
 static OVERFLOW_LOOP_TRACKER: OnceLock<Mutex<HashMap<String, OverflowTracker>>> = OnceLock::new();
 
 /// Threshold: number of consecutive same-level overflows to trigger loop detection.
@@ -33,6 +49,7 @@ impl OverflowLoopTracker {
             return false;
         }
 
+        // Intentionally std::sync::Mutex — see rationale above OVERFLOW_LOOP_TRACKER.
         let mut trackers = get_trackers().lock().unwrap_or_else(|e| {
             tracing::error!("OverflowLoopTracker mutex poisoned: {}", e);
             e.into_inner()
@@ -87,6 +104,7 @@ impl OverflowLoopTracker {
 
     /// Reset tracker for a model (call after successful non-overflow request).
     pub fn reset_tracker(model: &str) {
+        // Intentionally std::sync::Mutex — see rationale above OVERFLOW_LOOP_TRACKER.
         let mut trackers = get_trackers().lock().unwrap_or_else(|e| {
             tracing::error!("OverflowLoopTracker mutex poisoned on reset: {}", e);
             e.into_inner()
