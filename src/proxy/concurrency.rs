@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::Semaphore;
@@ -9,7 +10,67 @@ use crate::error::{ProxyError, ProxyResult};
 
 /// Shared collection of per-model semaphores.
 pub type ModelSemaphores = Arc<AsyncRwLock<HashMap<String, Arc<Semaphore>>>>;
-pub type CircuitBreaker = Arc<circuit_breaker::CircuitBreaker>;
+
+/// Issue #73: Per-model circuit breaker registry. One `CircuitBreaker` per upstream model
+/// (keyed by the upstream model id, not the Claude alias). A failure in model A no longer
+/// trips the breaker for model B.
+pub struct CircuitBreakerMap {
+    enabled: bool,
+    threshold: u32,
+    recovery_timeout: Duration,
+    breakers: AsyncRwLock<HashMap<String, Arc<circuit_breaker::CircuitBreaker>>>,
+}
+
+impl CircuitBreakerMap {
+    pub fn new(enabled: bool, threshold: u32, recovery_secs: u64) -> Self {
+        Self {
+            enabled,
+            threshold,
+            recovery_timeout: Duration::from_secs(recovery_secs),
+            breakers: AsyncRwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Get or create the circuit breaker for a specific upstream model. When the registry
+    /// is disabled, returns a shared no-op breaker (no allocation per call).
+    pub async fn get(&self, model: &str) -> Arc<circuit_breaker::CircuitBreaker> {
+        if !self.enabled {
+            static DISABLED: std::sync::OnceLock<Arc<circuit_breaker::CircuitBreaker>> =
+                std::sync::OnceLock::new();
+            return DISABLED
+                .get_or_init(|| Arc::new(circuit_breaker::CircuitBreaker::disabled()))
+                .clone();
+        }
+
+        // Fast path: read lock
+        {
+            let read = self.breakers.read().await;
+            if let Some(cb) = read.get(model) {
+                return cb.clone();
+            }
+        }
+
+        // Slow path: write lock to create
+        let mut write = self.breakers.write().await;
+        write
+            .entry(model.to_string())
+            .or_insert_with(|| {
+                tracing::info!(
+                    "[CB] Created per-model circuit breaker for '{}' (threshold={}, recovery={}s)",
+                    model,
+                    self.threshold,
+                    self.recovery_timeout.as_secs()
+                );
+                Arc::new(circuit_breaker::CircuitBreaker::new(
+                    self.threshold,
+                    self.recovery_timeout,
+                ))
+            })
+            .clone()
+    }
+}
+
+pub type CircuitBreaker = Arc<CircuitBreakerMap>;
 
 /// Acquire a concurrency permit for a specific NIM model.
 pub(crate) async fn acquire_model_permit(

@@ -227,7 +227,9 @@ impl CircuitBreaker {
 
 impl Default for CircuitBreaker {
     fn default() -> Self {
-        Self::new(3, Duration::from_secs(30))
+        // Issue #73: aligned with Config defaults (cb_threshold=10, cb_recovery_secs=60)
+        // so the default is never silently out of sync with production behavior.
+        Self::new(10, Duration::from_secs(60))
     }
 }
 
