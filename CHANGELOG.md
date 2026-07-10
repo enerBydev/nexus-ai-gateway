@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.26.0] - 2026-07-10
+
+### Added
+- Per-model ThinkingMechanism enum (#58, #101, #57)
+
+### Fixed
+- Handle transport errors in retry loop + per-model circuit breaker (#71, #73) (#142)
+
+---
+
 ## [0.25.0] - 2026-07-10
 
 ### Added
