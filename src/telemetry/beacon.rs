@@ -117,7 +117,7 @@ pub fn validate_beacon_url(url: &str) -> Result<()> {
 /// Compute an instance identifier from hostname and secret.
 /// Uses HMAC-SHA256(secret, hostname) — same algorithm as fingerprinting.
 pub fn compute_instance_id(hostname: &str, secret: &[u8]) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     type HmacSha256 = Hmac<Sha256>;
