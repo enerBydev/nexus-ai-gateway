@@ -155,6 +155,37 @@ fn main() -> anyhow::Result<()> {
     runtime.block_on(async_main(cli))
 }
 
+/// Issue #77 I3: Shared config reload core — used by both the SIGHUP handler and the file
+/// watcher. Loads the current config path, calls `Config::reload`, and on success swaps the
+/// new config into the shared `ArcSwap` and logs the model-map delta; on failure, logs the
+/// error. `source` distinguishes the caller in the log output (e.g. "SIGHUP" vs "auto").
+fn apply_config_reload(
+    shared_config: &SharedConfig,
+    cli_debug: bool,
+    cli_verbose: bool,
+    cli_port: Option<u16>,
+    cli_bind: Option<String>,
+    source: &str,
+) {
+    let reload_path = shared_config.load().config_path.clone();
+    match Config::reload(cli_debug, cli_verbose, cli_port, cli_bind, reload_path) {
+        Ok(new_config) => {
+            let old_maps = shared_config.load().model_map.len();
+            shared_config.store(Arc::new(new_config));
+            let new_maps = shared_config.load().model_map.len();
+            tracing::info!(
+                "✅ Config {} reloaded: {} model mappings (was {})",
+                source,
+                new_maps,
+                old_maps
+            );
+        }
+        Err(e) => {
+            tracing::error!("❌ Config {} reload failed: {}", source, e);
+        }
+    }
+}
+
 async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let mut config = Config::from_env_with_path(cli.config)?;
 
@@ -487,28 +518,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 tracing::warn!("[WARN] Config reload already in progress (SIGHUP skipped)");
                 continue;
             }
-            let reload_path = reload_config.load().config_path.clone();
-            match Config::reload(
+            apply_config_reload(
+                &reload_config,
                 cli_debug,
                 cli_verbose,
                 cli_port,
                 cli_bind_sighup.clone(),
-                reload_path,
-            ) {
-                Ok(new_config) => {
-                    let old_maps = reload_config.load().model_map.len();
-                    reload_config.store(Arc::new(new_config));
-                    let new_maps = reload_config.load().model_map.len();
-                    tracing::info!(
-                        "✅ Config reloaded: {} model mappings (was {})",
-                        new_maps,
-                        old_maps
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("❌ Config reload failed: {}", e);
-                }
-            }
+                "SIGHUP",
+            );
             reload_flag_sighup.store(false, Ordering::SeqCst);
         }
     });
@@ -629,27 +646,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     }
 
                     tracing::info!("🔄 .env changed — auto-reloading config...");
-                    let reload_path = watch_config.load().config_path.clone();
-                    match Config::reload(
+                    apply_config_reload(
+                        &watch_config,
                         cli_debug,
                         cli_verbose,
                         cli_port,
                         cli_bind_watcher.clone(),
-                        reload_path,
-                    ) {
-                        Ok(new_config) => {
-                            let old_maps = watch_config.load().model_map.len();
-                            watch_config.store(Arc::new(new_config));
-                            let new_maps = watch_config.load().model_map.len();
-                            tracing::info!(
-                                "✅ Config auto-reloaded: {} model mappings (was {})",
-                                new_maps, old_maps
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!("❌ Auto-reload failed: {}", e);
-                        }
-                    }
+                        "auto",
+                    );
                     reload_flag_watcher.store(false, Ordering::SeqCst);
 
                     // Reset timer for next cycle
