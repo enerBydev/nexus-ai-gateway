@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.28.2] - 2026-07-11
+
+### Fixed
+- Pass through upstream cache tokens (#40) (#148)
+
+---
+
 ## [0.28.1] - 2026-07-11
 
 ### Changed
