@@ -380,6 +380,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
+                prompt_tokens_details: None,
             }),
         };
 
@@ -416,6 +417,7 @@ mod tests {
                 prompt_tokens: 50000,
                 completion_tokens: 4000,
                 total_tokens: 54000,
+                prompt_tokens_details: None,
             }),
         };
 
@@ -458,6 +460,7 @@ mod tests {
                 prompt_tokens: 100000,
                 completion_tokens: 4000,
                 total_tokens: 104000,
+                prompt_tokens_details: None,
             }),
         };
 
@@ -718,5 +721,104 @@ mod tests {
         );
         let (matched, _) = best_family_match("claude-opus-4-8", &map).unwrap();
         assert_eq!(matched, "claude-opus-4-6", "clean dotted version sorts above dated snapshot");
+    }
+
+    // === Issue #40: Cache token pass-through tests ===
+
+    /// Helper: build an OpenAIResponse with configurable usage and optional cache info.
+    fn make_openai_response_with_cache(
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cached_tokens: Option<u32>,
+    ) -> crate::models::openai::OpenAIResponse {
+        crate::models::openai::OpenAIResponse {
+            id: "test-cache".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1234567890,
+            model: "gpt-4".to_string(),
+            system_fingerprint: None,
+            choices: vec![crate::models::openai::Choice {
+                index: 0,
+                message: crate::models::openai::ChoiceMessage {
+                    role: "assistant".to_string(),
+                    content: Some("Test".to_string()),
+                    tool_calls: None,
+                    reasoning_content: None,
+                    reasoning: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(crate::models::openai::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+                prompt_tokens_details: cached_tokens
+                    .map(|c| crate::models::openai::PromptTokensDetails { cached_tokens: c }),
+            }),
+        }
+    }
+
+    #[test]
+    fn test_cache_tokens_no_details_returns_zero() {
+        use crate::transform::openai_to_anthropic;
+        let resp = make_openai_response_with_cache(100, 50, None);
+        let result = openai_to_anthropic(resp, "claude-sonnet-4-6", None).unwrap();
+        assert_eq!(result.usage.input_tokens, 100);
+        assert_eq!(result.usage.output_tokens, 50);
+        assert_eq!(result.usage.cache_read_input_tokens, Some(0));
+        assert_eq!(result.usage.cache_creation_input_tokens, Some(0));
+    }
+
+    #[test]
+    fn test_cache_tokens_passthrough_no_scaling() {
+        use crate::transform::openai_to_anthropic;
+        // 100 total prompt tokens, 80 cached -> 20 fresh
+        let resp = make_openai_response_with_cache(100, 50, Some(80));
+        let result = openai_to_anthropic(resp, "claude-sonnet-4-6", None).unwrap();
+        assert_eq!(result.usage.input_tokens, 20, "fresh (non-cached) tokens");
+        assert_eq!(result.usage.output_tokens, 50);
+        assert_eq!(result.usage.cache_read_input_tokens, Some(80), "cached tokens");
+        assert_eq!(result.usage.cache_creation_input_tokens, Some(0));
+    }
+
+    #[test]
+    fn test_cache_tokens_passthrough_with_scaling() {
+        use crate::proxy::token_scaling::TokenScalingParams;
+        use crate::transform::openai_to_anthropic;
+        // upstream 100K context, CC 200K -> 2x scaling
+        let scaling =
+            Some(TokenScalingParams { context_limit: 100_000, cc_context_window: 200_000 });
+        // 1000 total prompt, 800 cached -> 200 fresh
+        let resp = make_openai_response_with_cache(1000, 200, Some(800));
+        let result = openai_to_anthropic(resp, "claude-sonnet-4-6", scaling).unwrap();
+        // 2x scaling: fresh 200->400, cached 800->1600, output 200->400
+        assert_eq!(result.usage.input_tokens, 400, "scaled fresh tokens");
+        assert_eq!(result.usage.output_tokens, 400, "scaled output tokens");
+        assert_eq!(result.usage.cache_read_input_tokens, Some(1600), "scaled cached tokens");
+    }
+
+    #[test]
+    fn test_cache_tokens_zero_cached_with_scaling() {
+        use crate::proxy::token_scaling::TokenScalingParams;
+        use crate::transform::openai_to_anthropic;
+        let scaling =
+            Some(TokenScalingParams { context_limit: 100_000, cc_context_window: 200_000 });
+        // 0 cached -> same as before (no extra scale call)
+        let resp = make_openai_response_with_cache(1000, 200, Some(0));
+        let result = openai_to_anthropic(resp, "claude-sonnet-4-6", scaling).unwrap();
+        assert_eq!(result.usage.input_tokens, 2000);
+        assert_eq!(result.usage.output_tokens, 400);
+        assert_eq!(result.usage.cache_read_input_tokens, Some(0));
+    }
+
+    #[test]
+    fn test_cache_tokens_cached_exceeds_total_clamped() {
+        use crate::transform::openai_to_anthropic;
+        // Edge case: cached > prompt_tokens (shouldn't happen but handle gracefully)
+        let resp = make_openai_response_with_cache(50, 20, Some(100));
+        let result = openai_to_anthropic(resp, "claude-sonnet-4-6", None).unwrap();
+        // Clamped: cached = min(100, 50) = 50, fresh = 50 - 50 = 0
+        assert_eq!(result.usage.input_tokens, 0, "all tokens counted as cached");
+        assert_eq!(result.usage.cache_read_input_tokens, Some(50), "clamped to prompt_tokens");
     }
 }
