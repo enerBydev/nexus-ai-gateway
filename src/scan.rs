@@ -134,7 +134,7 @@ pub fn compute_sha256(path: &Path) -> Result<String, String> {
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 // ============================================================

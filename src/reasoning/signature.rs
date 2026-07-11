@@ -9,7 +9,7 @@
 //! to text while preserving real Anthropic signatures verbatim (the bug documented in
 //! entregable 06 §3 / vercel/ai#9351).
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::sync::OnceLock;
 
