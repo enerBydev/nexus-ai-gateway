@@ -146,7 +146,10 @@ pub(crate) async fn handle_streaming(
         permit,
         calibrated_estimate,
         raw_estimate,
-        nim_model_name,
+        // Issue #75/#76: create_sse_stream needs its own owned copy (nim_model_name is used
+        // below for the response header + request metric, after this call).
+        nim_model_name.clone(),
+        upstream_name.to_string(),
         calibration,
         context_limit,
         cc_context_window, // Issue #28: resolved dynamically
@@ -160,6 +163,13 @@ pub(crate) async fn handle_streaming(
     headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
     headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+    // Issue #75: Expose actual upstream model for operational visibility. CC still sees the
+    // original Claude alias in the response body (model identity preservation is unchanged).
+    if let Ok(val) = HeaderValue::from_str(&nim_model_name) {
+        headers.insert("x-nexus-upstream-model", val);
+    }
+    // Issue #76: per-upstream-model request metric.
+    crate::telemetry::metrics::record_upstream_request(&nim_model_name, upstream_name, true);
     // Issue #59: backpressure headers on successful responses too, so CC can
     // self-throttle before actually hitting the concurrency limit.
     insert_ratelimit_headers(
@@ -180,6 +190,8 @@ pub(crate) fn create_sse_stream(
     estimated_input_tokens: u32,
     raw_tiktoken_estimate: u32,
     nim_model_name: String,
+    // Issue #76: upstream name label for per-upstream-model duration/token metrics.
+    upstream_name: String,
     calibration: tokenizer::CalibrationFactors,
     context_limit: u32,
     cc_context_window: u32, // Issue #28: resolved dynamically
@@ -190,6 +202,9 @@ pub(crate) fn create_sse_stream(
     config: Arc<Config>,
     client: Client,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    // Issue #76: stream-lifetime timer for nexus_upstream_duration_seconds (stream start to
+    // message_stop).
+    let start_time = std::time::Instant::now();
     async_stream::stream! {
         tracing::debug!(
             "[CALIB] Auto-compact scaling: cc_context_window={}K, model_context={}K",
@@ -902,6 +917,11 @@ pub(crate) fn create_sse_stream(
                 }
             }
         }
+        // Issue #76: Record per-upstream-model token + duration metrics once per stream,
+        // regardless of how it terminated (graceful [DONE], timeout, shutdown, error).
+        // This ensures failed/aborted streams are visible in metrics too (CodeRabbit CR).
+        crate::telemetry::metrics::record_upstream_tokens(&nim_model_name, accumulated_input_tokens, accumulated_output_tokens);
+        crate::telemetry::metrics::record_upstream_duration(&nim_model_name, &upstream_name, start_time.elapsed().as_secs_f64());
     }
 }
 

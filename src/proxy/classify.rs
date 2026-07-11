@@ -38,6 +38,19 @@ pub(crate) enum ErrorClass {
     Fatal { reason: &'static str },
 }
 
+impl ErrorClass {
+    /// Issue #76: the classification's `reason` string, used as the bounded-cardinality
+    /// `error_class` label on the `nexus_upstream_errors_total` metric. All values are
+    /// `&'static str` literals defined in this file, so cardinality stays bounded.
+    pub(crate) fn reason(&self) -> &'static str {
+        match self {
+            ErrorClass::Retryable { reason, .. } => reason,
+            ErrorClass::Fixable { reason } => reason,
+            ErrorClass::Fatal { reason } => reason,
+        }
+    }
+}
+
 /// Content patterns that indicate a fixable error (max_tokens/context overflow)
 pub(crate) const FIXABLE_PATTERNS: &[&str] = &[
     "max_tokens",
