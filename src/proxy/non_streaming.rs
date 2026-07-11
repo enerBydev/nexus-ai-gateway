@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::http::HeaderValue;
 use axum::response::IntoResponse;
 use axum::Json;
 use reqwest::Client;
@@ -67,6 +68,9 @@ pub(crate) async fn handle_non_streaming(
     let mut current_openai_req = openai_req;
     let mut current_messages = original_req.messages.clone();
     let mut fetch_count: u32 = 0;
+    // Issue #76: total handler duration (including any WebFetch interception round-trips)
+    // for nexus_upstream_duration_seconds.
+    let request_start = std::time::Instant::now();
 
     loop {
         // === Resilient send with auto-retry on 429/400 ===
@@ -141,6 +145,10 @@ pub(crate) async fn handle_non_streaming(
                         available_permits,
                         queue_depth,
                     );
+                    // Issue #75: Expose actual upstream model
+                    if let Ok(val) = HeaderValue::from_str(&current_openai_req.model) {
+                        response.headers_mut().insert("x-nexus-upstream-model", val);
+                    }
                     return Ok(response);
                 }
 
@@ -203,8 +211,31 @@ pub(crate) async fn handle_non_streaming(
         }
 
         // No web_fetch found, return the response directly (tokens already scaled via transform)
+        // Issue #76: capture usage before `anthropic_resp` moves into Json() below.
+        let final_input_tokens = anthropic_resp.usage.input_tokens;
+        let final_output_tokens = anthropic_resp.usage.output_tokens;
         let mut response = Json(anthropic_resp).into_response();
         insert_ratelimit_headers(response.headers_mut(), available_permits, queue_depth);
+        // Issue #75: Expose actual upstream model
+        if let Ok(val) = HeaderValue::from_str(&current_openai_req.model) {
+            response.headers_mut().insert("x-nexus-upstream-model", val);
+        }
+        // Issue #76: per-upstream-model metrics
+        crate::telemetry::metrics::record_upstream_request(
+            &current_openai_req.model,
+            upstream_name,
+            false,
+        );
+        crate::telemetry::metrics::record_upstream_duration(
+            &current_openai_req.model,
+            upstream_name,
+            request_start.elapsed().as_secs_f64(),
+        );
+        crate::telemetry::metrics::record_upstream_tokens(
+            &current_openai_req.model,
+            final_input_tokens,
+            final_output_tokens,
+        );
         return Ok(response);
     }
 }

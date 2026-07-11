@@ -406,6 +406,13 @@ pub(crate) async fn resilient_send(
 
         let class = classify_error(&upstream_err);
         tracing::debug!("🧠 Classified: {:?} (status={})", class, status.as_u16());
+        // Issue #76: per-upstream-model error metric (recorded per attempt — surfaces
+        // transient upstream flakiness even when a retry ultimately succeeds).
+        crate::telemetry::metrics::record_upstream_error(
+            &openai_req.model,
+            upstream_name,
+            class.reason(),
+        );
 
         match class {
             ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {
@@ -741,6 +748,13 @@ pub(crate) async fn resilient_send_raw(
 
         let class = classify_error(&upstream_err);
         tracing::debug!("🧠 [stream] Classified: {:?} (status={})", class, status.as_u16());
+        // Issue #76: per-upstream-model error metric (recorded per attempt — surfaces
+        // transient upstream flakiness even when a retry ultimately succeeds).
+        crate::telemetry::metrics::record_upstream_error(
+            &openai_req.model,
+            upstream_name,
+            class.reason(),
+        );
 
         match class {
             ErrorClass::Retryable { base_delay_ms, max_retries, reason } => {

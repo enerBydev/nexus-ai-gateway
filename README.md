@@ -281,6 +281,16 @@ Resolution priority (highest → lowest):
 | `/health` | GET | Health check |
 | `/metrics` | GET | Prometheus metrics |
 
+### Response Headers
+
+| Header | Description |
+|--------|-------------|
+| `x-nexus-upstream-model` | The actual upstream model ID that served the request (Issue #75). Sent on every `/v1/messages` response, streaming and non-streaming. Claude Code still sees the original Claude model alias in the response body — model identity preservation is unchanged; this header is purely for operator visibility. |
+| `x-ratelimit-remaining` | Available concurrency permits for the request's model, captured at acquisition time. |
+| `x-ratelimit-queue-depth` | Number of requests queued for the model's semaphore, captured at acquisition time. |
+
+`/metrics` also exposes per-upstream-model series (Issue #76), labeled by `upstream_model` and `upstream_name`: `nexus_upstream_requests_total`, `nexus_upstream_duration_seconds`, `nexus_upstream_errors_total`, and `nexus_upstream_tokens_total`.
+
 ---
 
 ## CLI Commands

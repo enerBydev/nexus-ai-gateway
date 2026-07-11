@@ -234,6 +234,8 @@ CI: `.github/workflows/ci.yml` → `.github/workflows/auto-version.yml` (auto-bu
 | `/health` | GET | Health check (`200 OK` normal, `503` during drain) |
 | `/metrics` | GET | Prometheus metrics |
 
+Every `/v1/messages` response (streaming and non-streaming) carries `x-nexus-upstream-model`, the actual upstream model ID that served the request (Issue #75) — CC still sees the original Claude alias in the response body, this is operator-visibility only. `/metrics` additionally exposes per-model series `nexus_upstream_requests_total` / `nexus_upstream_duration_seconds` / `nexus_upstream_errors_total` / `nexus_upstream_tokens_total`, labeled by `upstream_model` + `upstream_name` (Issue #76).
+
 ## Port Convention
 
 Default port **8315**: N(78) + E(69) + U(85) + S(83) = 315 → 8315
