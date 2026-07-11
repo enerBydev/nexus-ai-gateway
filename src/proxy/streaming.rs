@@ -464,9 +464,6 @@ pub(crate) fn create_sse_stream(
                                             serde_json::to_string(&delta_event).unwrap_or_default());
                                         yield Ok(Bytes::from(sse_data));
                                         tracing::info!("📊 Token usage: input={}, output={}", accumulated_input_tokens, accumulated_output_tokens);
-                                        // Issue #76: per-upstream-model token + duration metrics.
-                                        crate::telemetry::metrics::record_upstream_tokens(&nim_model_name, accumulated_input_tokens, accumulated_output_tokens);
-                                        crate::telemetry::metrics::record_upstream_duration(&nim_model_name, &upstream_name, start_time.elapsed().as_secs_f64());
                                     }
                                     let event = json!({"type": "message_stop"});
                                     let sse_data = format!("event: message_stop\ndata: {}\n\n",
@@ -920,6 +917,11 @@ pub(crate) fn create_sse_stream(
                 }
             }
         }
+        // Issue #76: Record per-upstream-model token + duration metrics once per stream,
+        // regardless of how it terminated (graceful [DONE], timeout, shutdown, error).
+        // This ensures failed/aborted streams are visible in metrics too (CodeRabbit CR).
+        crate::telemetry::metrics::record_upstream_tokens(&nim_model_name, accumulated_input_tokens, accumulated_output_tokens);
+        crate::telemetry::metrics::record_upstream_duration(&nim_model_name, &upstream_name, start_time.elapsed().as_secs_f64());
     }
 }
 
