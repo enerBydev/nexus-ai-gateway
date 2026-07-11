@@ -592,9 +592,12 @@ pub fn openai_to_anthropic(
                 .and_then(|u| u.prompt_tokens_details.as_ref())
                 .map(|d| d.cached_tokens)
                 .unwrap_or(0);
+            // Clamp cached to total prompt tokens (defensive: upstream should never
+            // report cached > prompt, but malformed responses must not inflate usage).
+            let raw_cached = raw_cached.min(raw_input);
             // Non-cached portion: total prompt tokens minus cached tokens.
             // In Anthropic format, input_tokens = fresh (non-cached) tokens only.
-            let raw_non_cached = raw_input.saturating_sub(raw_cached);
+            let raw_non_cached = raw_input - raw_cached;
             if let Some(params) = scaling {
                 let scaled = crate::proxy::token_scaling::scale_token_usage(
                     raw_non_cached,

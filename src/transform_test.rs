@@ -812,13 +812,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_tokens_cached_exceeds_total_saturates() {
+    fn test_cache_tokens_cached_exceeds_total_clamped() {
         use crate::transform::openai_to_anthropic;
         // Edge case: cached > prompt_tokens (shouldn't happen but handle gracefully)
         let resp = make_openai_response_with_cache(50, 20, Some(100));
         let result = openai_to_anthropic(resp, "claude-sonnet-4-6", None).unwrap();
-        // saturating_sub: 50 - 100 = 0
-        assert_eq!(result.usage.input_tokens, 0, "saturating_sub prevents underflow");
-        assert_eq!(result.usage.cache_read_input_tokens, Some(100));
+        // Clamped: cached = min(100, 50) = 50, fresh = 50 - 50 = 0
+        assert_eq!(result.usage.input_tokens, 0, "all tokens counted as cached");
+        assert_eq!(result.usage.cache_read_input_tokens, Some(50), "clamped to prompt_tokens");
     }
 }

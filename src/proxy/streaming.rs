@@ -442,11 +442,13 @@ pub(crate) fn create_sse_stream(
                                         saved_stop_reason = Some("end_turn".to_string());
                                     }
                                     if let Some(ref stop) = saved_stop_reason {
-                                        // Issue #40: split input into non-cached + cached portions
-                                        let non_cached_input = accumulated_input_tokens.saturating_sub(accumulated_cached_tokens);
+                                        // Issue #40: split input into non-cached + cached portions.
+                                        // Clamp cached to total (defensive against malformed upstream).
+                                        let cached_input = accumulated_cached_tokens.min(accumulated_input_tokens);
+                                        let non_cached_input = accumulated_input_tokens - cached_input;
                                         let scaled_delta = scale_token_usage(non_cached_input, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
-                                        let scaled_cache = if accumulated_cached_tokens > 0 {
-                                            scale_token_usage(accumulated_cached_tokens, 0, upstream_ctx, cc_ctx, "streaming-cache").input
+                                        let scaled_cache = if cached_input > 0 {
+                                            scale_token_usage(cached_input, 0, upstream_ctx, cc_ctx, "streaming-cache").input
                                         } else {
                                             0
                                         };
