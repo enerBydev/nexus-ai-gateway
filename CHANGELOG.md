@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.28.1] - 2026-07-11
+
+### Changed
+- Extract shared reload function to eliminate duplication (#77 I3) (#147)
+
+---
+
 ## [0.28.0] - 2026-07-11
 
 ### Added
