@@ -330,6 +330,19 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Issue #40: Prompt caching details from OpenAI-compatible APIs.
+    /// Contains `cached_tokens` when the upstream supports prompt caching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+/// Issue #40: Breakdown of prompt token categories.
+/// OpenAI-compatible APIs return this when prompt caching is active.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    /// Tokens served from prompt cache (not reprocessed).
+    #[serde(default)]
+    pub cached_tokens: u32,
 }
 
 /// Streaming chunk structure
@@ -385,4 +398,49 @@ pub struct DeltaFunctionCall {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_usage_deserialize_with_prompt_tokens_details() {
+        let json = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "prompt_tokens_details": { "cached_tokens": 80 }
+        }"#;
+        let usage: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        let details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, 80);
+    }
+
+    #[test]
+    fn test_usage_deserialize_without_prompt_tokens_details() {
+        let json = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        }"#;
+        let usage: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert!(usage.prompt_tokens_details.is_none());
+    }
+
+    #[test]
+    fn test_usage_deserialize_empty_details() {
+        let json = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "prompt_tokens_details": {}
+        }"#;
+        let usage: Usage = serde_json::from_str(json).unwrap();
+        let details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, 0, "serde default when field missing");
+    }
 }

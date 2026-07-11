@@ -241,6 +241,7 @@ pub(crate) fn create_sse_stream(
         let mut fetch_args_buffer = String::new();
         let mut accumulated_input_tokens: u32 = estimated_input_tokens;
         let mut accumulated_output_tokens: u32 = 0;
+        let mut accumulated_cached_tokens: u32 = 0; // Issue #40: track upstream cache tokens
         let mut saved_stop_reason: Option<String> = None;
         let mut reasoning_poisoned = false;
         // Issue #90-B (ARB L4): accumulate the emitted thinking so a `signature_delta`
@@ -441,12 +442,19 @@ pub(crate) fn create_sse_stream(
                                         saved_stop_reason = Some("end_turn".to_string());
                                     }
                                     if let Some(ref stop) = saved_stop_reason {
-                                        let scaled_delta = scale_token_usage(accumulated_input_tokens, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
+                                        // Issue #40: split input into non-cached + cached portions
+                                        let non_cached_input = accumulated_input_tokens.saturating_sub(accumulated_cached_tokens);
+                                        let scaled_delta = scale_token_usage(non_cached_input, accumulated_output_tokens, upstream_ctx, cc_ctx, "streaming-delta");
+                                        let scaled_cache = if accumulated_cached_tokens > 0 {
+                                            scale_token_usage(accumulated_cached_tokens, 0, upstream_ctx, cc_ctx, "streaming-cache").input
+                                        } else {
+                                            0
+                                        };
                                         let mut usage = json!({
                                             "input_tokens": scaled_delta.input,
                                             "output_tokens": scaled_delta.output,
                                             "cache_creation_input_tokens": 0,
-                                            "cache_read_input_tokens": 0
+                                            "cache_read_input_tokens": scaled_cache
                                         });
                                         // B3: report server-tool usage so CC recognises the web_fetch result.
                                         if web_fetch_requests > 0 {
@@ -489,6 +497,11 @@ pub(crate) fn create_sse_stream(
                                         );
                                         accumulated_input_tokens = usage.prompt_tokens;
                                         accumulated_output_tokens = usage.completion_tokens;
+                                        // Issue #40: capture cached tokens when upstream reports them
+                                        accumulated_cached_tokens = usage.prompt_tokens_details
+                                            .as_ref()
+                                            .map(|d| d.cached_tokens)
+                                            .unwrap_or(0);
 
                                         // S7: Release semaphore permit early once stream has output tokens
                                         if accumulated_output_tokens > 0 {

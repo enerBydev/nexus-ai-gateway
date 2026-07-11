@@ -583,27 +583,51 @@ pub fn openai_to_anthropic(
             // Issue #119: usage is now Option (degenerate NIM 200s omit it). Default to 0.
             let raw_input = resp.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
             let raw_output = resp.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0);
+            // Issue #40: extract cached tokens from upstream when available.
+            // OpenAI-compatible APIs report prompt_tokens_details.cached_tokens;
+            // NIM/others omit it -> defaults to 0 (correct, no caching).
+            let raw_cached = resp
+                .usage
+                .as_ref()
+                .and_then(|u| u.prompt_tokens_details.as_ref())
+                .map(|d| d.cached_tokens)
+                .unwrap_or(0);
+            // Non-cached portion: total prompt tokens minus cached tokens.
+            // In Anthropic format, input_tokens = fresh (non-cached) tokens only.
+            let raw_non_cached = raw_input.saturating_sub(raw_cached);
             if let Some(params) = scaling {
                 let scaled = crate::proxy::token_scaling::scale_token_usage(
-                    raw_input,
+                    raw_non_cached,
                     raw_output,
                     params.context_limit,
                     params.cc_context_window,
                     "transform",
                 );
+                let scaled_cache = if raw_cached > 0 {
+                    crate::proxy::token_scaling::scale_token_usage(
+                        raw_cached,
+                        0,
+                        params.context_limit,
+                        params.cc_context_window,
+                        "transform-cache",
+                    )
+                    .input
+                } else {
+                    0
+                };
                 anthropic::Usage {
                     input_tokens: scaled.input,
                     output_tokens: scaled.output,
                     cache_creation_input_tokens: Some(0),
-                    cache_read_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(scaled_cache),
                     ..Default::default()
                 }
             } else {
                 anthropic::Usage {
-                    input_tokens: raw_input,
+                    input_tokens: raw_non_cached,
                     output_tokens: raw_output,
                     cache_creation_input_tokens: Some(0),
-                    cache_read_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(raw_cached),
                     ..Default::default()
                 }
             }
