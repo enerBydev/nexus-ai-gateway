@@ -59,6 +59,29 @@ jobs:
       - name: Run the gate
         run: task ci
 
+  # THE SECOND IDENTITY (methodOS CODE-2, ADR-0013). GitHub refuses to let you approve your
+  # own pull request, so "a verdict from an identity other than the author" has to be someone
+  # else for real -- here, a GitHub App. Without it this repo merged pull requests with no
+  # review at all: the last ten went in with zero verdicts.
+  #
+  # Missing secrets do NOT break CI: the action reports the gap and the measurement says
+  # CODE-2 is red. A repo without a reviewer is still valid; what it cannot do is believe it
+  # has one.
+  veredicto:
+    runs-on: ubuntu-latest
+    needs: gate
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: enerBydev/methodOS/.github/actions/veredicto@main
+        with:
+          app-id: ${{ secrets.METHODOS_REVISOR_APP_ID }}
+          private-key: ${{ secrets.METHODOS_REVISOR_PRIVATE_KEY }}
+          gate-verde: ${{ needs.gate.result == 'success' }}
+
   # Release job -- runs after the gate passes on main.
   # Note: actual releases are created by auto-version.yml.
   release:
