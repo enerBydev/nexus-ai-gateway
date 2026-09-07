@@ -121,6 +121,51 @@ tasks:
       - task: lint
       - task: test
 
+  deny:
+    desc: Check advisories, bans, licenses and sources
+    cmds:
+      - cargo deny check
+
+  verify-version:
+    desc: The built binary reports the version the VERSION file declares
+    cmds:
+      - |
+        # WHERE the binary lands is not always `target/`: cargo honours CARGO_TARGET_DIR, and
+        # a workstation that sets it (to keep build output off a small root disk, say) had
+        # this check looking at a path that does not exist. The old ci.yml hardcoded
+        # `./target/release/` too -- so this verification only ever worked on a runner, which
+        # is exactly the "passes in CI, fails locally" split a single entry point exists to
+        # remove. Asking cargo instead of assuming costs one line.
+        dir="$CARGO_TARGET_DIR"
+        if [ -z "$dir" ]; then dir="target"; fi
+        built=$("$dir/release/{{.BINARY_NAME}}" --version | awk '{print $2}')
+        expected=$(tr -d '[:space:]' < VERSION)
+        if [ "$built" != "$expected" ]; then
+          echo "binary version ($built) != VERSION file ($expected)" >&2
+          exit 1
+        fi
+        echo "binary version verified: $built"
+
+  # THE pipeline. Not "the CI steps written again over here": this IS what CI runs, so a
+  # change here changes both sides at once. Before this, ci.yml repeated `cargo test`,
+  # `cargo clippy` and `cargo fmt -- --check` as loose steps, and editing the Taskfile
+  # changed nothing about CI -- which is the exact divergence a single entry point exists
+  # to prevent.
+  #
+  # `sanitize-unicode-check` is in here on purpose: the repo already had that check and CI
+  # never ran it. A check nobody executes is a check nobody has.
+  ci:
+    desc: The full gate, the same one CI runs
+    cmds:
+      - task: audit
+      - task: deny
+      - task: sanitize-unicode-check
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: build
+      - task: verify-version
+
   clean:
     desc: Clean build artifacts
     cmds:

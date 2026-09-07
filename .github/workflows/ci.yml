@@ -1,4 +1,18 @@
 name: CI/CD Pipeline
+
+# THE PIPELINE IS THE TASKFILE. This workflow does not repeat its commands, it invokes it, so
+# local and CI cannot drift apart. Before 2026-09-07 this file ran `cargo test`, `cargo clippy`
+# and `cargo fmt -- --check` as loose steps: the repo already had a `Taskfile.yaml` declaring
+# all of them, and editing it changed nothing about what CI actually did. That gap is the
+# permanent bug class TEST-5 exists to close -- "works locally, fails in CI".
+#
+# It also means CI now runs `sanitize-unicode-check`, which the Taskfile always had and this
+# file never called. A check nobody executes is a check nobody has.
+#
+# ONE JOB, NOT FIVE. The five parallel jobs shared no cargo cache, so each one paid for its own
+# build of the whole crate graph. A single job builds once and reuses it across clippy, test
+# and the release build. Parallelism that recompiles everything five times is not speed.
+
 on:
   push:
     branches: [ main ]
@@ -10,29 +24,26 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  security-scan:
+  gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install cargo-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install Task
+        uses: go-task/setup-task@v1
+        with:
+          version: 3.x
+
+      - name: Install cargo-audit and cargo-deny
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit
-      - name: Run security audit
-        run: cargo audit
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
-      - name: Run cargo-deny (advisories, bans, licenses, sources)
-        run: cargo deny check
+          tool: cargo-audit,cargo-deny
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: actions/cache@v6
         with:
@@ -40,74 +51,37 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-gate-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-
-      - name: Run tests
-        run: cargo test
+            ${{ runner.os }}-cargo-gate-
 
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
+      # The whole gate, in one command, the same one anybody runs on their machine.
+      - name: Run the gate
+        run: task ci
 
-  format:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Check formatting
-        run: cargo fmt -- --check
+  # THE SECOND IDENTITY IS NOT AVAILABLE HERE, AND THE REASON IS MEASURED (2026-09-07).
+  #
+  # methodOS CODE-2 wants "a verdict from an identity other than the author", emitted by a
+  # GitHub App through `enerBydev/methodOS/.github/actions/veredicto@main`. That action was
+  # wired up here and the run failed with:
+  #
+  #     Unable to resolve action `enerbydev/methodos`, not found
+  #
+  # It is NOT a permissions mistake. methodOS has `access_level: user` (shared with every repo
+  # this account owns) and a PRIVATE sibling of this repo resolves the very same action without
+  # trouble. The one thing that differs is the visibility of the CONSUMER: this repo is public,
+  # and a public repository cannot consume an action that lives in a private one -- same owner
+  # or not. Sharing settings do not reach across that line.
+  #
+  # So the gap is real and it has a single exit condition: methodOS becomes public (ClickUp
+  # 86bbv563p). Until then this repo merges without a second identity, the measurement says
+  # CODE-2 is red, and that red is honest -- the alternative would be copying the action in
+  # here, which trades one canonical source for four drifting ones.
 
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-      - name: Build release
-        run: cargo build --release
-      - name: Verify binary version
-        run: |
-          BUILT_VERSION=$(./target/release/nexus-ai-gateway --version | awk '{print $2}')
-          EXPECTED_VERSION=$(tr -d '[:space:]' < VERSION)
-          if [ "$BUILT_VERSION" != "$EXPECTED_VERSION" ]; then
-            echo "::error::Binary version ($BUILT_VERSION) != VERSION file ($EXPECTED_VERSION)"
-            exit 1
-          fi
-          echo "Binary version verified: $BUILT_VERSION"
-
-  # Release job — runs after all checks pass on main
-  # Note: Actual releases are created by auto-version.yml workflow
+  # Release job -- runs after the gate passes on main.
+  # Note: actual releases are created by auto-version.yml.
   release:
-    needs: [security-scan, test, lint, format, build]
+    needs: [gate]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     permissions:
@@ -130,23 +104,18 @@ jobs:
         run: |
           if git rev-parse "${{ steps.get_version.outputs.tag }}" >/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Tag ${{ steps.get_version.outputs.tag }} exists — release handled by auto-version.yml"
+            echo "Tag ${{ steps.get_version.outputs.tag }} exists - release handled by auto-version.yml"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ Tag ${{ steps.get_version.outputs.tag }} not found — auto-version.yml will handle release"
+            echo "Tag ${{ steps.get_version.outputs.tag }} not found - auto-version.yml will handle release"
           fi
 
       - name: CI Pipeline Summary
         run: |
           echo "## CI/CD Pipeline Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|:------|:------:|" >> $GITHUB_STEP_SUMMARY
-          echo "| Security Scan | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint (Clippy) | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Format | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "The gate ran \`task ci\`: audit, deny, unicode, fmt, clippy, tests, release build" >> $GITHUB_STEP_SUMMARY
+          echo "and the binary version check -- the same command that runs on a workstation." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version**: ${{ steps.get_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Tag exists**: ${{ steps.check_tag.outputs.exists }}" >> $GITHUB_STEP_SUMMARY
