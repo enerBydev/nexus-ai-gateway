@@ -21,7 +21,8 @@ cargo clippy -- -D warnings   # Lint (warnings as errors)
 cargo audit                    # Check for CVEs in dependencies
 
 # Task Runner (via Taskfile.yaml — preferred)
-task check                     # Full check: fmt + lint + test
+task ci                        # THE gate: audit + deny + unicode + fmt + lint + test + build + version
+task check                     # Quick check while working: fmt + lint + test
 task test                      # Run all tests
 task version-check             # Verify VERSION/Cargo.toml/lib.rs sync
 task install                   # Build + install to ~/.cargo/bin
@@ -224,6 +225,16 @@ Hooks are in `scripts/hooks/` (portable, not in `.git/hooks/`):
 Setup: `task setup-hooks` or `bash scripts/setup-hooks.sh`
 
 CI: `.github/workflows/ci.yml` → `.github/workflows/auto-version.yml` (auto-bumps version on conventional commits, creates GitHub Release with binary)
+
+**CI runs `task ci` — it does not repeat its commands.** That is the whole point: edit the
+Taskfile and both sides change at once. Until 2026-09-07 `ci.yml` ran `cargo test`, `cargo
+clippy` and `cargo fmt -- --check` as its own loose steps, so editing `Taskfile.yaml` changed
+nothing about what CI actually did. If you add a check, add it to `task ci` and it runs in both
+places; adding it to the workflow alone means nobody can run it before pushing.
+
+Pull requests also get a verdict from a GitHub App (`veredicto` job) — GitHub will not let an
+author approve their own PR, so the second identity has to be someone else. It signs a SHA, not
+a PR: push again after a review and the approval expires.
 
 ## API Endpoints
 
