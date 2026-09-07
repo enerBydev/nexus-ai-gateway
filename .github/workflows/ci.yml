@@ -59,28 +59,24 @@ jobs:
       - name: Run the gate
         run: task ci
 
-  # THE SECOND IDENTITY (methodOS CODE-2, ADR-0013). GitHub refuses to let you approve your
-  # own pull request, so "a verdict from an identity other than the author" has to be someone
-  # else for real -- here, a GitHub App. Without it this repo merged pull requests with no
-  # review at all: the last ten went in with zero verdicts.
+  # THE SECOND IDENTITY IS NOT AVAILABLE HERE, AND THE REASON IS MEASURED (2026-09-07).
   #
-  # Missing secrets do NOT break CI: the action reports the gap and the measurement says
-  # CODE-2 is red. A repo without a reviewer is still valid; what it cannot do is believe it
-  # has one.
-  veredicto:
-    runs-on: ubuntu-latest
-    needs: gate
-    if: always() && github.event_name == 'pull_request'
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: enerBydev/methodOS/.github/actions/veredicto@main
-        with:
-          app-id: ${{ secrets.METHODOS_REVISOR_APP_ID }}
-          private-key: ${{ secrets.METHODOS_REVISOR_PRIVATE_KEY }}
-          gate-verde: ${{ needs.gate.result == 'success' }}
+  # methodOS CODE-2 wants "a verdict from an identity other than the author", emitted by a
+  # GitHub App through `enerBydev/methodOS/.github/actions/veredicto@main`. That action was
+  # wired up here and the run failed with:
+  #
+  #     Unable to resolve action `enerbydev/methodos`, not found
+  #
+  # It is NOT a permissions mistake. methodOS has `access_level: user` (shared with every repo
+  # this account owns) and a PRIVATE sibling of this repo resolves the very same action without
+  # trouble. The one thing that differs is the visibility of the CONSUMER: this repo is public,
+  # and a public repository cannot consume an action that lives in a private one -- same owner
+  # or not. Sharing settings do not reach across that line.
+  #
+  # So the gap is real and it has a single exit condition: methodOS becomes public (ClickUp
+  # 86bbv563p). Until then this repo merges without a second identity, the measurement says
+  # CODE-2 is red, and that red is honest -- the alternative would be copying the action in
+  # here, which trades one canonical source for four drifting ones.
 
   # Release job -- runs after the gate passes on main.
   # Note: actual releases are created by auto-version.yml.
