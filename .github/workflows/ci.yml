@@ -59,24 +59,81 @@ jobs:
       - name: Run the gate
         run: task ci
 
-  # THE SECOND IDENTITY IS NOT AVAILABLE HERE, AND THE REASON IS MEASURED (2026-09-07).
+  # THE SECOND IDENTITY (methodOS CODE-2). GitHub will not let an author approve their own
+  # pull request, so "a verdict from an identity other than the author" has to be someone else
+  # for real: a GitHub App. Without it this repo merged pull requests with no review at all --
+  # the last ten went in with zero verdicts.
   #
-  # methodOS CODE-2 wants "a verdict from an identity other than the author", emitted by a
-  # GitHub App through `enerBydev/methodOS/.github/actions/veredicto@main`. That action was
-  # wired up here and the run failed with:
+  # WHY THE ACTION IS FETCHED BY HAND INSTEAD OF `uses: enerBydev/methodOS/...@main`.
+  # That direct form fails here, and the reason was measured on 2026-09-07:
   #
   #     Unable to resolve action `enerbydev/methodos`, not found
   #
-  # It is NOT a permissions mistake. methodOS has `access_level: user` (shared with every repo
-  # this account owns) and a PRIVATE sibling of this repo resolves the very same action without
-  # trouble. The one thing that differs is the visibility of the CONSUMER: this repo is public,
-  # and a public repository cannot consume an action that lives in a private one -- same owner
-  # or not. Sharing settings do not reach across that line.
+  # It is NOT a permissions mistake. methodOS has `access_level: user`, and a PRIVATE sibling
+  # of this repo resolves that very same action without trouble. What differs is the
+  # visibility of the CONSUMER: a public repository cannot resolve an action that lives in a
+  # private one, same owner or not. GitHub's sharing settings do not reach across that line --
+  # and neither do they reach across OWNERS, which is why the repos of the organisations
+  # cannot use it either.
   #
-  # So the gap is real and it has a single exit condition: methodOS becomes public (ClickUp
-  # 86bbv563p). Until then this repo merges without a second identity, the measurement says
-  # CODE-2 is red, and that red is honest -- the alternative would be copying the action in
-  # here, which trades one canonical source for four drifting ones.
+  # So the kit is fetched explicitly: mint a short-lived App token scoped to reading methodOS,
+  # check it out, and run the action from the working copy. Three steps that behave the same
+  # whatever the repo is -- public or private, user or organisation. No repository is excluded
+  # by what it happens to be, which is the whole point of a shared standard.
+  #
+  # The token is minted per run, is read-only on a single repository, and is revoked when the
+  # job ends. There is no long-lived credential sitting in this public repo.
+  veredicto:
+    runs-on: ubuntu-latest
+    needs: gate
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    # EL SECRETO SE PASA POR `env` Y NO SE MIRA EN EL `if:` DIRECTAMENTE. El contexto
+    # `secrets` NO esta disponible en `jobs.<id>.steps[*].if` — GitHub lo documenta en su
+    # tabla de disponibilidad de contextos—, asi que `if: secrets.X != ''` se evalua siempre
+    # como falso y el job se saltaria entero, en silencio y para siempre. La forma correcta
+    # es exponerlo como variable de entorno y preguntar por ella.
+    env:
+      HAY_KIT: ${{ secrets.METHODOS_REVISOR_APP_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Sin secretos no se puede: en un PR desde un FORK, GitHub no se los da al workflow, y
+      # eso es correcto. El job informa el hueco y no rompe el CI, igual que hacia antes.
+      - name: Token de lectura sobre methodOS
+        id: kit
+        if: env.HAY_KIT != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.METHODOS_REVISOR_APP_ID }}
+          private-key: ${{ secrets.METHODOS_REVISOR_PRIVATE_KEY }}
+          owner: enerBydev
+          repositories: methodOS
+          permission-contents: read
+
+      - name: Traer el kit de methodOS
+        if: steps.kit.outputs.token != ''
+        uses: actions/checkout@v7
+        with:
+          repository: enerBydev/methodOS
+          token: ${{ steps.kit.outputs.token }}
+          path: .methodos
+          persist-credentials: false
+
+      - name: Veredicto de CODE-2
+        if: steps.kit.outputs.token != ''
+        uses: ./.methodos/.github/actions/veredicto
+        with:
+          app-id: ${{ secrets.METHODOS_REVISOR_APP_ID }}
+          private-key: ${{ secrets.METHODOS_REVISOR_PRIVATE_KEY }}
+          gate-verde: ${{ needs.gate.result == 'success' }}
+
+      - name: Sin kit, se informa el hueco
+        if: steps.kit.outputs.token == ''
+        run: |
+          echo "::notice::sin credencial del App revisor (PR desde un fork): CODE-2 queda sin veredicto, y el medidor lo dira en rojo."
 
   # Release job -- runs after the gate passes on main.
   # Note: actual releases are created by auto-version.yml.
